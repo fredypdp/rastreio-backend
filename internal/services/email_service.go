@@ -297,11 +297,18 @@ func (s *EmailService) sendEmailViaEmailJS(to, nome, templateID string, params m
 	return fmt.Errorf("falha após %d tentativas: %w", maxRetries, lastErr)
 }
 
-// SendVerificationEmail envia email de verificação de endereço.
+// SendVerificationEmail envia o email de verificação de endereço.
+//
+// Historicamente este método enviava via EmailJS (sendEmailViaEmailJS,
+// controlado por s.enabled/s.templateVerify — configuração de um template
+// externo, editado fora deste repositório). Nesta tarefa passou a enviar
+// via Brevo, com o HTML de marca portado do frontend (ver
+// email_html_templates.go), para que o design do email deixe de depender
+// de um template externo e passe a ser o mesmo já usado/conhecido da
+// plataforma. A assinatura do método não mudou, então nenhum dos dois
+// chamadores existentes (SolicitarVerificacaoEmail e o helper interno não
+// utilizado gerarEEnviarTokenVerificacao) precisou de alteração.
 func (s *EmailService) SendVerificationEmail(userID uuid.UUID, userType, email, nome string) error {
-	if !s.enabled {
-		return fmt.Errorf("serviço de email desabilitado")
-	}
 	if email == "" {
 		return fmt.Errorf("email vazio")
 	}
@@ -313,38 +320,68 @@ func (s *EmailService) SendVerificationEmail(userID uuid.UUID, userType, email, 
 
 	verifyURL := fmt.Sprintf("%s/verificar-email/%s", s.frontendURL, token)
 
-	params := map[string]string{
-		"user_name":  nome,
-		"verify_url": verifyURL,
-		"expiry":     "24 horas",
+	cfg, ok := loadBrevoConfig()
+	if !ok {
+		log.Printf("[EMAIL-BREVO] ⚠️  BREVO_API_KEY/EMAIL_FROM/EMAIL_USER não configurados — link de verificação de %s registado apenas no log do servidor.", email)
+		log.Printf("[EMAIL-BREVO] 🔗 Link de verificação para %s: %s", email, verifyURL)
+		return nil
 	}
 
-	return s.sendEmailViaEmailJS(email, nome, s.templateVerify, params)
+	subject := "Verificação de E-mail - Spuri"
+	htmlBody := renderVerificationEmailHTML(nome, verifyURL, s.frontendURL)
+	textBody := renderVerificationEmailText(nome, verifyURL)
+
+	if err := sendBrevoEmail(cfg, email, nome, subject, textBody, htmlBody); err != nil {
+		return fmt.Errorf("brevo: %w", err)
+	}
+	return nil
 }
 
-// SendPasswordResetEmail envia link de recuperação de senha.
-func (s *EmailService) SendPasswordResetEmail(userID uuid.UUID, userType, email, nome string) error {
-	if !s.enabled {
-		return fmt.Errorf("serviço de email desabilitado")
-	}
+// SendPasswordResetEmail envia ao usuário a senha temporária já aplicada à
+// sua conta.
+//
+// ATENÇÃO — mudança de contrato nesta tarefa: esta função deixou de gerar
+// um token e enviar apenas um link de recuperação (o design antigo, via
+// EmailJS, apontava para "{FRONTEND_URL}/recuperar-senha/{token}", uma
+// página que nunca existiu no frontend). Agora ela só ENVIA o email —
+// quem chama (SolicitarRecuperacaoSenha, em auth_email_handlers.go) já
+// gerou a senha temporária e já a aplicou à conta antes de chamar esta
+// função, replicando no backend o procedimento que já era usado no
+// frontend (gerarTokenRecuperacao + resetarSenha + envio do email, os três
+// passos agora atômicos e do lado do servidor). É por isso que a
+// assinatura mudou de (userID, userType, email, nome) para
+// (email, nome, senhaTemporaria) — não há mais token nem link envolvidos
+// neste fluxo.
+//
+// O único chamador real desta função (SolicitarRecuperacaoSenha) foi
+// atualizado nesta mesma tarefa. O helper interno não utilizado
+// gerarEEnviarTokenRecuperacao (final deste arquivo) referencia a
+// assinatura antiga através de uma interface anônima própria — como nunca
+// é chamado em lugar nenhum, continua compilando sem qualquer alteração.
+func (s *EmailService) SendPasswordResetEmail(email, nome, senhaTemporaria string) error {
 	if email == "" {
 		return fmt.Errorf("email vazio")
 	}
 
-	token, err := s.SaveToken(userID, userType, "recuperacao_senha", email, 1*time.Hour)
-	if err != nil {
-		return fmt.Errorf("erro ao gerar token: %w", err)
+	loginURL := fmt.Sprintf("%s/login", s.frontendURL)
+
+	cfg, ok := loadBrevoConfig()
+	if !ok {
+		log.Printf("[EMAIL-BREVO] ⚠️  BREVO_API_KEY/EMAIL_FROM/EMAIL_USER não configurados — senha temporária de %s registada apenas no log do servidor.", email)
+		log.Printf("[EMAIL-BREVO] 🔑 Senha temporária para %s: %s", email, senhaTemporaria)
+		return nil
 	}
 
-	resetURL := fmt.Sprintf("%s/recuperar-senha/%s", s.frontendURL, token)
+	subject := "Senha Resetada - Spuri"
+	htmlBody := renderPasswordResetEmailHTML(nome, senhaTemporaria, loginURL, s.frontendURL)
+	textBody := renderPasswordResetEmailText(nome, senhaTemporaria, loginURL)
 
-	params := map[string]string{
-		"user_name": nome,
-		"reset_url": resetURL,
-		"expiry":    "1 hora",
+	if err := sendBrevoEmail(cfg, email, nome, subject, textBody, htmlBody); err != nil {
+		log.Printf("[EMAIL-BREVO] ⚠️  Falha ao enviar email de recuperação para %s — senha temporária registada no log do servidor como salvaguarda.", email)
+		log.Printf("[EMAIL-BREVO] 🔑 Senha temporária para %s: %s", email, senhaTemporaria)
+		return fmt.Errorf("brevo: %w", err)
 	}
-
-	return s.sendEmailViaEmailJS(email, nome, s.templateReset, params)
+	return nil
 }
 
 // SendAdminWelcomeEmail envia a senha temporária ao admin recém-criado.
