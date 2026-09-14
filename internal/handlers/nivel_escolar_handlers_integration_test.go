@@ -67,9 +67,33 @@ func nivelEscolarTestClient(t *testing.T) *db.Client {
 	if dbURL == "" {
 		t.Skip("DATABASE_URL não definido — pulei teste de integração de nivel_escolar")
 	}
+	// RunMigrations() procura o diretório migrations/ relativo ao working
+	// directory do processo — a partir de internal/handlers ele não é
+	// encontrado, por isso o mesmo padrão de chdir usado em
+	// integrationFinanceClient (financeiro_handlers_integration_test.go) é
+	// replicado aqui.
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir("../.."); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDir) })
+
 	client, err := db.NewClient(db.DefaultConfig())
 	if err != nil {
 		t.Fatalf("erro ao conectar no banco de teste: %v", err)
+	}
+	// Sem isto, testes que usam este helper dependiam de outro teste (ex.:
+	// integrationFinanceClient) já ter rodado as migrations antes, no MESMO
+	// binário de teste — rodando isoladamente (ex.: `go test -run
+	// TestAprovarSolicitacaoEdicaoBI...`), falhavam com 'relation
+	// "spuri_ledger" does not exist'. RunMigrations() é idempotente (usa
+	// IF NOT EXISTS), então é seguro chamar mesmo que outro teste já as
+	// tenha aplicado nesta mesma conexão de banco.
+	if err := client.RunMigrations(); err != nil {
+		t.Fatalf("erro ao rodar migrations: %v", err)
 	}
 	return client
 }
