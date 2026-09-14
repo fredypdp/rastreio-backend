@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -43,21 +44,48 @@ func (handlerAppyPayMockTransport) RoundTrip(req *http.Request) (*http.Response,
 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 }
 
+// seedAcademiaParaMatriculaWebhook cria uma academia real (agregado ->
+// event store -> projeção) para os testes de webhook AppyPay.
+//
+// ATENÇÃO — bug pré-existente corrigido nesta tarefa: esta função inseria a
+// academia DIRETO via SQL em projection_academias, sem nenhum evento
+// correspondente no event store (spuri_ledger). Isso funcionava para o
+// PRÓPRIO teste (que nunca chama AcademiaProjection.Rebuild()), mas o
+// estudante criado logo a seguir, via webhook, É gerado por um evento REAL
+// (EstudanteCriadoComVinculo, referenciando esta academia pelo código). Se
+// QUALQUER outro teste do pacote chamasse depois AcademiaProjection.Rebuild()
+// (TRUNCATE + replay só dos eventos reais — ver admin_projection.go /
+// academia_projection.go), a linha desta academia "fantasma" era apagada
+// para sempre (sem evento para repô-la), deixando o estudante do webhook
+// com uma academia órfã permanentemente. Qualquer EstudanteProjection.Rebuild()
+// posterior (em QUALQUER outro teste, ex.: os de edição de BI) passava a
+// falhar com "academia ainda não projetada" de forma aparentemente
+// intermitente (na verdade dependia só da ordem de execução dos testes).
+// Criar a academia pelo caminho normal de event sourcing resolve isso: ela
+// passa a ser reconstruível por qualquer Rebuild() futuro, como qualquer
+// outra academia real.
 func seedAcademiaParaMatriculaWebhook(t *testing.T, client *db.Client, codigo string) {
 	t.Helper()
-	_, err := client.DB().Exec(`INSERT INTO projection_academias
-		(id,nivel,nome,nif,codigo_academia,senha_hash,provincia,endereco,nivel_escolar,status,cursos,anos_academicos,type,ano_letivo,created_at)
-		VALUES ($1,'escola','Academia webhook',$2,$3,'hash','LUA','endereco','fundamental','ativo','[]'::jsonb,'["1_ano_fundamental"]'::jsonb,'private','2026_2027',CURRENT_TIMESTAMP)`,
-		uuid.New(), strings.Map(func(r rune) rune {
-			if r >= '0' && r <= '9' {
-				return r
-			}
-			return -1
-		}, uuid.NewString())[:10], codigo)
-	if err != nil {
+	id := uuid.New()
+	agg := &aggregates.Academia{}
+	agg.SetID(id)
+	nif := fmt.Sprintf("9%09d", time.Now().UnixNano()%1000000000)
+	if err := agg.Criar("escola", "private", "Academia webhook", nif, codigo, "hash", "LUA", "endereco", nil, nil, nil, ptrString("fundamental"), nil, []string{"1_ano_fundamental"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := agg.DefinirAnoLetivo("2026_2027", "escolar", uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	repository := db.NewAggregateRepository(client)
+	if err := repository.SaveWithAudit(agg, db.AuditContext{UserID: "integration-test", UserType: "sistema", IP: "127.0.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := projections.NewAcademiaProjection(client).Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 }
+
+func ptrString(s string) *string { return &s }
 
 func geraDigitos(n int) string {
 	digitos := strings.Map(func(r rune) rune {
