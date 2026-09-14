@@ -7,6 +7,7 @@ import (
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/middleware"
+	"spuri/internal/services"
 	"spuri/internal/utils"
 	"time"
 
@@ -390,56 +391,80 @@ func SolicitarVerificacaoEmail(c *gin.Context) {
 // SolicitarRecuperacaoSenha gera o token e envia o email de recuperação diretamente.
 // Usado por fluxos onde o backend controla o envio completo.
 // Rota: POST /email/recuperar-senha/solicitar  (pública — usa identificador no body)
+//
+// 'tipo' é OPCIONAL: quando omitido, tenta identificar o usuário como
+// estudante, depois academia, depois admin, nessa ordem, parando no
+// primeiro em que o identificador exista — replicando aqui a lógica que
+// antes só existia no frontend (src/app/api/recuperar-senha/route.ts,
+// removido nesta tarefa), usada pela página pública "/esqueci-senha" que
+// nunca pede ao usuário para escolher o tipo de conta. Se o identificador
+// existir num tipo mas o email não estiver verificado, a busca PARA ali
+// (não continua tentando os outros tipos) — mesmo comportamento de antes.
 func SolicitarRecuperacaoSenha(c *gin.Context) {
 	var req struct {
 		Identificador string `json:"identificador" binding:"required"`
-		Tipo          string `json:"tipo" binding:"required"`
+		Tipo          string `json:"tipo"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		utils.RespondWithValidationError(c, fmt.Errorf("identificador e tipo são obrigatórios"))
+		utils.RespondWithValidationError(c, fmt.Errorf("identificador é obrigatório"))
 		return
+	}
+
+	tiposParaTentar := []string{"estudante", "academia", "admin"}
+	if req.Tipo != "" {
+		if req.Tipo != "estudante" && req.Tipo != "academia" && req.Tipo != "admin" {
+			utils.RespondWithValidationError(c, fmt.Errorf("tipo deve ser 'estudante', 'academia' ou 'admin'"))
+			return
+		}
+		tiposParaTentar = []string{req.Tipo}
 	}
 
 	client := getDbClient(c)
 
 	var userID uuid.UUID
-	var email, nome string
+	var email, nome, tipoEncontrado string
 	var emailVerificado bool
-	var idStr string
-	var err error
+	encontrado := false
 
-	switch req.Tipo {
-	case "estudante":
-		err = client.DB().QueryRow(
-			`SELECT id, COALESCE(email,''), nome, COALESCE(email_verificado, FALSE)
-			 FROM projection_estudantes
-			 WHERE codigo_estudante = $1 OR email = $1`,
-			req.Identificador,
-		).Scan(&idStr, &email, &nome, &emailVerificado)
-	case "academia":
-		err = client.DB().QueryRow(
-			`SELECT id, COALESCE(email,''), nome, COALESCE(email_verificado, FALSE)
-			 FROM projection_academias
-			 WHERE codigo_academia = $1 OR email = $1`,
-			req.Identificador,
-		).Scan(&idStr, &email, &nome, &emailVerificado)
-	case "admin":
-		err = client.DB().QueryRow(
-			`SELECT id, email, nome, COALESCE(email_verificado, FALSE)
-			 FROM projection_admins WHERE email = $1`,
-			req.Identificador,
-		).Scan(&idStr, &email, &nome, &emailVerificado)
-	default:
-		utils.RespondWithValidationError(c, fmt.Errorf("tipo deve ser 'estudante', 'academia' ou 'admin'"))
-		return
+	for _, tipo := range tiposParaTentar {
+		var idStr, e, n string
+		var verificado bool
+		var errBusca error
+		switch tipo {
+		case "estudante":
+			errBusca = client.DB().QueryRow(
+				`SELECT id, COALESCE(email,''), nome, COALESCE(email_verificado, FALSE)
+				 FROM projection_estudantes
+				 WHERE codigo_estudante = $1 OR email = $1`,
+				req.Identificador,
+			).Scan(&idStr, &e, &n, &verificado)
+		case "academia":
+			errBusca = client.DB().QueryRow(
+				`SELECT id, COALESCE(email,''), nome, COALESCE(email_verificado, FALSE)
+				 FROM projection_academias
+				 WHERE codigo_academia = $1 OR email = $1`,
+				req.Identificador,
+			).Scan(&idStr, &e, &n, &verificado)
+		case "admin":
+			errBusca = client.DB().QueryRow(
+				`SELECT id, email, nome, COALESCE(email_verificado, FALSE)
+				 FROM projection_admins WHERE email = $1`,
+				req.Identificador,
+			).Scan(&idStr, &e, &n, &verificado)
+		}
+		if errBusca != nil {
+			continue // não encontrado neste tipo — tenta o próximo
+		}
+		userID, _ = uuid.Parse(idStr)
+		email, nome, emailVerificado, tipoEncontrado = e, n, verificado, tipo
+		encontrado = true
+		break
 	}
 
-	if err != nil {
+	if !encontrado {
 		utils.RespondWithNotFoundError(c, "usuário")
 		return
 	}
-
-	userID, _ = uuid.Parse(idStr)
 
 	if email == "" {
 		utils.RespondWithValidationError(c, fmt.Errorf("usuário não possui email cadastrado"))
@@ -451,21 +476,109 @@ func SolicitarRecuperacaoSenha(c *gin.Context) {
 		return
 	}
 
-	emailSvc := getEmailService(c)
+	// A partir daqui o fluxo passa a ser inteiramente controlado pelo
+	// backend: gera-se uma senha temporária segura, aplica-se-a já à conta
+	// (mesmo mecanismo de event sourcing usado em ResetarSenha — carregado
+	// diretamente aqui, e não através de ResetarSenha, para não alterar o
+	// comportamento já existente e testado desse outro endpoint), e só
+	// então o email é enviado. Não existe mais token: a recuperação
+	// acontece de forma síncrona nesta única chamada, tal como já
+	// acontecia no frontend antes desta tarefa (gerarTokenRecuperacao +
+	// resetarSenha + envio do email, agora atômico e do lado do servidor).
+	senhaTemporaria, err := services.GenerateSecurePassword()
+	if err != nil {
+		utils.RespondWithInternalError(c, fmt.Errorf("erro ao gerar senha temporária: %w", err))
+		return
+	}
 
-	// Gera token e envia o email diretamente — token NÃO retornado ao frontend
-	if err := emailSvc.SendPasswordResetEmail(userID, req.Tipo, email, nome); err != nil {
-		log.Printf("Erro ao enviar email de recuperação: %v", err)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(senhaTemporaria), bcrypt.DefaultCost)
+	if err != nil {
 		utils.RespondWithInternalError(c, err)
+		return
+	}
+
+	repository := getRepository(c)
+	audit := db.AuditContext{UserID: "sistema", UserType: "sistema", IP: c.ClientIP()}
+
+	switch tipoEncontrado {
+	case "admin":
+		adminAgg, loadErr := repository.Load(userID, "Admin")
+		if loadErr != nil {
+			utils.RespondWithNotFoundError(c, "administrador")
+			return
+		}
+		admin, ok := adminAgg.(*aggregates.Admin)
+		if !ok {
+			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado para admin"))
+			return
+		}
+		if err := admin.AlterarSenha(string(hashedPassword), uuid.Nil, "reset_senha"); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		if err := repository.SaveWithAudit(admin, audit); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+	case "academia":
+		academiaAgg, loadErr := repository.Load(userID, "Academia")
+		if loadErr != nil {
+			utils.RespondWithNotFoundError(c, "academia")
+			return
+		}
+		academia, ok := academiaAgg.(*aggregates.Academia)
+		if !ok {
+			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado para academia"))
+			return
+		}
+		if err := academia.AlterarSenha(string(hashedPassword), uuid.Nil, "reset_senha"); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		if err := repository.SaveWithAudit(academia, audit); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+	case "estudante":
+		estudanteAgg, loadErr := repository.Load(userID, "Estudante")
+		if loadErr != nil {
+			utils.RespondWithNotFoundError(c, "estudante")
+			return
+		}
+		estudante, ok := estudanteAgg.(*aggregates.Estudante)
+		if !ok {
+			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado para estudante"))
+			return
+		}
+		if err := estudante.AlterarSenha(string(hashedPassword)); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		if err := repository.SaveWithAudit(estudante, audit); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+	}
+
+	log.Printf("Senha resetada (recuperação, event sourcing) para %s: %s", tipoEncontrado, email)
+
+	emailSvc := getEmailService(c)
+	if err := emailSvc.SendPasswordResetEmail(email, nome, senhaTemporaria); err != nil {
+		// A senha JÁ foi trocada neste ponto. Falhar em silêncio devolvendo
+		// sucesso seria pior (o usuário nunca saberia a senha nova); por
+		// isso o erro é reportado ao chamador. SendPasswordResetEmail já
+		// regista a senha temporária no log do servidor como salvaguarda
+		// antes de devolver este erro.
+		log.Printf("Erro ao enviar email de recuperação para %s: %v", email, err)
+		utils.RespondWithInternalError(c, fmt.Errorf("senha redefinida, mas houve falha ao enviar o email com a nova senha: %w", err))
 		return
 	}
 
 	log.Printf("Email de recuperação enviado para: %s", email)
 
 	c.JSON(http.StatusOK, gin.H{
-		"success":   true,
-		"message":   "Email de recuperação enviado com sucesso. Verifique sua caixa de entrada.",
-		"expira_em": "1 hora",
+		"success": true,
+		"message": "Sua senha foi redefinida com sucesso. Enviamos a nova senha temporária para o seu email.",
 	})
 }
 
