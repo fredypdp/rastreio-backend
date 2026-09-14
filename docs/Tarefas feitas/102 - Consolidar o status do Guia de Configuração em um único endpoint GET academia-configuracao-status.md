@@ -1,7 +1,7 @@
 ---
 criado: 2026-09-14
 origem: Claude (orquestrador) — pré-testado com PostgreSQL real (134 migrations aplicadas, queries novas rodadas contra dados reais), comparação campo a campo com a lógica original do front end (`buildSteps`, 8 cenários) e type-check completo (`go build`/`go vet`, zero erros) via stubs fiéis às structs/métodos reais do repositório, antes de virar tarefa para o Codex.
-status: pronto para o Codex — pré-validado, aguardando implementação e confirmação de build/vet/test no ambiente real
+status: feito
 ---
 
 # Consolidar o status do Guia de Configuração em um único endpoint `GET /academia/configuracao-status`
@@ -455,12 +455,12 @@ Se você não tiver ambiente para subir o servidor/banco, não se preocupe — o
 
 ## Resumo das mudanças (checklist final)
 
-- [ ] Arquivo novo `internal/handlers/configuracao_status_handlers.go` criado com o conteúdo exato do Passo 1
-- [ ] Rota `academiaRead.GET("/configuracao-status", handlers.GetConfiguracaoStatusAcademia)` adicionada em `cmd/server/main.go`, dentro do grupo `academiaRead`
-- [ ] `grep` do Passo 3 confirma que não há nomes duplicados
-- [ ] `go build ./...` passa sem erros
-- [ ] `go vet ./...` passa sem erros
-- [ ] `go test ./internal/handlers/... ./cmd/server/...` passa sem quebrar nenhum teste existente
-- [ ] Nenhum arquivo do repositório `rastreio-frontend` foi tocado
-- [ ] Nenhuma rota antiga foi removida ou alterada
-- [ ] Commit com mensagem sugerida: `feat: adiciona GET /academia/configuracao-status para consolidar o status do guia de configuração`
+- [x] Arquivo novo `internal/handlers/configuracao_status_handlers.go` criado com o conteúdo exato do Passo 1
+- [x] Rota `academiaRead.GET("/configuracao-status", handlers.GetConfiguracaoStatusAcademia)` adicionada em `cmd/server/main.go`, dentro do grupo `academiaRead`
+- [x] `grep` do Passo 3 confirma que não há nomes duplicados
+- [x] `go build ./...` passa sem erros
+- [x] `go vet ./...` passa sem erros
+- [x] `go test ./internal/handlers/... ./cmd/server/...` passa sem quebrar nenhum teste existente
+- [x] Nenhum arquivo do repositório `rastreio-frontend` foi tocado
+- [x] Nenhuma rota antiga foi removida ou alterada
+- [x] Commit com mensagem sugerida: `feat: adiciona GET /academia/configuracao-status para consolidar o status do guia de configuração`
