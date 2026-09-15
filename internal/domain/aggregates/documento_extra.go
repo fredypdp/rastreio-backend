@@ -3,6 +3,7 @@ package aggregates
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,7 +19,7 @@ var TiposDocumentoExtraPermitidos = map[string]bool{"pdf": true, "jpg": true}
 // DocumentoExtra é a definição, mantida pela academia, de um documento
 // adicional (além dos fixos do sistema: BI, cédula, declaração, certificados)
 // exigido — ou apenas oferecido — no cadastro direto e na solicitação de
-// matrícula do estudante, para um ano_academico específico.
+// matrícula do estudante, para um ou mais anos_academicos.
 //
 // Cada estudante que efetivamente envia o arquivo correspondente tem esse
 // envio registrado em projection_estudantes.documentos, na chave
@@ -31,8 +32,13 @@ type DocumentoExtra struct {
 	Rotulo         string
 	Tipo           string // "pdf" | "jpg"
 	Obrigatorio    bool
-	Nivel          string // fundamental | medio | superior — derivado de AnoAcademico, nunca aceito diretamente do payload
-	AnoAcademico   string // ex.: "6_ano_fundamental", "2_ano_medio", "1_ano_superior"
+	// AnosAcademicos: uma mesma definição pode se aplicar a mais de um ano
+	// (ex.: "9_ano_fundamental" e "1_ano_medio" ao mesmo tempo). Não existe
+	// mais um campo "Nivel" (singular): como uma definição pode abranger
+	// anos de níveis diferentes, o nível de CADA ano específico é derivado
+	// sob demanda via NivelDoAnoAcademico(ano) sempre que necessário —
+	// nunca foi persistido como fonte de verdade independente.
+	AnosAcademicos []string // ex.: []string{"6_ano_fundamental", "1_ano_medio"}
 	Ativo          bool
 	CriadoPor      uuid.UUID
 	CreatedAt      time.Time
@@ -55,8 +61,7 @@ type DocumentoExtraCriadoEvent struct {
 	Rotulo         string
 	Tipo           string
 	Obrigatorio    bool
-	Nivel          string
-	AnoAcademico   string
+	AnosAcademicos []string
 	CriadoPor      uuid.UUID
 	CreatedAt      time.Time
 }
@@ -66,13 +71,12 @@ func (e *DocumentoExtraCriadoEvent) ToJSON() ([]byte, error) { return json.Marsh
 
 type DocumentoExtraAtualizadoEvent struct {
 	BaseEvent
-	Rotulo        string
-	Tipo          string
-	Obrigatorio   bool
-	Nivel         string
-	AnoAcademico  string
-	AtualizadoPor uuid.UUID
-	UpdatedAt     time.Time
+	Rotulo         string
+	Tipo           string
+	Obrigatorio    bool
+	AnosAcademicos []string
+	AtualizadoPor  uuid.UUID
+	UpdatedAt      time.Time
 }
 
 func (e *DocumentoExtraAtualizadoEvent) GetPayload() interface{} { return e }
@@ -121,54 +125,74 @@ func (d *DocumentoExtra) Apply(event DomainEvent) error {
 // Validação interna compartilhada
 // ============================================================================
 
-// validarCamposDocumentoExtra normaliza e valida rotulo/tipo/ano_academico,
-// derivando nivel a partir de ano_academico via NivelDoAnoAcademico — mesma
-// função já usada para os documentos fixos de matrícula (solicitacao_matricula.go),
-// garantindo que "nivel" nunca seja uma entrada independente e divergente do
-// ano informado.
-func validarCamposDocumentoExtra(rotulo, tipo, anoAcademico string) (string, string, string, string, error) {
+// validarAnoAcademicoDocumentoExtra valida um único valor de ano_academico
+// usando os mesmos validadores por sufixo já usados para os documentos fixos
+// de matrícula (solicitacao_matricula.go).
+func validarAnoAcademicoDocumentoExtra(anoAcademico string) error {
+	switch {
+	case strings.HasSuffix(anoAcademico, "_ano_fundamental"):
+		return utils.ValidateAnoFundamental(anoAcademico)
+	case strings.HasSuffix(anoAcademico, "_ano_medio"):
+		return utils.ValidateAnoMedio(anoAcademico)
+	case strings.HasSuffix(anoAcademico, "_ano_superior"):
+		return utils.ValidateAnoSuperior(anoAcademico)
+	default:
+		return fmt.Errorf("use o formato N_ano_fundamental, N_ano_medio ou N_ano_superior")
+	}
+}
+
+// validarCamposDocumentoExtra normaliza e valida rotulo/tipo/anos_academicos.
+// anos_academicos precisa ter pelo menos um valor, cada valor é validado
+// individualmente e duplicados são removidos; o resultado é ordenado para
+// que a igualdade de dois slices (ex.: comparação em testes) não dependa da
+// ordem em que o cliente enviou os valores.
+func validarCamposDocumentoExtra(rotulo, tipo string, anosAcademicos []string) (string, string, []string, error) {
 	rotulo = strings.TrimSpace(rotulo)
 	if rotulo == "" {
-		return "", "", "", "", fmt.Errorf("rotulo é obrigatório")
+		return "", "", nil, fmt.Errorf("rotulo é obrigatório")
 	}
 	if len(rotulo) > 150 {
-		return "", "", "", "", fmt.Errorf("rotulo deve ter no máximo 150 caracteres")
+		return "", "", nil, fmt.Errorf("rotulo deve ter no máximo 150 caracteres")
 	}
 	tipo = strings.TrimSpace(strings.ToLower(tipo))
 	if !TiposDocumentoExtraPermitidos[tipo] {
-		return "", "", "", "", fmt.Errorf("tipo deve ser 'pdf' ou 'jpg'")
+		return "", "", nil, fmt.Errorf("tipo deve ser 'pdf' ou 'jpg'")
 	}
-	anoAcademico = strings.TrimSpace(anoAcademico)
-	if anoAcademico == "" {
-		return "", "", "", "", fmt.Errorf("ano_academico é obrigatório")
+	if len(anosAcademicos) == 0 {
+		return "", "", nil, fmt.Errorf("selecione ao menos um ano_academico")
 	}
-	var err error
-	switch {
-	case strings.HasSuffix(anoAcademico, "_ano_fundamental"):
-		err = utils.ValidateAnoFundamental(anoAcademico)
-	case strings.HasSuffix(anoAcademico, "_ano_medio"):
-		err = utils.ValidateAnoMedio(anoAcademico)
-	case strings.HasSuffix(anoAcademico, "_ano_superior"):
-		err = utils.ValidateAnoSuperior(anoAcademico)
-	default:
-		err = fmt.Errorf("use o formato N_ano_fundamental, N_ano_medio ou N_ano_superior")
+	vistos := make(map[string]bool, len(anosAcademicos))
+	normalizados := make([]string, 0, len(anosAcademicos))
+	for _, ano := range anosAcademicos {
+		ano = strings.TrimSpace(ano)
+		if ano == "" {
+			continue
+		}
+		if err := validarAnoAcademicoDocumentoExtra(ano); err != nil {
+			return "", "", nil, fmt.Errorf("ano_academico inválido (%s): %w", ano, err)
+		}
+		if vistos[ano] {
+			continue
+		}
+		vistos[ano] = true
+		normalizados = append(normalizados, ano)
 	}
-	if err != nil {
-		return "", "", "", "", fmt.Errorf("ano_academico inválido: %w", err)
+	if len(normalizados) == 0 {
+		return "", "", nil, fmt.Errorf("selecione ao menos um ano_academico")
 	}
-	nivel := NivelDoAnoAcademico(anoAcademico)
-	return rotulo, tipo, nivel, anoAcademico, nil
+	sort.Strings(normalizados)
+	return rotulo, tipo, normalizados, nil
 }
 
 // ============================================================================
 // Comandos
 // ============================================================================
 
-func (d *DocumentoExtra) Criar(codigoAcademia, rotulo, tipo string, obrigatorio bool, anoAcademico string, criadoPor uuid.UUID) error {
+func (d *DocumentoExtra) Criar(codigoAcademia, rotulo, tipo string, obrigatorio bool, anosAcademicos []string, criadoPor uuid.UUID) error {
 	if strings.TrimSpace(codigoAcademia) == "" {
 		return fmt.Errorf("codigo_academia é obrigatório")
 	}
-	rotulo, tipo, nivel, anoAcademico, err := validarCamposDocumentoExtra(rotulo, tipo, anoAcademico)
+	rotulo, tipo, anosAcademicos, err := validarCamposDocumentoExtra(rotulo, tipo, anosAcademicos)
 	if err != nil {
 		return err
 	}
@@ -178,8 +202,7 @@ func (d *DocumentoExtra) Criar(codigoAcademia, rotulo, tipo string, obrigatorio 
 		Rotulo:         rotulo,
 		Tipo:           tipo,
 		Obrigatorio:    obrigatorio,
-		Nivel:          nivel,
-		AnoAcademico:   anoAcademico,
+		AnosAcademicos: anosAcademicos,
 		CriadoPor:      criadoPor,
 		CreatedAt:      time.Now(),
 	}
@@ -187,25 +210,24 @@ func (d *DocumentoExtra) Criar(codigoAcademia, rotulo, tipo string, obrigatorio 
 	return d.Apply(e)
 }
 
-// Atualizar edita rotulo/tipo/obrigatorio/ano_academico de uma definição já
+// Atualizar edita rotulo/tipo/obrigatorio/anos_academicos de uma definição já
 // existente. A mudança vale apenas prospectivamente: documentos já enviados
 // por estudantes mantêm o path/tipo com que foram gravados — trocar o tipo
 // aqui não invalida nem re-exige arquivos antigos, apenas passa a valer para
 // os próximos cadastros/matrículas.
-func (d *DocumentoExtra) Atualizar(rotulo, tipo string, obrigatorio bool, anoAcademico string, atualizadoPor uuid.UUID) error {
-	rotulo, tipo, nivel, anoAcademico, err := validarCamposDocumentoExtra(rotulo, tipo, anoAcademico)
+func (d *DocumentoExtra) Atualizar(rotulo, tipo string, obrigatorio bool, anosAcademicos []string, atualizadoPor uuid.UUID) error {
+	rotulo, tipo, anosAcademicos, err := validarCamposDocumentoExtra(rotulo, tipo, anosAcademicos)
 	if err != nil {
 		return err
 	}
 	e := &DocumentoExtraAtualizadoEvent{
-		BaseEvent:     BaseEvent{EventType: "DocumentoExtraAtualizado", AggregateID: d.ID},
-		Rotulo:        rotulo,
-		Tipo:          tipo,
-		Obrigatorio:   obrigatorio,
-		Nivel:         nivel,
-		AnoAcademico:  anoAcademico,
-		AtualizadoPor: atualizadoPor,
-		UpdatedAt:     time.Now(),
+		BaseEvent:      BaseEvent{EventType: "DocumentoExtraAtualizado", AggregateID: d.ID},
+		Rotulo:         rotulo,
+		Tipo:           tipo,
+		Obrigatorio:    obrigatorio,
+		AnosAcademicos: anosAcademicos,
+		AtualizadoPor:  atualizadoPor,
+		UpdatedAt:      time.Now(),
 	}
 	d.RaiseEvent(e)
 	return d.Apply(e)
@@ -249,8 +271,7 @@ func (d *DocumentoExtra) applyCriado(e DomainEvent) error {
 	d.Rotulo = p.Rotulo
 	d.Tipo = p.Tipo
 	d.Obrigatorio = p.Obrigatorio
-	d.Nivel = p.Nivel
-	d.AnoAcademico = p.AnoAcademico
+	d.AnosAcademicos = p.AnosAcademicos
 	d.Ativo = true
 	d.CriadoPor = p.CriadoPor
 	d.CreatedAt = p.CreatedAt
@@ -270,8 +291,7 @@ func (d *DocumentoExtra) applyAtualizado(e DomainEvent) error {
 	d.Rotulo = p.Rotulo
 	d.Tipo = p.Tipo
 	d.Obrigatorio = p.Obrigatorio
-	d.Nivel = p.Nivel
-	d.AnoAcademico = p.AnoAcademico
+	d.AnosAcademicos = p.AnosAcademicos
 	d.UpdatedAt = p.UpdatedAt
 	return nil
 }

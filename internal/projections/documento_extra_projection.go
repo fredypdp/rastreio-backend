@@ -75,8 +75,7 @@ type DocumentoExtraDTO struct {
 	Rotulo         string    `json:"rotulo"`
 	Tipo           string    `json:"tipo"`
 	Obrigatorio    bool      `json:"obrigatorio"`
-	Nivel          string    `json:"nivel"`
-	AnoAcademico   string    `json:"ano_academico"`
+	AnosAcademicos []string  `json:"anos_academicos"`
 	Ativo          bool      `json:"ativo"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
@@ -88,34 +87,40 @@ func (p *DocumentoExtraProjection) created(e db.Event) error {
 		Rotulo         string
 		Tipo           string
 		Obrigatorio    bool
-		Nivel          string
-		AnoAcademico   string
+		AnosAcademicos []string
 		CriadoPor      uuid.UUID
 		CreatedAt      time.Time
 	}
 	if err := json.Unmarshal(e.Payload, &x); err != nil {
 		return err
 	}
-	_, err := p.client.DB().Exec(
-		`INSERT INTO projection_documentos_extra(id,codigo_academia,rotulo,tipo,obrigatorio,nivel,ano_academico,ativo,criado_por,created_at,updated_at,version,last_event_id)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,true,$8,$9,$9,$10,$11) ON CONFLICT(id) DO NOTHING`,
-		e.AggregateID, x.CodigoAcademia, x.Rotulo, x.Tipo, x.Obrigatorio, x.Nivel, x.AnoAcademico, x.CriadoPor, x.CreatedAt, e.EventVersion, e.EventID)
+	anosJSON, err := json.Marshal(x.AnosAcademicos)
+	if err != nil {
+		return err
+	}
+	_, err = p.client.DB().Exec(
+		`INSERT INTO projection_documentos_extra(id,codigo_academia,rotulo,tipo,obrigatorio,anos_academicos,ativo,criado_por,created_at,updated_at,version,last_event_id)
+		 VALUES($1,$2,$3,$4,$5,$6,true,$7,$8,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
+		e.AggregateID, x.CodigoAcademia, x.Rotulo, x.Tipo, x.Obrigatorio, anosJSON, x.CriadoPor, x.CreatedAt, e.EventVersion, e.EventID)
 	return err
 }
 func (p *DocumentoExtraProjection) updated(e db.Event) error {
 	var x struct {
-		Rotulo       string
-		Tipo         string
-		Obrigatorio  bool
-		Nivel        string
-		AnoAcademico string
+		Rotulo         string
+		Tipo           string
+		Obrigatorio    bool
+		AnosAcademicos []string
 	}
 	if err := json.Unmarshal(e.Payload, &x); err != nil {
 		return err
 	}
-	_, err := p.client.DB().Exec(
-		`UPDATE projection_documentos_extra SET rotulo=$1,tipo=$2,obrigatorio=$3,nivel=$4,ano_academico=$5,version=$6,last_event_id=$7,updated_at=CURRENT_TIMESTAMP WHERE id=$8`,
-		x.Rotulo, x.Tipo, x.Obrigatorio, x.Nivel, x.AnoAcademico, e.EventVersion, e.EventID, e.AggregateID)
+	anosJSON, err := json.Marshal(x.AnosAcademicos)
+	if err != nil {
+		return err
+	}
+	_, err = p.client.DB().Exec(
+		`UPDATE projection_documentos_extra SET rotulo=$1,tipo=$2,obrigatorio=$3,anos_academicos=$4,version=$5,last_event_id=$6,updated_at=CURRENT_TIMESTAMP WHERE id=$7`,
+		x.Rotulo, x.Tipo, x.Obrigatorio, anosJSON, e.EventVersion, e.EventID, e.AggregateID)
 	return err
 }
 func (p *DocumentoExtraProjection) active(e db.Event, ativo bool) error {
@@ -124,14 +129,20 @@ func (p *DocumentoExtraProjection) active(e db.Event, ativo bool) error {
 }
 func (p *DocumentoExtraProjection) scan(row interface{ Scan(...interface{}) error }) (*DocumentoExtraDTO, error) {
 	var d DocumentoExtraDTO
-	err := row.Scan(&d.ID, &d.CodigoAcademia, &d.Rotulo, &d.Tipo, &d.Obrigatorio, &d.Nivel, &d.AnoAcademico, &d.Ativo, &d.CreatedAt, &d.UpdatedAt)
+	var anosJSON []byte
+	err := row.Scan(&d.ID, &d.CodigoAcademia, &d.Rotulo, &d.Tipo, &d.Obrigatorio, &anosJSON, &d.Ativo, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if len(anosJSON) > 0 {
+		if err := json.Unmarshal(anosJSON, &d.AnosAcademicos); err != nil {
+			return nil, fmt.Errorf("decodificar anos_academicos: %w", err)
+		}
 	}
 	return &d, nil
 }
 
-const documentoExtraCols = `id,codigo_academia,rotulo,tipo,obrigatorio,nivel,ano_academico,ativo,created_at,updated_at`
+const documentoExtraCols = `id,codigo_academia,rotulo,tipo,obrigatorio,anos_academicos,ativo,created_at,updated_at`
 
 func (p *DocumentoExtraProjection) GetByID(id uuid.UUID) (*DocumentoExtraDTO, error) {
 	d, err := p.scan(p.client.DB().QueryRow(`SELECT `+documentoExtraCols+` FROM projection_documentos_extra WHERE id=$1`, id))
@@ -145,7 +156,7 @@ func (p *DocumentoExtraProjection) GetByAcademia(codigo string, ativosOnly bool)
 	if ativosOnly {
 		q += ` AND ativo=true`
 	}
-	q += ` ORDER BY ano_academico, rotulo`
+	q += ` ORDER BY rotulo`
 	rows, err := p.client.DB().Query(q, codigo)
 	if err != nil {
 		return nil, err
@@ -165,13 +176,24 @@ func (p *DocumentoExtraProjection) GetByAcademia(codigo string, ativosOnly bool)
 	return out, nil
 }
 
-// GetAtivosPorAnoAcademico retorna as definições ATIVAS desta academia que se
-// aplicam a um ano_academico específico — usado no cadastro direto e na
-// solicitação de matrícula para saber quais documentos extra validar/exigir.
+// GetAtivosPorAnoAcademico retorna as definições ATIVAS desta academia cujo
+// anos_academicos CONTÉM o ano_academico informado — usado no cadastro
+// direto e na solicitação de matrícula para saber quais documentos extra
+// validar/exigir para o ano específico do estudante. Uma mesma definição
+// pode aparecer para mais de um ano_academico distinto (ex.: uma definição
+// com anos_academicos=["9_ano_fundamental","1_ano_medio"] aparece tanto na
+// consulta para "9_ano_fundamental" quanto para "1_ano_medio").
+//
+// O operador @> (containment) usa o índice GIN idx_documentos_extra_anos_academicos
+// — ver migration 127_documentos_extra_anos_academicos.sql.
 func (p *DocumentoExtraProjection) GetAtivosPorAnoAcademico(codigo, anoAcademico string) ([]DocumentoExtraDTO, error) {
+	anoJSON, err := json.Marshal([]string{anoAcademico})
+	if err != nil {
+		return nil, err
+	}
 	rows, err := p.client.DB().Query(
-		`SELECT `+documentoExtraCols+` FROM projection_documentos_extra WHERE codigo_academia=$1 AND ano_academico=$2 AND ativo=true ORDER BY rotulo`,
-		codigo, anoAcademico)
+		`SELECT `+documentoExtraCols+` FROM projection_documentos_extra WHERE codigo_academia=$1 AND anos_academicos @> $2::jsonb AND ativo=true ORDER BY rotulo`,
+		codigo, anoJSON)
 	if err != nil {
 		return nil, err
 	}

@@ -156,8 +156,9 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req CadastroEstu
 	// o estudante deliberadamente sem nenhum arquivo por enquanto.
 	var catalogoDocsExtra []projections.DocumentoExtraDTO
 	var docsExtraEnviados map[string]documentoExtraUpload
+	var anoAcademicoDocsExtra string
 	if !pendenteDocumentos {
-		anoAcademicoDocsExtra := resolverAnoAcademicoParaDocumentosExtra(stringPtrIfNotBlank(req.AnoEscolar), stringPtrIfNotBlank(req.AnoEscolarMedio), stringPtrIfNotBlank(req.AnoSuperior))
+		anoAcademicoDocsExtra = resolverAnoAcademicoParaDocumentosExtra(stringPtrIfNotBlank(req.AnoEscolar), stringPtrIfNotBlank(req.AnoEscolarMedio), stringPtrIfNotBlank(req.AnoSuperior))
 		if anoAcademicoDocsExtra != "" {
 			catalogoDocsExtra, err = getDocumentosExtraProjection(c).GetAtivosPorAnoAcademico(academia.CodigoAcademia, anoAcademicoDocsExtra)
 			if err != nil {
@@ -242,7 +243,7 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req CadastroEstu
 		documentos[key] = doc
 	}
 	if len(docsExtraEnviados) > 0 {
-		docsExtraArmazenados, err := armazenarDocumentosExtra(provider, dir, docsExtraEnviados, func(campo string) string {
+		docsExtraArmazenados, err := armazenarDocumentosExtra(provider, dir, docsExtraEnviados, anoAcademicoDocsExtra, func(campo string) string {
 			return estudanteDocumentoDownloadURL(codigoEstudante, campo)
 		})
 		if err != nil {
@@ -1038,7 +1039,7 @@ func CompletarDocumentosEstudantePendente(c *gin.Context) {
 		documentos[key] = doc
 	}
 	if len(docsExtraEnviados) > 0 {
-		docsExtraArmazenados, err := armazenarDocumentosExtra(provider, dir, docsExtraEnviados, func(campo string) string {
+		docsExtraArmazenados, err := armazenarDocumentosExtra(provider, dir, docsExtraEnviados, anoAcademicoDocsExtra, func(campo string) string {
 			return estudanteDocumentoDownloadURL(codigo, campo)
 		})
 		if err != nil {

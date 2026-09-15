@@ -320,6 +320,7 @@ func setupRouter() *gin.Engine {
 	router.GET("/academias", middleware.OptionalAuthMiddleware(), handlers.ListarTodasAcademias)
 	router.GET("/academia/cursos", middleware.OptionalAuthMiddleware(), handlers.ListarCursos)
 	router.GET("/academia/servico/:codigo_academia/servicos-extras", middleware.OptionalAuthMiddleware(), handlers.ListarServicosExtrasPublico)
+	router.GET("/academia/documento/:codigo_academia/documentos-extra", middleware.OptionalAuthMiddleware(), handlers.ListarDocumentosExtraPublico)
 	router.GET("/academia/curso/:id", middleware.OptionalAuthMiddleware(), handlers.GetCurso)
 	router.GET("/consultar-academia/:codigo", middleware.OptionalAuthMiddleware(), handlers.GetAcademiaPorCodigo)
 

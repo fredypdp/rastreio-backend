@@ -152,7 +152,16 @@ func storagePathDocumentoExtra(baseDir, catalogID, tipo string) (string, string)
 // Documentos (ver documentoEstudantePorCampoEscopo) — chaves com ponto,
 // como a nossa, já são um padrão existente (ex.: "nivel.ano.campo" para
 // declarações), então nenhuma rota nova precisou ser criada.
-func armazenarDocumentosExtra(provider storage.StorageProvider, dir string, enviados map[string]documentoExtraUpload, downloadURL func(campo string) string) (map[string]aggregates.DocumentoMatricula, error) {
+//
+// anoAcademicoAluno é o ano_academico REAL do estudante sendo
+// cadastrado/matriculado (o mesmo valor já usado para resolver `enviados`
+// via GetAtivosPorAnoAcademico) — não confundir com
+// up.Catalog.AnosAcademicos, que desde a migration
+// 127_documentos_extra_anos_academicos.sql é a lista de TODOS os anos aos
+// quais aquela definição de catálogo se aplica, podendo ter mais de um
+// valor. O documento efetivamente enviado por ESTE estudante pertence a
+// exatamente um ano/nível — o do aluno, não o do catálogo.
+func armazenarDocumentosExtra(provider storage.StorageProvider, dir string, enviados map[string]documentoExtraUpload, anoAcademicoAluno string, downloadURL func(campo string) string) (map[string]aggregates.DocumentoMatricula, error) {
 	out := map[string]aggregates.DocumentoMatricula{}
 	for catalogID, up := range enviados {
 		documentoID, storagePath := storagePathDocumentoExtra(dir, catalogID, up.Catalog.Tipo)
@@ -164,8 +173,8 @@ func armazenarDocumentosExtra(provider storage.StorageProvider, dir string, envi
 		out[campo] = aggregates.DocumentoMatricula{
 			DocumentoID:      documentoID,
 			Tipo:             up.Catalog.Tipo,
-			Nivel:            up.Catalog.Nivel,
-			AnoAcademico:     up.Catalog.AnoAcademico,
+			Nivel:            aggregates.NivelDoAnoAcademico(anoAcademicoAluno),
+			AnoAcademico:     anoAcademicoAluno,
 			DocumentoExtraID: catalogID,
 			Path:             stored.Path,
 			FileURL:          stored.FileURL,
