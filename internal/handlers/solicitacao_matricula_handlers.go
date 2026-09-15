@@ -221,7 +221,7 @@ func CriarSolicitacaoMatricula(c *gin.Context) {
 		documentos[key] = doc
 	}
 	if len(docsExtraEnviados) > 0 {
-		docsExtraArmazenados, err := armazenarDocumentosExtra(provider, dir, docsExtraEnviados, func(campo string) string {
+		docsExtraArmazenados, err := armazenarDocumentosExtra(provider, dir, docsExtraEnviados, anoAcademicoDocsExtra, func(campo string) string {
 			return solicitacaoDocumentoDownloadURL(codigo, campo)
 		})
 		if err != nil {
