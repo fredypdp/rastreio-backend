@@ -218,11 +218,13 @@ func TestIntegrationBuscaPublicaMatriculaExigeDoisCamposENaoExibePagamento(t *te
 	if strings.Contains(twoFields.Body.String(), "valor_matricula") || strings.Contains(twoFields.Body.String(), "metodos_pagamento") {
 		t.Fatalf("busca pública expôs dados de pagamento: %s", twoFields.Body.String())
 	}
-	for _, query := range []string{"telefone=" + telefone, "telefone=" + telefone + "&email=outro@example.test"} {
-		recorder := buscar(query)
-		if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), codigo) {
-			t.Fatalf("busca indevida para %q: %d %s", query, recorder.Code, recorder.Body.String())
-		}
+	umCampo := buscar("telefone=" + telefone)
+	if umCampo.Code != http.StatusBadRequest || strings.Contains(umCampo.Body.String(), codigo) {
+		t.Fatalf("busca com um único campo deveria exigir mais identificadores (400): %d %s", umCampo.Code, umCampo.Body.String())
+	}
+	doisCamposSemMatch := buscar("telefone=" + telefone + "&email=outro@example.test")
+	if doisCamposSemMatch.Code != http.StatusOK || strings.Contains(doisCamposSemMatch.Body.String(), codigo) {
+		t.Fatalf("busca com dois campos que não combinam não deveria retornar a solicitação: %d %s", doisCamposSemMatch.Code, doisCamposSemMatch.Body.String())
 	}
 }
 

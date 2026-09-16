@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
 	"spuri/internal/db"
@@ -434,9 +435,9 @@ func ConsultarStatusSolicitacaoMatricula(c *gin.Context) {
 	var status, academia string
 	var valor sql.NullFloat64
 	var metodos []string
-	err := getDbClient(c).DB().QueryRowContext(c.Request.Context(), `SELECT status,codigo_academia,valor_matricula::float8,metodos_pagamento_matricula FROM projection_solicitacoes_matricula WHERE codigo_solicitacao=$1`, c.Param("codigo")).Scan(&status, &academia, &valor, &metodos)
+	err := getDbClient(c).DB().QueryRowContext(c.Request.Context(), `SELECT status,codigo_academia,valor_matricula::float8,metodos_pagamento_matricula FROM projection_solicitacoes_matricula WHERE codigo_solicitacao=$1`, c.Param("codigo")).Scan(&status, &academia, &valor, pq.Array(&metodos))
 	if err != nil {
-		utils.RespondWithError(c, http.StatusNotFound, solicitacaoPagamentoIndisponivel, nil)
+		utils.RespondWithError(c, http.StatusNotFound, "solicitação não encontrada", nil)
 		return
 	}
 	if status != aggregates.StatusSolicitacaoAprovadaPendentePagamentoMatricula {
@@ -457,7 +458,7 @@ func BuscarSolicitacoesMatricula(c *gin.Context) {
 		}
 	}
 	if n < 2 {
-		c.JSON(http.StatusOK, gin.H{"solicitacoes": []gin.H{}})
+		utils.RespondWithError(c, http.StatusBadRequest, "informe pelo menos dois identificadores (telefone, telefone_encarregado, email, bilhete_identidade ou bilhete_identidade_encarregado) para buscar solicitações", nil)
 		return
 	}
 	rows, err := getDbClient(c).DB().QueryContext(c.Request.Context(), `SELECT codigo_solicitacao,nome,codigo_academia,created_at,status FROM projection_solicitacoes_matricula WHERE (NULLIF($1,'') IS NULL OR telefone=$1) AND (NULLIF($2,'') IS NULL OR telefone_encarregado=$2) AND (NULLIF($3,'') IS NULL OR email=$3) AND (NULLIF($4,'') IS NULL OR bilhete_identidade=$4) AND (NULLIF($5,'') IS NULL OR bilhete_identidade_encarregado=$5) ORDER BY created_at DESC`, values[0], values[1], values[2], values[3], values[4])
@@ -814,9 +815,13 @@ func validarCamposArquivoMatricula(form *multipart.Form) error {
 		return nil
 	}
 	for field := range form.File {
-		if _, ok := solicitacaoDocFieldSet[field]; !ok {
-			return fmt.Errorf("campo de arquivo não suportado para matrícula: %s", field)
+		if _, ok := solicitacaoDocFieldSet[field]; ok {
+			continue
 		}
+		if strings.HasPrefix(field, extraDocFieldPrefix) {
+			continue
+		}
+		return fmt.Errorf("campo de arquivo não suportado para matrícula: %s", field)
 	}
 	return nil
 }
