@@ -1,0 +1,508 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 2244d9b..9b2fbad 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -539,6 +539,7 @@ func setupRouter() *gin.Engine {
+ 		academia.PUT("/categorias-servico/:id", handlers.AtualizarCategoriaServico)
+ 		academia.PUT("/categorias-servico/:id/desativar", handlers.DesativarCategoriaServico)
+ 		academia.PUT("/categorias-servico/:id/reativar", handlers.ReativarCategoriaServico)
++		academia.DELETE("/categorias-servico/:id", handlers.DeletarCategoriaServico)
+ 		academia.POST("/documentos-extra", handlers.CriarDocumentoExtra)
+ 		academia.PUT("/documentos-extra/:id", handlers.AtualizarDocumentoExtra)
+ 		academia.PUT("/documentos-extra/:id/desativar", handlers.DesativarDocumentoExtra)
+@@ -546,6 +547,7 @@ func setupRouter() *gin.Engine {
+ 		academia.PUT("/servicos-extras/:id", handlers.AtualizarServicoExtra)
+ 		academia.PUT("/servicos-extras/:id/desativar", handlers.DesativarServicoExtra)
+ 		academia.PUT("/servicos-extras/:id/reativar", handlers.ReativarServicoExtra)
++		academia.DELETE("/servicos-extras/:id", handlers.DeletarServicoExtra)
+ 		academia.PUT("/servicos-extras/solicitacoes/:id/aprovar", handlers.AprovarSolicitacaoServicoExtra)
+ 		academia.PUT("/servicos-extras/solicitacoes/:id/reprovar", handlers.ReprovarSolicitacaoServicoExtra)
+ 		academia.PUT("/servicos-extras/inscricoes/:id/cancelar", handlers.CancelarSolicitacaoServicoExtraAcademia)
+diff --git a/internal/db/safe_queries.go b/internal/db/safe_queries.go
+index 6cdeb1d..10dcd5f 100644
+--- a/internal/db/safe_queries.go
++++ b/internal/db/safe_queries.go
+@@ -88,10 +88,12 @@ var validEventTypes = map[string]bool{
+ 	"CategoriaServicoRenomeada":  true,
+ 	"CategoriaServicoDesativada": true,
+ 	"CategoriaServicoReativada":  true,
++	"CategoriaServicoDeletada":   true, // Tarefa 107
+ 	"ServicoExtraCriado":         true,
+ 	"ServicoExtraAtualizado":     true,
+ 	"ServicoExtraDesativado":     true,
+ 	"ServicoExtraReativado":      true,
++	"ServicoExtraDeletado":       true, // Tarefa 107
+ 	// ── MateriaDisciplinar ────────────────────────────────────────────────────
+ 	"MateriaCriada":           true,
+ 	"MateriaAtivada":          true,
+diff --git a/internal/domain/aggregates/categoria_servico.go b/internal/domain/aggregates/categoria_servico.go
+index 1683cd8..8fb6ace 100644
+--- a/internal/domain/aggregates/categoria_servico.go
++++ b/internal/domain/aggregates/categoria_servico.go
+@@ -14,6 +14,8 @@ type CategoriaServico struct {
+ 	CodigoAcademia string
+ 	Nome           string
+ 	Ativo          bool
++	Deletado       bool
++	DeletedAt      *time.Time
+ 	CriadoPor      uuid.UUID
+ 	CreatedAt      time.Time
+ 	UpdatedAt      time.Time
+@@ -62,6 +64,20 @@ type CategoriaServicoReativadaEvent struct {
+ func (e *CategoriaServicoReativadaEvent) GetPayload() interface{} { return e }
+ func (e *CategoriaServicoReativadaEvent) ToJSON() ([]byte, error) { return json.Marshal(e) }
+ 
++// CategoriaServicoDeletadaEvent — Tarefa 107. Deleção lógica e auditável,
++// mesmo padrão de CursoDeletado (internal/domain/aggregates/curso.go):
++// Motivo é opcional (recomendado para auditoria) e o registo nunca é
++// removido do ledger, só marcado como deletado na projeção.
++type CategoriaServicoDeletadaEvent struct {
++	BaseEvent
++	DeletadoPor uuid.UUID
++	Motivo      string
++	DeletedAt   time.Time
++}
++
++func (e *CategoriaServicoDeletadaEvent) GetPayload() interface{} { return e }
++func (e *CategoriaServicoDeletadaEvent) ToJSON() ([]byte, error) { return json.Marshal(e) }
++
+ func (c *CategoriaServico) Apply(event DomainEvent) error {
+ 	switch event.GetEventType() {
+ 	case "CategoriaServicoCriada":
+@@ -74,6 +90,8 @@ func (c *CategoriaServico) Apply(event DomainEvent) error {
+ 	case "CategoriaServicoReativada":
+ 		c.Ativo = true
+ 		return nil
++	case "CategoriaServicoDeletada":
++		return c.applyDeletada(event)
+ 	default:
+ 		return fmt.Errorf("tipo de evento desconhecido para CategoriaServico: %s", event.GetEventType())
+ 	}
+@@ -121,6 +139,24 @@ func (c *CategoriaServico) Reativar(p uuid.UUID) error {
+ 	c.RaiseEvent(e)
+ 	return c.Apply(e)
+ }
++
++// Deletar emite CategoriaServicoDeletada. Regra de negócio (mesmo padrão de
++// Curso.Deletar): a categoria precisa estar INATIVA antes de ser deletada —
++// evita deletar por engano uma categoria em uso corrente sem passar pela
++// desativação primeiro. Checagem de serviços ainda vinculados é feita pelo
++// HANDLER antes de chamar este método (o aggregate não tem acesso à
++// projeção de ServicoExtra).
++func (c *CategoriaServico) Deletar(deletadoPor uuid.UUID, motivo string) error {
++	if c.Deletado {
++		return fmt.Errorf("categoria de serviço já está deletada")
++	}
++	if c.Ativo {
++		return fmt.Errorf("desative a categoria antes de deletá-la")
++	}
++	e := &CategoriaServicoDeletadaEvent{BaseEvent: BaseEvent{EventType: "CategoriaServicoDeletada", AggregateID: c.ID}, DeletadoPor: deletadoPor, Motivo: strings.TrimSpace(motivo), DeletedAt: time.Now()}
++	c.RaiseEvent(e)
++	return c.Apply(e)
++}
+ func (c *CategoriaServico) applyCriada(e DomainEvent) error {
+ 	b, err := json.Marshal(e.GetPayload())
+ 	if err != nil {
+@@ -151,3 +187,18 @@ func (c *CategoriaServico) applyRenomeada(e DomainEvent) error {
+ 	c.UpdatedAt = p.UpdatedAt
+ 	return nil
+ }
++func (c *CategoriaServico) applyDeletada(e DomainEvent) error {
++	b, err := json.Marshal(e.GetPayload())
++	if err != nil {
++		return err
++	}
++	var p CategoriaServicoDeletadaEvent
++	if err = json.Unmarshal(b, &p); err != nil {
++		return err
++	}
++	c.Deletado = true
++	c.Ativo = false
++	c.DeletedAt = &p.DeletedAt
++	c.UpdatedAt = p.DeletedAt
++	return nil
++}
+diff --git a/internal/domain/aggregates/categoria_servico_test.go b/internal/domain/aggregates/categoria_servico_test.go
+index e105d51..27e1ac7 100644
+--- a/internal/domain/aggregates/categoria_servico_test.go
++++ b/internal/domain/aggregates/categoria_servico_test.go
+@@ -36,3 +36,29 @@ func TestCategoriaServicoLifecycle(t *testing.T) {
+ 		t.Fatal("duplicate reactivation accepted")
+ 	}
+ }
++
++// TestCategoriaServicoDeletar — Tarefa 107.
++func TestCategoriaServicoDeletar(t *testing.T) {
++	c := NewCategoriaServico()
++	if err := c.Criar("ACA", "Transporte", uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	if err := c.Deletar(uuid.New(), "sem uso"); err == nil {
++		t.Fatal("deleting an active category should be rejected")
++	}
++	if err := c.Desativar(uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	if err := c.Deletar(uuid.New(), "sem uso"); err != nil {
++		t.Fatal(err)
++	}
++	if !c.Deletado || c.Ativo {
++		t.Fatalf("unexpected state after delete: %+v", c)
++	}
++	if c.DeletedAt == nil {
++		t.Fatal("DeletedAt should be set")
++	}
++	if err := c.Deletar(uuid.New(), "de novo"); err == nil {
++		t.Fatal("deleting an already-deleted category should be rejected")
++	}
++}
+diff --git a/internal/domain/aggregates/servico_extra.go b/internal/domain/aggregates/servico_extra.go
+index 56d584a..afedbae 100644
+--- a/internal/domain/aggregates/servico_extra.go
++++ b/internal/domain/aggregates/servico_extra.go
+@@ -52,6 +52,8 @@ type ServicoExtra struct {
+ 	DetalhesPersonalizados map[string]DetalhePersonalizado
+ 
+ 	Ativo     bool
++	Deletado  bool
++	DeletedAt *time.Time
+ 	CriadoPor uuid.UUID
+ 	CreatedAt time.Time
+ 	UpdatedAt time.Time
+@@ -241,6 +243,19 @@ type ServicoExtraReativadoEvent struct {
+ func (e *ServicoExtraReativadoEvent) GetPayload() interface{} { return e }
+ func (e *ServicoExtraReativadoEvent) ToJSON() ([]byte, error) { return json.Marshal(e) }
+ 
++// ServicoExtraDeletadoEvent — Tarefa 107. Mesmo padrão de
++// CategoriaServicoDeletada/CursoDeletado: deleção lógica e auditável, nunca
++// remove o registo do ledger.
++type ServicoExtraDeletadoEvent struct {
++	BaseEvent
++	DeletadoPor uuid.UUID
++	Motivo      string
++	DeletedAt   time.Time
++}
++
++func (e *ServicoExtraDeletadoEvent) GetPayload() interface{} { return e }
++func (e *ServicoExtraDeletadoEvent) ToJSON() ([]byte, error) { return json.Marshal(e) }
++
+ // ============================================================================
+ // Apply dispatcher
+ // ============================================================================
+@@ -257,6 +272,8 @@ func (s *ServicoExtra) Apply(event DomainEvent) error {
+ 	case "ServicoExtraReativado":
+ 		s.Ativo = true
+ 		return nil
++	case "ServicoExtraDeletado":
++		return s.applyDeletado(event)
+ 	default:
+ 		return fmt.Errorf("tipo de evento desconhecido para ServicoExtra: %s", event.GetEventType())
+ 	}
+@@ -500,6 +517,28 @@ func (s *ServicoExtra) Reativar(reativadoPor uuid.UUID) error {
+ 	return s.Apply(event)
+ }
+ 
++// Deletar emite ServicoExtraDeletado. Regra de negócio (mesmo padrão de
++// CategoriaServico.Deletar/Curso.Deletar): o serviço precisa estar INATIVO
++// antes de ser deletado. Checagem de inscrições ativas/pendentes é feita
++// pelo HANDLER antes de chamar este método (o aggregate não tem acesso à
++// projeção de SolicitacaoServicoExtra).
++func (s *ServicoExtra) Deletar(deletadoPor uuid.UUID, motivo string) error {
++	if s.Deletado {
++		return fmt.Errorf("serviço extra já está deletado")
++	}
++	if s.Ativo {
++		return fmt.Errorf("desative o serviço antes de deletá-lo")
++	}
++	event := &ServicoExtraDeletadoEvent{
++		BaseEvent:   BaseEvent{EventType: "ServicoExtraDeletado", AggregateID: s.ID},
++		DeletadoPor: deletadoPor,
++		Motivo:      strings.TrimSpace(motivo),
++		DeletedAt:   time.Now(),
++	}
++	s.RaiseEvent(event)
++	return s.Apply(event)
++}
++
+ // ============================================================================
+ // Apply handlers
+ // ============================================================================
+@@ -594,6 +633,22 @@ func (s *ServicoExtra) applyAtualizado(event DomainEvent) error {
+ 	return nil
+ }
+ 
++func (s *ServicoExtra) applyDeletado(event DomainEvent) error {
++	data, err := json.Marshal(event.GetPayload())
++	if err != nil {
++		return err
++	}
++	var p ServicoExtraDeletadoEvent
++	if err := json.Unmarshal(data, &p); err != nil {
++		return err
++	}
++	s.Deletado = true
++	s.Ativo = false
++	s.DeletedAt = &p.DeletedAt
++	s.UpdatedAt = p.DeletedAt
++	return nil
++}
++
+ // ============================================================================
+ // Validação — espelha exatamente os CHECK constraints da migration 118
+ // ============================================================================
+diff --git a/internal/domain/aggregates/servico_extra_test.go b/internal/domain/aggregates/servico_extra_test.go
+index 0b65371..7443e86 100644
+--- a/internal/domain/aggregates/servico_extra_test.go
++++ b/internal/domain/aggregates/servico_extra_test.go
+@@ -52,6 +52,32 @@ func TestServicoExtraDeactivate(t *testing.T) {
+ 	}
+ }
+ 
++// TestServicoExtraDeletar — Tarefa 107.
++func TestServicoExtraDeletar(t *testing.T) {
++	s := NewServicoExtra()
++	if e := s.Criar("A", "x", "", nil, true, 1, "mensal", []string{"GPO"}, false, 0, nil, nil, nil, false, "", nil, uuid.New()); e != nil {
++		t.Fatal(e)
++	}
++	if e := s.Deletar(uuid.New(), "sem uso"); e == nil {
++		t.Fatal("deleting an active service should be rejected")
++	}
++	if e := s.Desativar(uuid.New()); e != nil {
++		t.Fatal(e)
++	}
++	if e := s.Deletar(uuid.New(), "sem uso"); e != nil {
++		t.Fatal(e)
++	}
++	if !s.Deletado || s.Ativo {
++		t.Fatalf("unexpected state after delete: deletado=%v ativo=%v", s.Deletado, s.Ativo)
++	}
++	if s.DeletedAt == nil {
++		t.Fatal("DeletedAt should be set")
++	}
++	if e := s.Deletar(uuid.New(), "de novo"); e == nil {
++		t.Fatal("deleting an already-deleted service should be rejected")
++	}
++}
++
+ func TestServicoExtraAtualizarDesligarPagoZeraCampos(t *testing.T) {
+ 	s := NewServicoExtra()
+ 	if err := s.Criar("A", "x", "", nil, true, 1, "mensal", []string{"GPO"}, false, 0, nil, nil, nil, false, "", nil, uuid.New()); err != nil {
+diff --git a/internal/handlers/categoria_servico_handlers.go b/internal/handlers/categoria_servico_handlers.go
+index e10ad14..e66467b 100644
+--- a/internal/handlers/categoria_servico_handlers.go
++++ b/internal/handlers/categoria_servico_handlers.go
+@@ -183,6 +183,47 @@ func toggleCategoriaServico(c *gin.Context, ativar bool) {
+ }
+ func DesativarCategoriaServico(c *gin.Context) { toggleCategoriaServico(c, false) }
+ func ReativarCategoriaServico(c *gin.Context)  { toggleCategoriaServico(c, true) }
++
++// DeletarCategoriaServico remove logicamente uma categoria de serviço.
++//
++// Regras de negócio (checadas ANTES de delegar ao aggregate, mesmo padrão
++// de DeletarCurso em cursos_handlers.go):
++//  1. Categoria deve pertencer à academia autenticada (loadCategoriaServico)
++//  2. Categoria deve estar inativa (checado pelo aggregate em Deletar)
++//  3. Não pode haver serviços (mesmo inativos, não deletados) ainda
++//     vinculados a esta categoria
++//
++// Evento CategoriaServicoDeletada gravado no ledger (auditável).
++func DeletarCategoriaServico(c *gin.Context) {
++	cat, id, ok := loadCategoriaServico(c)
++	if !ok {
++		return
++	}
++	var req struct {
++		Motivo string `json:"motivo"` // opcional, recomendado para auditoria
++	}
++	_ = c.ShouldBindJSON(&req)
++
++	vinculados, err := getServicosExtrasProjection(c).CountByCategoria(cat.GetID())
++	if err != nil {
++		utils.RespondWithInternalError(c, err)
++		return
++	}
++	if vinculados > 0 {
++		utils.RespondWithValidationError(c, fmt.Errorf("não é possível deletar: %d serviço(s) ainda estão vinculados a esta categoria", vinculados))
++		return
++	}
++
++	if err := cat.Deletar(id, req.Motivo); err != nil {
++		utils.RespondWithValidationError(c, err)
++		return
++	}
++	if err := getRepository(c).SaveWithAudit(cat, db.AuditContext{UserID: id.String(), UserType: "academia", IP: c.ClientIP()}); err != nil {
++		utils.RespondWithInternalError(c, err)
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"message": "categoria de serviço deletada com sucesso"})
++}
+ func ListarCategoriasServico(c *gin.Context) {
+ 	codigo, _, ok := academy(c)
+ 	if !ok {
+diff --git a/internal/handlers/servico_extra_handlers.go b/internal/handlers/servico_extra_handlers.go
+index 72ba16f..27d91db 100644
+--- a/internal/handlers/servico_extra_handlers.go
++++ b/internal/handlers/servico_extra_handlers.go
+@@ -352,6 +352,47 @@ func toggle(c *gin.Context, on bool) {
+ }
+ func DesativarServicoExtra(c *gin.Context) { toggle(c, false) }
+ func ReativarServicoExtra(c *gin.Context)  { toggle(c, true) }
++
++// DeletarServicoExtra remove logicamente um serviço extra.
++//
++// Regras de negócio (checadas ANTES de delegar ao aggregate, mesmo padrão
++// de DeletarCurso/DeletarCategoriaServico):
++//  1. Serviço deve pertencer à academia autenticada (loadServico)
++//  2. Serviço deve estar inativo (checado pelo aggregate em Deletar)
++//  3. Não pode haver solicitações pendentes, aprovadas-pendentes-de-
++//     pagamento ou vinculadas para este serviço
++//
++// Evento ServicoExtraDeletado gravado no ledger (auditável).
++func DeletarServicoExtra(c *gin.Context) {
++	s, id, ok := loadServico(c)
++	if !ok {
++		return
++	}
++	var req struct {
++		Motivo string `json:"motivo"` // opcional, recomendado para auditoria
++	}
++	_ = c.ShouldBindJSON(&req)
++
++	ativas, err := getSolicitacoesServicoExtraProjection(c).CountAtivasPorServico(s.GetID())
++	if err != nil {
++		utils.RespondWithInternalError(c, err)
++		return
++	}
++	if ativas > 0 {
++		utils.RespondWithValidationError(c, fmt.Errorf("não é possível deletar: %d inscrição(ões) pendente(s) ou ativa(s) neste serviço", ativas))
++		return
++	}
++
++	if err := s.Deletar(id, req.Motivo); err != nil {
++		utils.RespondWithValidationError(c, err)
++		return
++	}
++	if err := getRepository(c).SaveWithAudit(s, db.AuditContext{UserID: id.String(), UserType: "academia", IP: c.ClientIP()}); err != nil {
++		utils.RespondWithInternalError(c, err)
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"message": "serviço extra deletado com sucesso"})
++}
+ func ListarServicosExtrasAcademia(c *gin.Context) {
+ 	codigo, _, ok := academy(c)
+ 	if !ok {
+diff --git a/internal/projections/categoria_servico_projection.go b/internal/projections/categoria_servico_projection.go
+index bea5dfd..c5f0b6a 100644
+--- a/internal/projections/categoria_servico_projection.go
++++ b/internal/projections/categoria_servico_projection.go
+@@ -41,6 +41,8 @@ func (p *CategoriaServicoProjection) Handle(e db.Event) error {
+ 		return p.active(e, false)
+ 	case "CategoriaServicoReativada":
+ 		return p.active(e, true)
++	case "CategoriaServicoDeletada":
++		return p.deleted(e)
+ 	}
+ 	return nil
+ }
+@@ -103,6 +105,19 @@ func (p *CategoriaServicoProjection) active(e db.Event, ativo bool) error {
+ 	_, err := p.client.DB().Exec(`UPDATE projection_categorias_servico SET ativo=$1,version=$2,last_event_id=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$4`, ativo, e.EventVersion, e.EventID, e.AggregateID)
+ 	return err
+ }
++
++// deleted — Tarefa 107. Deleção lógica: marca deleted_at e força ativo=false
++// (o comando Deletar já exige que a categoria esteja inativa antes, mas o
++// applyDeletada do aggregate também zera Ativo por segurança — replicado
++// aqui na projeção pelo mesmo motivo).
++func (p *CategoriaServicoProjection) deleted(e db.Event) error {
++	var x struct{ DeletedAt time.Time }
++	if err := json.Unmarshal(e.Payload, &x); err != nil {
++		return err
++	}
++	_, err := p.client.DB().Exec(`UPDATE projection_categorias_servico SET deleted_at=$1,ativo=false,version=$2,last_event_id=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$4`, x.DeletedAt, e.EventVersion, e.EventID, e.AggregateID)
++	return err
++}
+ func (p *CategoriaServicoProjection) scan(row interface{ Scan(...interface{}) error }) (*CategoriaServicoDTO, error) {
+ 	var d CategoriaServicoDTO
+ 	err := row.Scan(&d.ID, &d.CodigoAcademia, &d.Nome, &d.Ativo, &d.CreatedAt, &d.UpdatedAt)
+@@ -122,7 +137,7 @@ func (p *CategoriaServicoProjection) GetByID(id uuid.UUID) (*CategoriaServicoDTO
+ 	return d, err
+ }
+ func (p *CategoriaServicoProjection) GetByAcademia(codigo string, ativosOnly bool) ([]CategoriaServicoDTO, error) {
+-	q := `SELECT ` + categoriaServicoCols + ` FROM projection_categorias_servico WHERE codigo_academia=$1`
++	q := `SELECT ` + categoriaServicoCols + ` FROM projection_categorias_servico WHERE codigo_academia=$1 AND deleted_at IS NULL`
+ 	if ativosOnly {
+ 		q += ` AND ativo=true`
+ 	}
+diff --git a/internal/projections/servico_extra_projection.go b/internal/projections/servico_extra_projection.go
+index f366554..8dd8407 100644
+--- a/internal/projections/servico_extra_projection.go
++++ b/internal/projections/servico_extra_projection.go
+@@ -42,6 +42,8 @@ func (p *ServicoExtraProjection) Handle(e db.Event) error {
+ 		return p.active(e, false)
+ 	case "ServicoExtraReativado":
+ 		return p.active(e, true)
++	case "ServicoExtraDeletado":
++		return p.deleted(e)
+ 	}
+ 	return nil
+ }
+@@ -164,6 +166,16 @@ func (p *ServicoExtraProjection) active(e db.Event, v bool) error {
+ 	return err
+ }
+ 
++// deleted — Tarefa 107. Mesmo padrão de CategoriaServicoProjection.deleted.
++func (p *ServicoExtraProjection) deleted(e db.Event) error {
++	var x struct{ DeletedAt time.Time }
++	if err := json.Unmarshal(e.Payload, &x); err != nil {
++		return err
++	}
++	_, err := p.client.DB().Exec(`UPDATE projection_servicos_extras SET deleted_at=$1,ativo=false,version=$2,last_event_id=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$4`, x.DeletedAt, e.EventVersion, e.EventID, e.AggregateID)
++	return err
++}
++
+ func (p *ServicoExtraProjection) scan(row interface{ Scan(...interface{}) error }) (*ServicoExtraDTO, error) {
+ 	var d ServicoExtraDTO
+ 	var detalhes []byte
+@@ -185,7 +197,7 @@ func (p *ServicoExtraProjection) GetByID(id uuid.UUID) (*ServicoExtraDTO, error)
+ 	return d, e
+ }
+ func (p *ServicoExtraProjection) GetByAcademia(codigo string, ativosOnly bool) ([]ServicoExtraDTO, error) {
+-	q := `SELECT ` + servicoCols + ` FROM projection_servicos_extras WHERE codigo_academia=$1`
++	q := `SELECT ` + servicoCols + ` FROM projection_servicos_extras WHERE codigo_academia=$1 AND deleted_at IS NULL`
+ 	if ativosOnly {
+ 		q += ` AND ativo=true`
+ 	}
+@@ -205,3 +217,13 @@ func (p *ServicoExtraProjection) GetByAcademia(codigo string, ativosOnly bool) (
+ 	}
+ 	return out, rows.Err()
+ }
++
++// CountByCategoria — Tarefa 107. Usada por DeletarCategoriaServico para
++// bloquear a deleção de uma categoria enquanto ainda houver serviços
++// (ativos ou inativos, mas não deletados) vinculados a ela — deletar a
++// categoria não reatribui nem limpa esse vínculo automaticamente.
++func (p *ServicoExtraProjection) CountByCategoria(categoriaID uuid.UUID) (int, error) {
++	var n int
++	err := p.client.DB().QueryRow(`SELECT COUNT(*) FROM projection_servicos_extras WHERE categoria_servico_id=$1 AND deleted_at IS NULL`, categoriaID).Scan(&n)
++	return n, err
++}
+diff --git a/internal/projections/solicitacao_servico_extra_projection.go b/internal/projections/solicitacao_servico_extra_projection.go
+index c11e7e9..e5c2bcb 100644
+--- a/internal/projections/solicitacao_servico_extra_projection.go
++++ b/internal/projections/solicitacao_servico_extra_projection.go
+@@ -91,4 +91,15 @@ func (p *SolicitacaoServicoExtraProjection) ExisteAtiva(id uuid.UUID, codigo str
+ 	err := p.client.DB().QueryRow(`SELECT EXISTS(SELECT 1 FROM projection_solicitacoes_servico_extra WHERE servico_extra_id=$1 AND codigo_estudante=$2 AND status IN ('pendente','aprovada_pendente_pagamento_taxa_inscricao','vinculada'))`, id, codigo).Scan(&ok)
+ 	return ok, err
+ }
++
++// CountAtivasPorServico — Tarefa 107. Usada por DeletarServicoExtra para
++// bloquear a deleção de um serviço enquanto ainda houver solicitações
++// pendentes, aprovadas-pendentes-de-pagamento ou vinculadas (qualquer
++// estudante) — deletar o serviço não cancela essas solicitações
++// automaticamente.
++func (p *SolicitacaoServicoExtraProjection) CountAtivasPorServico(servicoID uuid.UUID) (int, error) {
++	var n int
++	err := p.client.DB().QueryRow(`SELECT COUNT(*) FROM projection_solicitacoes_servico_extra WHERE servico_extra_id=$1 AND status IN ('pendente','aprovada_pendente_pagamento_taxa_inscricao','vinculada')`, servicoID).Scan(&n)
++	return n, err
++}
+ func (p *SolicitacaoServicoExtraProjection) unused() sql.NullString { return sql.NullString{} }
