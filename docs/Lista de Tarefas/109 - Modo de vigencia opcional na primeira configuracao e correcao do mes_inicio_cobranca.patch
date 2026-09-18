@@ -1,0 +1,297 @@
+diff --git a/internal/finance/matricula.go b/internal/finance/matricula.go
+index 464f501..3ab6b90 100644
+--- a/internal/finance/matricula.go
++++ b/internal/finance/matricula.go
+@@ -152,9 +152,6 @@ func (s *Service) validateConfiguracaoMatricula(ctx context.Context, in *Matricu
+ 	if in.CodigoAcademia == "" || !nivelValido(in.Nivel) || in.AnoAcademico == "" {
+ 		return errors.New("codigo_academia, nivel e ano_academico são obrigatórios")
+ 	}
+-	if !modoVigenciaValido(in.ModoVigencia) {
+-		return errors.New(`modo_vigencia é obrigatório: informe "cobrancas_pendentes" ou "a_partir_da_atualizacao"`)
+-	}
+ 	if in.Valor <= 0 || !amountsEqual(roundAmount(in.Valor), in.Valor) {
+ 		return errors.New("valor deve ser maior que zero e ter no máximo duas casas decimais")
+ 	}
+@@ -190,7 +187,7 @@ func (s *Service) validateConfiguracaoMatricula(ctx context.Context, in *Matricu
+ 		if json.Unmarshal(anosRaw, &anos) != nil || !contains(anos, in.AnoAcademico) {
+ 			return errors.New("ano acadêmico do " + utils.RotuloEnsinoFundamentalGenerico + " não é oferecido pela academia")
+ 		}
+-		return nil
++		return s.resolverModoVigenciaMatricula(ctx, in, nil)
+ 	}
+ 	if in.CursoID == nil || strings.TrimSpace(*in.CursoID) == "" {
+ 		return errors.New("curso_id é obrigatório para ensino médio e superior")
+@@ -210,6 +207,36 @@ func (s *Service) validateConfiguracaoMatricula(ctx context.Context, in *Matricu
+ 	if cod != in.CodigoAcademia || tipo != in.Nivel || json.Unmarshal(anosCurso, &anos) != nil || !contains(anos, in.AnoAcademico) {
+ 		return errors.New("curso ou ano_academico não é oferecido pela academia")
+ 	}
++	return s.resolverModoVigenciaMatricula(ctx, in, in.CursoID)
++}
++
++// resolverModoVigenciaMatricula espelha resolverModoVigenciaMensalidade
++// (ver mensalidade.go) para a taxa de matrícula: só exige modo_vigencia
++// quando o escopo já tem uma configuração vigente agora (ou seja, esta
++// chamada é uma edição). Na primeira configuração de um escopo é
++// impossível já existir uma solicitação "aprovada_pendente_pagamento_
++// matricula" para ele — a aprovação só entra nesse estado quando
++// ResolveMatriculaConfiguracao já encontra uma configuração (ver
++// solicitacao_matricula_handlers.go) —, então modo_vigencia não tem efeito
++// nenhum sobre reprecificarSolicitacoesMatriculaPendentes nesse caso, e não
++// deve ser exigido do chamador. Se vier vazio, aplicamos
++// "cobrancas_pendentes" pelo mesmo motivo descrito lá.
++func (s *Service) resolverModoVigenciaMatricula(ctx context.Context, in *MatriculaConfiguracaoInput, cursoID *string) error {
++	_, err := s.ResolveMatriculaConfiguracao(ctx, in.CodigoAcademia, in.Nivel, in.AnoAcademico, cursoID)
++	if err != nil && !errors.Is(err, ErrNotFound) {
++		return err
++	}
++	primeiraConfiguracao := errors.Is(err, ErrNotFound)
++	if primeiraConfiguracao && in.ModoVigencia == "" {
++		in.ModoVigencia = ModoVigenciaCobrancasPendentes
++		return nil
++	}
++	if !modoVigenciaValido(in.ModoVigencia) {
++		if primeiraConfiguracao {
++			return errors.New(`modo_vigencia inválido: informe "cobrancas_pendentes", "a_partir_da_atualizacao" ou deixe em branco`)
++		}
++		return errors.New(`modo_vigencia é obrigatório: informe "cobrancas_pendentes" ou "a_partir_da_atualizacao"`)
++	}
+ 	return nil
+ }
+ func (s *Service) IniciarPagamentoMatricula(ctx context.Context, in MatriculaPagamentoInput, ip string) (MatriculaPagamentoView, error) {
+diff --git a/internal/finance/mensalidade.go b/internal/finance/mensalidade.go
+index 2e375d7..f6fc194 100644
+--- a/internal/finance/mensalidade.go
++++ b/internal/finance/mensalidade.go
+@@ -442,9 +442,6 @@ func (s *Service) validateConfiguracaoMensalidade(ctx context.Context, in *Mensa
+ 	if in.Valor <= 0 || roundAmount(in.Valor) != in.Valor {
+ 		return errors.New("valor deve ser maior que zero e ter no máximo duas casas decimais")
+ 	}
+-	if !modoVigenciaValido(in.ModoVigencia) {
+-		return errors.New(`modo_vigencia é obrigatório: informe "cobrancas_pendentes" ou "a_partir_da_atualizacao"`)
+-	}
+ 	if in.MesFimCobranca != 6 && in.MesFimCobranca != 7 {
+ 		return errors.New("mes_fim_cobranca deve ser 6 ou 7")
+ 	}
+@@ -493,7 +490,7 @@ func (s *Service) validateConfiguracaoMensalidade(ctx context.Context, in *Mensa
+ 		if err := jsonUnmarshal(anosRaw, &anos); err != nil || !contains(anos, in.AnoAcademico) {
+ 			return errors.New("ano acadêmico do " + utils.RotuloEnsinoFundamentalGenerico + " não é oferecido pela academia")
+ 		}
+-		return nil
++		return s.resolverModoVigenciaMensalidade(ctx, in, nil)
+ 	}
+ 	if in.CursoID == nil || strings.TrimSpace(*in.CursoID) == "" {
+ 		return errors.New("curso_id é obrigatório para ensino médio e superior")
+@@ -515,6 +512,36 @@ func (s *Service) validateConfiguracaoMensalidade(ctx context.Context, in *Mensa
+ 	if codigoCurso != in.CodigoAcademia || cursoTipo != in.Nivel || jsonUnmarshal(anosRawCurso, &anos) != nil || !contains(anos, in.AnoAcademico) {
+ 		return errors.New("curso ou ano_academico não é oferecido pela academia")
+ 	}
++	return s.resolverModoVigenciaMensalidade(ctx, in, &cursoID)
++}
++
++// resolverModoVigenciaMensalidade decide se modo_vigencia é obrigatório para
++// esta chamada. Quando o escopo (academia+nível+ano_academico+curso) ainda
++// não tem nenhuma configuração ativa agora — primeira configuração da
++// mensalidade —, nenhum mês pode estar "pendente" sob um preço anterior:
++// sem configuração alguma, ListMensalidades nem chega a materializar o mês
++// como devido (ver resolveConfiguracaoEfetiva), então modo_vigencia não
++// muda nada nesse caso e não deve ser exigido do chamador. Se vier vazio,
++// aplicamos "cobrancas_pendentes" (o mais próximo de "vale para todos",
++// que é o comportamento natural de uma primeira configuração). Quando já
++// existe uma configuração ativa para o escopo, esta chamada é uma
++// atualização e a escolha volta a ser obrigatória, exatamente como antes.
++func (s *Service) resolverModoVigenciaMensalidade(ctx context.Context, in *MensalidadeConfiguracaoInput, cursoID *uuid.UUID) error {
++	_, err := s.resolveConfiguracao(ctx, in.CodigoAcademia, in.Nivel, in.AnoAcademico, cursoID, time.Now().UTC())
++	if err != nil && !errors.Is(err, ErrNotFound) {
++		return err
++	}
++	primeiraConfiguracao := errors.Is(err, ErrNotFound)
++	if primeiraConfiguracao && in.ModoVigencia == "" {
++		in.ModoVigencia = ModoVigenciaCobrancasPendentes
++		return nil
++	}
++	if !modoVigenciaValido(in.ModoVigencia) {
++		if primeiraConfiguracao {
++			return errors.New(`modo_vigencia inválido: informe "cobrancas_pendentes", "a_partir_da_atualizacao" ou deixe em branco`)
++		}
++		return errors.New(`modo_vigencia é obrigatório: informe "cobrancas_pendentes" ou "a_partir_da_atualizacao"`)
++	}
+ 	return nil
+ }
+ 
+@@ -540,8 +567,21 @@ func (s *Service) validateMesInicioCobranca(ctx context.Context, in *MesInicioCo
+ 	if err != nil {
+ 		return err
+ 	}
+-	if menor.Valid && posicaoNoAnoLetivo(in.MesInicio, natural) > posicaoNoAnoLetivo(int(menor.Int64), natural) {
+-		return errors.New("mes_inicio não pode ser posterior ao mes_fim_cobranca configurado")
++	// limiteFimAnoLetivo é o mes_fim_cobranca mais restritivo já configurado
++	// (em qualquer nível) para esta academia. Enquanto nenhuma configuração
++	// de mensalidade existir ainda, essa consulta não retorna nada
++	// (menor.Valid é false) — sem um teto configurado, mes_inicio ficava
++	// livre para aceitar qualquer mês (inclusive fora do ano letivo, como
++	// agosto). Usamos 7 como teto-padrão nesse caso: é o maior valor que
++	// mes_fim_cobranca pode assumir (ver validateConfiguracaoMensalidade),
++	// então mes_inicio continua restrito ao período letivo mesmo antes de
++	// qualquer preço ser configurado.
++	limiteFimAnoLetivo := 7
++	if menor.Valid {
++		limiteFimAnoLetivo = int(menor.Int64)
++	}
++	if posicaoNoAnoLetivo(in.MesInicio, natural) > posicaoNoAnoLetivo(limiteFimAnoLetivo, natural) {
++		return errors.New("mes_inicio deve estar dentro do período do ano letivo")
+ 	}
+ 	return nil
+ }
+diff --git a/internal/finance/modo_vigencia_primeira_configuracao_integration_test.go b/internal/finance/modo_vigencia_primeira_configuracao_integration_test.go
+new file mode 100644
+index 0000000..9295631
+--- /dev/null
++++ b/internal/finance/modo_vigencia_primeira_configuracao_integration_test.go
+@@ -0,0 +1,147 @@
++package finance
++
++import (
++	"context"
++	"testing"
++
++	"github.com/google/uuid"
++)
++
++// TestIntegrationMensalidadePrimeiraConfiguracaoNaoExigeModoVigencia cobre o
++// comportamento pedido: a primeira configuração de mensalidade de um escopo
++// não deve exigir modo_vigencia (aplica-se implicitamente a "cobrancas_
++// pendentes", o equivalente a "vale para todos"), mas a segunda chamada
++// para o MESMO escopo (uma edição, já que a primeira ficou vigente) volta a
++// exigir a escolha, exatamente como antes.
++func TestIntegrationMensalidadePrimeiraConfiguracaoNaoExigeModoVigencia(t *testing.T) {
++	client := integrationClient(t)
++	service := NewService(client)
++	academia := mensalidadeCodigo()
++	seedMensalidadeAcademia(t, client, academia, "private", "fundamental", "2026_2027")
++	configureIntegrationCredential(t, service, ContextoAcademia, academia)
++
++	primeira, err := service.ConfigureMensalidade(context.Background(), MensalidadeConfiguracaoInput{
++		CodigoAcademia:   academia,
++		Nivel:            NivelFundamental,
++		AnoAcademico:     "6_ano_fundamental",
++		Valor:            100,
++		MesFimCobranca:   7,
++		MetodosPagamento: []string{"REF"},
++	}, uuid.NewString(), "academia", "127.0.0.1")
++	if err != nil {
++		t.Fatalf("primeira configuração sem modo_vigencia foi rejeitada: %v", err)
++	}
++	if primeira.Valor != 100 {
++		t.Fatalf("valor da primeira configuração = %v, queria 100", primeira.Valor)
++	}
++
++	var modoPersistido string
++	if err := client.DB().QueryRowContext(context.Background(),
++		`SELECT modo_vigencia FROM financeiro_mensalidade_configuracoes WHERE codigo_academia=$1 AND nivel=$2 AND ano_academico=$3 ORDER BY sequencia DESC LIMIT 1`,
++		academia, NivelFundamental, "6_ano_fundamental").Scan(&modoPersistido); err != nil {
++		t.Fatal(err)
++	}
++	if modoPersistido != ModoVigenciaCobrancasPendentes {
++		t.Fatalf("modo_vigencia persistido = %q, queria %q (default da primeira configuração)", modoPersistido, ModoVigenciaCobrancasPendentes)
++	}
++
++	if _, err := service.ConfigureMensalidade(context.Background(), MensalidadeConfiguracaoInput{
++		CodigoAcademia:   academia,
++		Nivel:            NivelFundamental,
++		AnoAcademico:     "6_ano_fundamental",
++		Valor:            120,
++		MesFimCobranca:   7,
++		MetodosPagamento: []string{"REF"},
++	}, uuid.NewString(), "academia", "127.0.0.1"); err == nil {
++		t.Fatal("edição sem modo_vigencia foi aceita: deveria exigir a escolha, já existe configuração vigente")
++	}
++
++	if _, err := service.ConfigureMensalidade(context.Background(), MensalidadeConfiguracaoInput{
++		CodigoAcademia:   academia,
++		Nivel:            NivelFundamental,
++		AnoAcademico:     "6_ano_fundamental",
++		Valor:            120,
++		MesFimCobranca:   7,
++		MetodosPagamento: []string{"REF"},
++		ModoVigencia:     ModoVigenciaAPartirDaAtualizacao,
++	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("edição com modo_vigencia explícito foi rejeitada: %v", err)
++	}
++}
++
++// TestIntegrationMatriculaPrimeiraConfiguracaoNaoExigeModoVigencia é o
++// espelho do teste acima para a taxa de matrícula.
++func TestIntegrationMatriculaPrimeiraConfiguracaoNaoExigeModoVigencia(t *testing.T) {
++	client := integrationClient(t)
++	service := NewService(client)
++	academia := mensalidadeCodigo()
++	seedMensalidadeAcademia(t, client, academia, "private", "fundamental", "2026_2027")
++	configureIntegrationCredential(t, service, ContextoAcademia, academia)
++
++	primeira, err := service.ConfigureMatricula(context.Background(), MatriculaConfiguracaoInput{
++		CodigoAcademia:   academia,
++		Nivel:            NivelFundamental,
++		AnoAcademico:     "6_ano_fundamental",
++		Valor:            50,
++		MetodosPagamento: []string{"REF"},
++	}, uuid.NewString(), "academia", "127.0.0.1")
++	if err != nil {
++		t.Fatalf("primeira configuração sem modo_vigencia foi rejeitada: %v", err)
++	}
++	if primeira.Valor != 50 {
++		t.Fatalf("valor da primeira configuração = %v, queria 50", primeira.Valor)
++	}
++
++	if _, err := service.ConfigureMatricula(context.Background(), MatriculaConfiguracaoInput{
++		CodigoAcademia:   academia,
++		Nivel:            NivelFundamental,
++		AnoAcademico:     "6_ano_fundamental",
++		Valor:            80,
++		MetodosPagamento: []string{"REF"},
++	}, uuid.NewString(), "academia", "127.0.0.1"); err == nil {
++		t.Fatal("edição sem modo_vigencia foi aceita: deveria exigir a escolha, já existe configuração vigente")
++	}
++
++	if _, err := service.ConfigureMatricula(context.Background(), MatriculaConfiguracaoInput{
++		CodigoAcademia:   academia,
++		Nivel:            NivelFundamental,
++		AnoAcademico:     "6_ano_fundamental",
++		Valor:            80,
++		MetodosPagamento: []string{"REF"},
++		ModoVigencia:     ModoVigenciaAPartirDaAtualizacao,
++	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("edição com modo_vigencia explícito foi rejeitada: %v", err)
++	}
++}
++
++// TestIntegrationMesInicioCobrancaRespeitaAnoLetivoSemConfiguracaoDeMensalidade
++// prova o bug corrigido: antes, sem nenhuma configuração de mensalidade
++// ainda cadastrada para a academia, validateMesInicioCobranca não aplicava
++// NENHUM limite — qualquer mês (inclusive agosto, fora do ano letivo) era
++// aceito. Agora o limite-padrão (mes_fim_cobranca=7) vale mesmo sem
++// nenhuma configuração de preço existir.
++func TestIntegrationMesInicioCobrancaRespeitaAnoLetivoSemConfiguracaoDeMensalidade(t *testing.T) {
++	client := integrationClient(t)
++	service := NewService(client)
++
++	escola := mensalidadeCodigo()
++	seedMensalidadeAcademia(t, client, escola, "private", "fundamental", "2026_2027")
++	if err := service.validateMesInicioCobranca(context.Background(), &MesInicioCobrancaInput{CodigoAcademia: escola, AnoLetivo: "2026_2027", MesInicio: 8}); err == nil {
++		t.Fatal("agosto (fora do ano letivo) foi aceito sem nenhuma configuração de mensalidade existir")
++	}
++	if err := service.validateMesInicioCobranca(context.Background(), &MesInicioCobrancaInput{CodigoAcademia: escola, AnoLetivo: "2026_2027", MesInicio: 9}); err != nil {
++		t.Fatalf("setembro (início natural do ano letivo escolar) foi rejeitado: %v", err)
++	}
++	if err := service.validateMesInicioCobranca(context.Background(), &MesInicioCobrancaInput{CodigoAcademia: escola, AnoLetivo: "2026_2027", MesInicio: 7}); err != nil {
++		t.Fatalf("julho (último mês possível, teto padrão) foi rejeitado: %v", err)
++	}
++
++	superior := mensalidadeCodigo()
++	seedMensalidadeAcademia(t, client, superior, "private", "superior", "2026_2027")
++	if err := service.validateMesInicioCobranca(context.Background(), &MesInicioCobrancaInput{CodigoAcademia: superior, AnoLetivo: "2026_2027", MesInicio: 9}); err == nil {
++		t.Fatal("setembro (anterior ao início natural do ensino superior, outubro) foi aceito sem nenhuma configuração de mensalidade existir")
++	}
++	if err := service.validateMesInicioCobranca(context.Background(), &MesInicioCobrancaInput{CodigoAcademia: superior, AnoLetivo: "2026_2027", MesInicio: 10}); err != nil {
++		t.Fatalf("outubro (início natural do ensino superior) foi rejeitado: %v", err)
++	}
++}
