@@ -41,6 +41,8 @@ func (p *CategoriaServicoProjection) Handle(e db.Event) error {
 		return p.active(e, false)
 	case "CategoriaServicoReativada":
 		return p.active(e, true)
+	case "CategoriaServicoDeletada":
+		return p.deleted(e)
 	}
 	return nil
 }
@@ -103,6 +105,19 @@ func (p *CategoriaServicoProjection) active(e db.Event, ativo bool) error {
 	_, err := p.client.DB().Exec(`UPDATE projection_categorias_servico SET ativo=$1,version=$2,last_event_id=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$4`, ativo, e.EventVersion, e.EventID, e.AggregateID)
 	return err
 }
+
+// deleted — Tarefa 107. Deleção lógica: marca deleted_at e força ativo=false
+// (o comando Deletar já exige que a categoria esteja inativa antes, mas o
+// applyDeletada do aggregate também zera Ativo por segurança — replicado
+// aqui na projeção pelo mesmo motivo).
+func (p *CategoriaServicoProjection) deleted(e db.Event) error {
+	var x struct{ DeletedAt time.Time }
+	if err := json.Unmarshal(e.Payload, &x); err != nil {
+		return err
+	}
+	_, err := p.client.DB().Exec(`UPDATE projection_categorias_servico SET deleted_at=$1,ativo=false,version=$2,last_event_id=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$4`, x.DeletedAt, e.EventVersion, e.EventID, e.AggregateID)
+	return err
+}
 func (p *CategoriaServicoProjection) scan(row interface{ Scan(...interface{}) error }) (*CategoriaServicoDTO, error) {
 	var d CategoriaServicoDTO
 	err := row.Scan(&d.ID, &d.CodigoAcademia, &d.Nome, &d.Ativo, &d.CreatedAt, &d.UpdatedAt)
@@ -122,7 +137,7 @@ func (p *CategoriaServicoProjection) GetByID(id uuid.UUID) (*CategoriaServicoDTO
 	return d, err
 }
 func (p *CategoriaServicoProjection) GetByAcademia(codigo string, ativosOnly bool) ([]CategoriaServicoDTO, error) {
-	q := `SELECT ` + categoriaServicoCols + ` FROM projection_categorias_servico WHERE codigo_academia=$1`
+	q := `SELECT ` + categoriaServicoCols + ` FROM projection_categorias_servico WHERE codigo_academia=$1 AND deleted_at IS NULL`
 	if ativosOnly {
 		q += ` AND ativo=true`
 	}

@@ -91,4 +91,15 @@ func (p *SolicitacaoServicoExtraProjection) ExisteAtiva(id uuid.UUID, codigo str
 	err := p.client.DB().QueryRow(`SELECT EXISTS(SELECT 1 FROM projection_solicitacoes_servico_extra WHERE servico_extra_id=$1 AND codigo_estudante=$2 AND status IN ('pendente','aprovada_pendente_pagamento_taxa_inscricao','vinculada'))`, id, codigo).Scan(&ok)
 	return ok, err
 }
+
+// CountAtivasPorServico — Tarefa 107. Usada por DeletarServicoExtra para
+// bloquear a deleção de um serviço enquanto ainda houver solicitações
+// pendentes, aprovadas-pendentes-de-pagamento ou vinculadas (qualquer
+// estudante) — deletar o serviço não cancela essas solicitações
+// automaticamente.
+func (p *SolicitacaoServicoExtraProjection) CountAtivasPorServico(servicoID uuid.UUID) (int, error) {
+	var n int
+	err := p.client.DB().QueryRow(`SELECT COUNT(*) FROM projection_solicitacoes_servico_extra WHERE servico_extra_id=$1 AND status IN ('pendente','aprovada_pendente_pagamento_taxa_inscricao','vinculada')`, servicoID).Scan(&n)
+	return n, err
+}
 func (p *SolicitacaoServicoExtraProjection) unused() sql.NullString { return sql.NullString{} }

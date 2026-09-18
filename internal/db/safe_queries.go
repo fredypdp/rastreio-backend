@@ -88,10 +88,12 @@ var validEventTypes = map[string]bool{
 	"CategoriaServicoRenomeada":  true,
 	"CategoriaServicoDesativada": true,
 	"CategoriaServicoReativada":  true,
+	"CategoriaServicoDeletada":   true, // Tarefa 107
 	"ServicoExtraCriado":         true,
 	"ServicoExtraAtualizado":     true,
 	"ServicoExtraDesativado":     true,
 	"ServicoExtraReativado":      true,
+	"ServicoExtraDeletado":       true, // Tarefa 107
 	// ── MateriaDisciplinar ────────────────────────────────────────────────────
 	"MateriaCriada":           true,
 	"MateriaAtivada":          true,

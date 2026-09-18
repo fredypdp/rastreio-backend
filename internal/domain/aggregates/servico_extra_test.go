@@ -52,6 +52,32 @@ func TestServicoExtraDeactivate(t *testing.T) {
 	}
 }
 
+// TestServicoExtraDeletar — Tarefa 107.
+func TestServicoExtraDeletar(t *testing.T) {
+	s := NewServicoExtra()
+	if e := s.Criar("A", "x", "", nil, true, 1, "mensal", []string{"GPO"}, false, 0, nil, nil, nil, false, "", nil, uuid.New()); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.Deletar(uuid.New(), "sem uso"); e == nil {
+		t.Fatal("deleting an active service should be rejected")
+	}
+	if e := s.Desativar(uuid.New()); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.Deletar(uuid.New(), "sem uso"); e != nil {
+		t.Fatal(e)
+	}
+	if !s.Deletado || s.Ativo {
+		t.Fatalf("unexpected state after delete: deletado=%v ativo=%v", s.Deletado, s.Ativo)
+	}
+	if s.DeletedAt == nil {
+		t.Fatal("DeletedAt should be set")
+	}
+	if e := s.Deletar(uuid.New(), "de novo"); e == nil {
+		t.Fatal("deleting an already-deleted service should be rejected")
+	}
+}
+
 func TestServicoExtraAtualizarDesligarPagoZeraCampos(t *testing.T) {
 	s := NewServicoExtra()
 	if err := s.Criar("A", "x", "", nil, true, 1, "mensal", []string{"GPO"}, false, 0, nil, nil, nil, false, "", nil, uuid.New()); err != nil {

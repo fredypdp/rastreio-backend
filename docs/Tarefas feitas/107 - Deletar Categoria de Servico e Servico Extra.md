@@ -96,10 +96,10 @@ Depois que os Passos 1–3 passarem sem problema:
 
 ## Resumo das mudanças (checklist final)
 
-- [ ] Patch aplicado (`git apply`) sem conflitos
-- [ ] `go build ./...` limpo
-- [ ] `go vet ./...` limpo
-- [ ] `go test ./...` — todos os pacotes `ok`, incluindo `TestCategoriaServicoDeletar` e `TestServicoExtraDeletar`
-- [ ] `internal/db/safe_queries.go` contém `CategoriaServicoDeletada` e `ServicoExtraDeletado`
-- [ ] Migration `128_deletar_categoria_servico_e_servico_extra.sql` presente em `migrations/`
-- [ ] Arquivos desta tarefa movidos para `docs/Tarefas feitas/`
+- [x] Patch aplicado (`git apply`) sem conflitos
+- [x] `go build ./...` limpo
+- [x] `go vet ./...` limpo
+- [x] `go test ./...` — todos os pacotes `ok`, incluindo `TestCategoriaServicoDeletar` e `TestServicoExtraDeletar`
+- [x] `internal/db/safe_queries.go` contém `CategoriaServicoDeletada` e `ServicoExtraDeletado`
+- [x] Migration `128_deletar_categoria_servico_e_servico_extra.sql` presente em `migrations/`
+- [x] Arquivos desta tarefa movidos para `docs/Tarefas feitas/`
