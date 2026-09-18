@@ -442,9 +442,6 @@ func (s *Service) validateConfiguracaoMensalidade(ctx context.Context, in *Mensa
 	if in.Valor <= 0 || roundAmount(in.Valor) != in.Valor {
 		return errors.New("valor deve ser maior que zero e ter no máximo duas casas decimais")
 	}
-	if !modoVigenciaValido(in.ModoVigencia) {
-		return errors.New(`modo_vigencia é obrigatório: informe "cobrancas_pendentes" ou "a_partir_da_atualizacao"`)
-	}
 	if in.MesFimCobranca != 6 && in.MesFimCobranca != 7 {
 		return errors.New("mes_fim_cobranca deve ser 6 ou 7")
 	}
@@ -493,7 +490,7 @@ func (s *Service) validateConfiguracaoMensalidade(ctx context.Context, in *Mensa
 		if err := jsonUnmarshal(anosRaw, &anos); err != nil || !contains(anos, in.AnoAcademico) {
 			return errors.New("ano acadêmico do " + utils.RotuloEnsinoFundamentalGenerico + " não é oferecido pela academia")
 		}
-		return nil
+		return s.resolverModoVigenciaMensalidade(ctx, in, nil)
 	}
 	if in.CursoID == nil || strings.TrimSpace(*in.CursoID) == "" {
 		return errors.New("curso_id é obrigatório para ensino médio e superior")
@@ -514,6 +511,36 @@ func (s *Service) validateConfiguracaoMensalidade(ctx context.Context, in *Mensa
 	var anos []string
 	if codigoCurso != in.CodigoAcademia || cursoTipo != in.Nivel || jsonUnmarshal(anosRawCurso, &anos) != nil || !contains(anos, in.AnoAcademico) {
 		return errors.New("curso ou ano_academico não é oferecido pela academia")
+	}
+	return s.resolverModoVigenciaMensalidade(ctx, in, &cursoID)
+}
+
+// resolverModoVigenciaMensalidade decide se modo_vigencia é obrigatório para
+// esta chamada. Quando o escopo (academia+nível+ano_academico+curso) ainda
+// não tem nenhuma configuração ativa agora — primeira configuração da
+// mensalidade —, nenhum mês pode estar "pendente" sob um preço anterior:
+// sem configuração alguma, ListMensalidades nem chega a materializar o mês
+// como devido (ver resolveConfiguracaoEfetiva), então modo_vigencia não
+// muda nada nesse caso e não deve ser exigido do chamador. Se vier vazio,
+// aplicamos "cobrancas_pendentes" (o mais próximo de "vale para todos",
+// que é o comportamento natural de uma primeira configuração). Quando já
+// existe uma configuração ativa para o escopo, esta chamada é uma
+// atualização e a escolha volta a ser obrigatória, exatamente como antes.
+func (s *Service) resolverModoVigenciaMensalidade(ctx context.Context, in *MensalidadeConfiguracaoInput, cursoID *uuid.UUID) error {
+	_, err := s.resolveConfiguracao(ctx, in.CodigoAcademia, in.Nivel, in.AnoAcademico, cursoID, time.Now().UTC())
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	primeiraConfiguracao := errors.Is(err, ErrNotFound)
+	if primeiraConfiguracao && in.ModoVigencia == "" {
+		in.ModoVigencia = ModoVigenciaCobrancasPendentes
+		return nil
+	}
+	if !modoVigenciaValido(in.ModoVigencia) {
+		if primeiraConfiguracao {
+			return errors.New(`modo_vigencia inválido: informe "cobrancas_pendentes", "a_partir_da_atualizacao" ou deixe em branco`)
+		}
+		return errors.New(`modo_vigencia é obrigatório: informe "cobrancas_pendentes" ou "a_partir_da_atualizacao"`)
 	}
 	return nil
 }
@@ -540,8 +567,21 @@ func (s *Service) validateMesInicioCobranca(ctx context.Context, in *MesInicioCo
 	if err != nil {
 		return err
 	}
-	if menor.Valid && posicaoNoAnoLetivo(in.MesInicio, natural) > posicaoNoAnoLetivo(int(menor.Int64), natural) {
-		return errors.New("mes_inicio não pode ser posterior ao mes_fim_cobranca configurado")
+	// limiteFimAnoLetivo é o mes_fim_cobranca mais restritivo já configurado
+	// (em qualquer nível) para esta academia. Enquanto nenhuma configuração
+	// de mensalidade existir ainda, essa consulta não retorna nada
+	// (menor.Valid é false) — sem um teto configurado, mes_inicio ficava
+	// livre para aceitar qualquer mês (inclusive fora do ano letivo, como
+	// agosto). Usamos 7 como teto-padrão nesse caso: é o maior valor que
+	// mes_fim_cobranca pode assumir (ver validateConfiguracaoMensalidade),
+	// então mes_inicio continua restrito ao período letivo mesmo antes de
+	// qualquer preço ser configurado.
+	limiteFimAnoLetivo := 7
+	if menor.Valid {
+		limiteFimAnoLetivo = int(menor.Int64)
+	}
+	if posicaoNoAnoLetivo(in.MesInicio, natural) > posicaoNoAnoLetivo(limiteFimAnoLetivo, natural) {
+		return errors.New("mes_inicio deve estar dentro do período do ano letivo")
 	}
 	return nil
 }
