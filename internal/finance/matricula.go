@@ -152,9 +152,6 @@ func (s *Service) validateConfiguracaoMatricula(ctx context.Context, in *Matricu
 	if in.CodigoAcademia == "" || !nivelValido(in.Nivel) || in.AnoAcademico == "" {
 		return errors.New("codigo_academia, nivel e ano_academico são obrigatórios")
 	}
-	if !modoVigenciaValido(in.ModoVigencia) {
-		return errors.New(`modo_vigencia é obrigatório: informe "cobrancas_pendentes" ou "a_partir_da_atualizacao"`)
-	}
 	if in.Valor <= 0 || !amountsEqual(roundAmount(in.Valor), in.Valor) {
 		return errors.New("valor deve ser maior que zero e ter no máximo duas casas decimais")
 	}
@@ -190,7 +187,7 @@ func (s *Service) validateConfiguracaoMatricula(ctx context.Context, in *Matricu
 		if json.Unmarshal(anosRaw, &anos) != nil || !contains(anos, in.AnoAcademico) {
 			return errors.New("ano acadêmico do " + utils.RotuloEnsinoFundamentalGenerico + " não é oferecido pela academia")
 		}
-		return nil
+		return s.resolverModoVigenciaMatricula(ctx, in, nil)
 	}
 	if in.CursoID == nil || strings.TrimSpace(*in.CursoID) == "" {
 		return errors.New("curso_id é obrigatório para ensino médio e superior")
@@ -209,6 +206,36 @@ func (s *Service) validateConfiguracaoMatricula(ctx context.Context, in *Matricu
 	var anos []string
 	if cod != in.CodigoAcademia || tipo != in.Nivel || json.Unmarshal(anosCurso, &anos) != nil || !contains(anos, in.AnoAcademico) {
 		return errors.New("curso ou ano_academico não é oferecido pela academia")
+	}
+	return s.resolverModoVigenciaMatricula(ctx, in, in.CursoID)
+}
+
+// resolverModoVigenciaMatricula espelha resolverModoVigenciaMensalidade
+// (ver mensalidade.go) para a taxa de matrícula: só exige modo_vigencia
+// quando o escopo já tem uma configuração vigente agora (ou seja, esta
+// chamada é uma edição). Na primeira configuração de um escopo é
+// impossível já existir uma solicitação "aprovada_pendente_pagamento_
+// matricula" para ele — a aprovação só entra nesse estado quando
+// ResolveMatriculaConfiguracao já encontra uma configuração (ver
+// solicitacao_matricula_handlers.go) —, então modo_vigencia não tem efeito
+// nenhum sobre reprecificarSolicitacoesMatriculaPendentes nesse caso, e não
+// deve ser exigido do chamador. Se vier vazio, aplicamos
+// "cobrancas_pendentes" pelo mesmo motivo descrito lá.
+func (s *Service) resolverModoVigenciaMatricula(ctx context.Context, in *MatriculaConfiguracaoInput, cursoID *string) error {
+	_, err := s.ResolveMatriculaConfiguracao(ctx, in.CodigoAcademia, in.Nivel, in.AnoAcademico, cursoID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	primeiraConfiguracao := errors.Is(err, ErrNotFound)
+	if primeiraConfiguracao && in.ModoVigencia == "" {
+		in.ModoVigencia = ModoVigenciaCobrancasPendentes
+		return nil
+	}
+	if !modoVigenciaValido(in.ModoVigencia) {
+		if primeiraConfiguracao {
+			return errors.New(`modo_vigencia inválido: informe "cobrancas_pendentes", "a_partir_da_atualizacao" ou deixe em branco`)
+		}
+		return errors.New(`modo_vigencia é obrigatório: informe "cobrancas_pendentes" ou "a_partir_da_atualizacao"`)
 	}
 	return nil
 }
