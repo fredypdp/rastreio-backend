@@ -1,8 +1,8 @@
 ---
-modificado: 12-09-2026 00:00
+modificado: 18-09-2026 00:00
 criado: 05-04-2026 13:01
 ---
-Versão atual: 2.5.0
+Versão atual: 2.6.0
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -9264,14 +9264,15 @@ Exemplo (`Natação`):
 **Proteção:** `GET /academia/servicos-extras` e `GET /academia/servicos-extras/:id` exigem academia ou admin autenticado. A listagem pública `GET /academia/servico/:codigo_academia/servicos-extras` retorna somente serviços ativos.
 
 ### 23.6 Categorias de serviço
-**Proteção:** todas exigem academia autenticada e ativa; as rotas de escrita (atualizar/desativar/reativar) exigem que a categoria pertença à academia autenticada — `403` caso contrário (`404` se o ID não existir).
+**Proteção:** todas exigem academia autenticada e ativa; as rotas de escrita (atualizar/desativar/reativar/deletar) exigem que a categoria pertença à academia autenticada — `403` caso contrário (`404` se o ID não existir).
 
 - `POST /academia/categorias-servico` cria uma categoria. **Request body:** `nome` (obrigatório, até 100 caracteres).
 - `PUT /academia/categorias-servico/:id` renomeia. Mesmo corpo da criação.
 - `PUT /academia/categorias-servico/:id/desativar` e `PUT /academia/categorias-servico/:id/reativar` alternam o status.
-- `GET /academia/categorias-servico` lista as categorias da academia autenticada; aceita `?ativos=true` para retornar somente as ativas.
+- `DELETE /academia/categorias-servico/:id` deleta logicamente a categoria (nunca remove o registo do ledger, só marca `deleted_at`). **Request body (opcional):** `{ "motivo": string }`, texto livre para auditoria. **Response 200:** `{ "message": "categoria de serviço deletada com sucesso" }`.
+- `GET /academia/categorias-servico` lista as categorias da academia autenticada; aceita `?ativos=true` para retornar somente as ativas. Categorias deletadas nunca aparecem nesta listagem (nem com nem sem esse filtro).
 
-**Regras de negócio:** nome único por academia, ignorando maiúsculas/minúsculas, enquanto a categoria estiver ativa — duas categorias ativas com o "mesmo" nome (case-insensitive) não podem coexistir na mesma academia, seja por criação, renomeação ou reativação; a tentativa é rejeitada com `400` (`já existe uma categoria de serviço ativa com este nome nesta academia`). Ao desativar uma categoria, o nome fica livre para reutilização por outra categoria (nova ou reativada). Desativar uma categoria não afeta os serviços que já a utilizam — eles continuam funcionando normalmente; a categoria só deixa de poder ser escolhida em serviços novos ou em atualizações de `categoria_servico_id`.
+**Regras de negócio:** nome único por academia, ignorando maiúsculas/minúsculas, enquanto a categoria estiver ativa — duas categorias ativas com o "mesmo" nome (case-insensitive) não podem coexistir na mesma academia, seja por criação, renomeação ou reativação; a tentativa é rejeitada com `400` (`já existe uma categoria de serviço ativa com este nome nesta academia`). Ao desativar uma categoria, o nome fica livre para reutilização por outra categoria (nova ou reativada). Desativar uma categoria não afeta os serviços que já a utilizam — eles continuam funcionando normalmente; a categoria só deixa de poder ser escolhida em serviços novos ou em atualizações de `categoria_servico_id`. **Deletar** exige que a categoria já esteja **inativa** e que nenhum serviço (ativo ou inativo, mas não deletado) ainda esteja vinculado a ela — caso contrário, `400` (`desative a categoria antes de deletá-la` ou `não é possível deletar: N serviço(s) ainda estão vinculados a esta categoria`, conforme o caso). Deletar uma categoria não reatribui nem remove esse vínculo automaticamente — é preciso primeiro trocar/limpar a categoria dos serviços que ainda a usam, ou deletar esses serviços.
 
 ### 23.7 Pagamento de taxa de inscrição de serviço extra
 `POST /financeiro/servicos-extras/taxa-inscricao/pagamento?solicitacao_id={uuid}` (estudante autenticado) inicia o pagamento da taxa já aprovada. O corpo aceita `metodo_pagamento` e, para GPO, `telefone`.
@@ -9284,6 +9285,21 @@ Estudantes podem criar solicitações em `POST /estudante/servicos-extras/:id/so
 - `GET /academia/servicos-extras/inscricoes/:id/pendencias` oferece a visão da academia.
 - `POST /financeiro/servicos-extras/obrigacao/pagamento` inicia o pagamento de uma mensalidade ou preço único.
 - `POST /financeiro/servicos-extras/obrigacao/anular` e `/reativar` administram uma obrigação individual da inscrição.
+
+### 23.10 Deletar serviço extra
+**Proteção:** academia proprietária autenticada e ativa. `DELETE /academia/servicos-extras/:id`.
+
+**Request body (opcional):** `{ "motivo": string }`, texto livre para auditoria.
+
+**Response 200:**
+
+```json
+{ "message": "serviço extra deletado com sucesso" }
+```
+
+**Regras de negócio:** deleção lógica (nunca remove o registo do ledger, só marca `deleted_at`). Exige que o serviço já esteja **inativo** (`PUT /academia/servicos-extras/:id/desativar` antes) e que não haja nenhuma solicitação com status `pendente`, `aprovada_pendente_pagamento_taxa_inscricao` ou `vinculada` para este serviço — caso contrário, `400` (`desative o serviço antes de deletá-lo` ou `não é possível deletar: N inscrição(ões) pendente(s) ou ativa(s) neste serviço`, conforme o caso). Serviços deletados nunca aparecem em `GET /academia/servicos-extras` nem na listagem pública `GET /academia/servico/:codigo_academia/servicos-extras` — mas `GET /academia/servicos-extras/:id` continua retornando o registo normalmente por ID direto, já que não há um endpoint de auditoria de deleções para serviços extras (diferente do `GET /dominis/auditoria/delecoes` da seção 16.6, que cobre só Academia/Administrador/Estudante).
+
+**Erros:** `403` quando o serviço pertence a outra academia; `404` quando o ID não existe.
 
 ## 24. Documentos Extras
 
