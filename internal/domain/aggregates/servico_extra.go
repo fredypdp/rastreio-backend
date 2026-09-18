@@ -52,6 +52,8 @@ type ServicoExtra struct {
 	DetalhesPersonalizados map[string]DetalhePersonalizado
 
 	Ativo     bool
+	Deletado  bool
+	DeletedAt *time.Time
 	CriadoPor uuid.UUID
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -241,6 +243,19 @@ type ServicoExtraReativadoEvent struct {
 func (e *ServicoExtraReativadoEvent) GetPayload() interface{} { return e }
 func (e *ServicoExtraReativadoEvent) ToJSON() ([]byte, error) { return json.Marshal(e) }
 
+// ServicoExtraDeletadoEvent — Tarefa 107. Mesmo padrão de
+// CategoriaServicoDeletada/CursoDeletado: deleção lógica e auditável, nunca
+// remove o registo do ledger.
+type ServicoExtraDeletadoEvent struct {
+	BaseEvent
+	DeletadoPor uuid.UUID
+	Motivo      string
+	DeletedAt   time.Time
+}
+
+func (e *ServicoExtraDeletadoEvent) GetPayload() interface{} { return e }
+func (e *ServicoExtraDeletadoEvent) ToJSON() ([]byte, error) { return json.Marshal(e) }
+
 // ============================================================================
 // Apply dispatcher
 // ============================================================================
@@ -257,6 +272,8 @@ func (s *ServicoExtra) Apply(event DomainEvent) error {
 	case "ServicoExtraReativado":
 		s.Ativo = true
 		return nil
+	case "ServicoExtraDeletado":
+		return s.applyDeletado(event)
 	default:
 		return fmt.Errorf("tipo de evento desconhecido para ServicoExtra: %s", event.GetEventType())
 	}
@@ -500,6 +517,28 @@ func (s *ServicoExtra) Reativar(reativadoPor uuid.UUID) error {
 	return s.Apply(event)
 }
 
+// Deletar emite ServicoExtraDeletado. Regra de negócio (mesmo padrão de
+// CategoriaServico.Deletar/Curso.Deletar): o serviço precisa estar INATIVO
+// antes de ser deletado. Checagem de inscrições ativas/pendentes é feita
+// pelo HANDLER antes de chamar este método (o aggregate não tem acesso à
+// projeção de SolicitacaoServicoExtra).
+func (s *ServicoExtra) Deletar(deletadoPor uuid.UUID, motivo string) error {
+	if s.Deletado {
+		return fmt.Errorf("serviço extra já está deletado")
+	}
+	if s.Ativo {
+		return fmt.Errorf("desative o serviço antes de deletá-lo")
+	}
+	event := &ServicoExtraDeletadoEvent{
+		BaseEvent:   BaseEvent{EventType: "ServicoExtraDeletado", AggregateID: s.ID},
+		DeletadoPor: deletadoPor,
+		Motivo:      strings.TrimSpace(motivo),
+		DeletedAt:   time.Now(),
+	}
+	s.RaiseEvent(event)
+	return s.Apply(event)
+}
+
 // ============================================================================
 // Apply handlers
 // ============================================================================
@@ -591,6 +630,22 @@ func (s *ServicoExtra) applyAtualizado(event DomainEvent) error {
 		s.DetalhesPersonalizados = p.DetalhesPersonalizados
 	}
 	s.UpdatedAt = p.UpdatedAt
+	return nil
+}
+
+func (s *ServicoExtra) applyDeletado(event DomainEvent) error {
+	data, err := json.Marshal(event.GetPayload())
+	if err != nil {
+		return err
+	}
+	var p ServicoExtraDeletadoEvent
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	s.Deletado = true
+	s.Ativo = false
+	s.DeletedAt = &p.DeletedAt
+	s.UpdatedAt = p.DeletedAt
 	return nil
 }
 

@@ -14,6 +14,8 @@ type CategoriaServico struct {
 	CodigoAcademia string
 	Nome           string
 	Ativo          bool
+	Deletado       bool
+	DeletedAt      *time.Time
 	CriadoPor      uuid.UUID
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -62,6 +64,20 @@ type CategoriaServicoReativadaEvent struct {
 func (e *CategoriaServicoReativadaEvent) GetPayload() interface{} { return e }
 func (e *CategoriaServicoReativadaEvent) ToJSON() ([]byte, error) { return json.Marshal(e) }
 
+// CategoriaServicoDeletadaEvent — Tarefa 107. Deleção lógica e auditável,
+// mesmo padrão de CursoDeletado (internal/domain/aggregates/curso.go):
+// Motivo é opcional (recomendado para auditoria) e o registo nunca é
+// removido do ledger, só marcado como deletado na projeção.
+type CategoriaServicoDeletadaEvent struct {
+	BaseEvent
+	DeletadoPor uuid.UUID
+	Motivo      string
+	DeletedAt   time.Time
+}
+
+func (e *CategoriaServicoDeletadaEvent) GetPayload() interface{} { return e }
+func (e *CategoriaServicoDeletadaEvent) ToJSON() ([]byte, error) { return json.Marshal(e) }
+
 func (c *CategoriaServico) Apply(event DomainEvent) error {
 	switch event.GetEventType() {
 	case "CategoriaServicoCriada":
@@ -74,6 +90,8 @@ func (c *CategoriaServico) Apply(event DomainEvent) error {
 	case "CategoriaServicoReativada":
 		c.Ativo = true
 		return nil
+	case "CategoriaServicoDeletada":
+		return c.applyDeletada(event)
 	default:
 		return fmt.Errorf("tipo de evento desconhecido para CategoriaServico: %s", event.GetEventType())
 	}
@@ -121,6 +139,24 @@ func (c *CategoriaServico) Reativar(p uuid.UUID) error {
 	c.RaiseEvent(e)
 	return c.Apply(e)
 }
+
+// Deletar emite CategoriaServicoDeletada. Regra de negócio (mesmo padrão de
+// Curso.Deletar): a categoria precisa estar INATIVA antes de ser deletada —
+// evita deletar por engano uma categoria em uso corrente sem passar pela
+// desativação primeiro. Checagem de serviços ainda vinculados é feita pelo
+// HANDLER antes de chamar este método (o aggregate não tem acesso à
+// projeção de ServicoExtra).
+func (c *CategoriaServico) Deletar(deletadoPor uuid.UUID, motivo string) error {
+	if c.Deletado {
+		return fmt.Errorf("categoria de serviço já está deletada")
+	}
+	if c.Ativo {
+		return fmt.Errorf("desative a categoria antes de deletá-la")
+	}
+	e := &CategoriaServicoDeletadaEvent{BaseEvent: BaseEvent{EventType: "CategoriaServicoDeletada", AggregateID: c.ID}, DeletadoPor: deletadoPor, Motivo: strings.TrimSpace(motivo), DeletedAt: time.Now()}
+	c.RaiseEvent(e)
+	return c.Apply(e)
+}
 func (c *CategoriaServico) applyCriada(e DomainEvent) error {
 	b, err := json.Marshal(e.GetPayload())
 	if err != nil {
@@ -149,5 +185,20 @@ func (c *CategoriaServico) applyRenomeada(e DomainEvent) error {
 	}
 	c.Nome = p.Nome
 	c.UpdatedAt = p.UpdatedAt
+	return nil
+}
+func (c *CategoriaServico) applyDeletada(e DomainEvent) error {
+	b, err := json.Marshal(e.GetPayload())
+	if err != nil {
+		return err
+	}
+	var p CategoriaServicoDeletadaEvent
+	if err = json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	c.Deletado = true
+	c.Ativo = false
+	c.DeletedAt = &p.DeletedAt
+	c.UpdatedAt = p.DeletedAt
 	return nil
 }

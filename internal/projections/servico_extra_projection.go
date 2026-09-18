@@ -42,6 +42,8 @@ func (p *ServicoExtraProjection) Handle(e db.Event) error {
 		return p.active(e, false)
 	case "ServicoExtraReativado":
 		return p.active(e, true)
+	case "ServicoExtraDeletado":
+		return p.deleted(e)
 	}
 	return nil
 }
@@ -164,6 +166,16 @@ func (p *ServicoExtraProjection) active(e db.Event, v bool) error {
 	return err
 }
 
+// deleted — Tarefa 107. Mesmo padrão de CategoriaServicoProjection.deleted.
+func (p *ServicoExtraProjection) deleted(e db.Event) error {
+	var x struct{ DeletedAt time.Time }
+	if err := json.Unmarshal(e.Payload, &x); err != nil {
+		return err
+	}
+	_, err := p.client.DB().Exec(`UPDATE projection_servicos_extras SET deleted_at=$1,ativo=false,version=$2,last_event_id=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$4`, x.DeletedAt, e.EventVersion, e.EventID, e.AggregateID)
+	return err
+}
+
 func (p *ServicoExtraProjection) scan(row interface{ Scan(...interface{}) error }) (*ServicoExtraDTO, error) {
 	var d ServicoExtraDTO
 	var detalhes []byte
@@ -185,7 +197,7 @@ func (p *ServicoExtraProjection) GetByID(id uuid.UUID) (*ServicoExtraDTO, error)
 	return d, e
 }
 func (p *ServicoExtraProjection) GetByAcademia(codigo string, ativosOnly bool) ([]ServicoExtraDTO, error) {
-	q := `SELECT ` + servicoCols + ` FROM projection_servicos_extras WHERE codigo_academia=$1`
+	q := `SELECT ` + servicoCols + ` FROM projection_servicos_extras WHERE codigo_academia=$1 AND deleted_at IS NULL`
 	if ativosOnly {
 		q += ` AND ativo=true`
 	}
@@ -204,4 +216,14 @@ func (p *ServicoExtraProjection) GetByAcademia(codigo string, ativosOnly bool) (
 		out = append(out, *d)
 	}
 	return out, rows.Err()
+}
+
+// CountByCategoria — Tarefa 107. Usada por DeletarCategoriaServico para
+// bloquear a deleção de uma categoria enquanto ainda houver serviços
+// (ativos ou inativos, mas não deletados) vinculados a ela — deletar a
+// categoria não reatribui nem limpa esse vínculo automaticamente.
+func (p *ServicoExtraProjection) CountByCategoria(categoriaID uuid.UUID) (int, error) {
+	var n int
+	err := p.client.DB().QueryRow(`SELECT COUNT(*) FROM projection_servicos_extras WHERE categoria_servico_id=$1 AND deleted_at IS NULL`, categoriaID).Scan(&n)
+	return n, err
 }

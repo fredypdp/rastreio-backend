@@ -183,6 +183,47 @@ func toggleCategoriaServico(c *gin.Context, ativar bool) {
 }
 func DesativarCategoriaServico(c *gin.Context) { toggleCategoriaServico(c, false) }
 func ReativarCategoriaServico(c *gin.Context)  { toggleCategoriaServico(c, true) }
+
+// DeletarCategoriaServico remove logicamente uma categoria de serviço.
+//
+// Regras de negócio (checadas ANTES de delegar ao aggregate, mesmo padrão
+// de DeletarCurso em cursos_handlers.go):
+//  1. Categoria deve pertencer à academia autenticada (loadCategoriaServico)
+//  2. Categoria deve estar inativa (checado pelo aggregate em Deletar)
+//  3. Não pode haver serviços (mesmo inativos, não deletados) ainda
+//     vinculados a esta categoria
+//
+// Evento CategoriaServicoDeletada gravado no ledger (auditável).
+func DeletarCategoriaServico(c *gin.Context) {
+	cat, id, ok := loadCategoriaServico(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Motivo string `json:"motivo"` // opcional, recomendado para auditoria
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	vinculados, err := getServicosExtrasProjection(c).CountByCategoria(cat.GetID())
+	if err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	if vinculados > 0 {
+		utils.RespondWithValidationError(c, fmt.Errorf("não é possível deletar: %d serviço(s) ainda estão vinculados a esta categoria", vinculados))
+		return
+	}
+
+	if err := cat.Deletar(id, req.Motivo); err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	if err := getRepository(c).SaveWithAudit(cat, db.AuditContext{UserID: id.String(), UserType: "academia", IP: c.ClientIP()}); err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "categoria de serviço deletada com sucesso"})
+}
 func ListarCategoriasServico(c *gin.Context) {
 	codigo, _, ok := academy(c)
 	if !ok {
