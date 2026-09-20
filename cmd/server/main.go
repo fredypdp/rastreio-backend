@@ -437,6 +437,7 @@ func setupRouter() *gin.Engine {
 			financeiro.GET("/mensalidades/configuracoes", handlers.ListarConfiguracoesMensalidade)
 			financeiro.DELETE("/mensalidades/configuracoes", handlers.RemoverConfiguracaoMensalidade)
 			financeiro.POST("/mensalidades/inicio-cobranca", handlers.DefinirMesInicioCobranca)
+			financeiro.GET("/mensalidades/inicio-cobranca", handlers.ConsultarMesInicioCobranca)
 			financeiro.DELETE("/mensalidades/inicio-cobranca", handlers.RemoverMesInicioCobranca)
 			financeiro.POST("/mensalidades/obrigacoes/anular", handlers.AnularObrigacoesMensalidade)
 			financeiro.POST("/mensalidades/obrigacoes/reativar", handlers.ReativarObrigacoesMensalidade)

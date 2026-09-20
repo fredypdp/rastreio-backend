@@ -205,6 +205,29 @@ func DefinirMesInicioCobranca(c *gin.Context) {
 	c.Status(http.StatusCreated)
 }
 
+// ConsultarMesInicioCobranca devolve o mês de início de cobrança
+// atualmente definido (exceção) para o ano letivo informado, ou 404
+// quando não há nenhuma exceção configurada — o frontend usa isto para só
+// habilitar a remoção quando existe algo para remover.
+func ConsultarMesInicioCobranca(c *gin.Context) {
+	codigo := c.Query("codigo_academia")
+	if !authorizeMensalidadeAcademia(c, &codigo, false) {
+		utils.RespondWithForbiddenError(c, "sem permissão para consultar o início de cobrança desta academia")
+		return
+	}
+	anoLetivo := strings.TrimSpace(c.Query("ano_letivo"))
+	if anoLetivo == "" {
+		utils.RespondWithValidationError(c, errors.New("ano_letivo é obrigatório"))
+		return
+	}
+	mesInicio, err := FinanceiroService.ConsultarMesInicioCobranca(c.Request.Context(), codigo, anoLetivo)
+	if err != nil {
+		financeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"codigo_academia": codigo, "ano_letivo": anoLetivo, "mes_inicio": mesInicio})
+}
+
 // RemoverMesInicioCobrancaInput identifica a academia e o ano letivo cuja
 // redefinição de mês de início de cobrança deve deixar de valer, voltando
 // o sistema a usar o mês natural padrão do ano letivo.
