@@ -1,0 +1,174 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 9b2fbad..07d1d41 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -501,6 +501,7 @@ func setupRouter() *gin.Engine {
+ 		academiaRead.GET("/materias", handlers.ListarMaterias)
+ 		academiaRead.GET("/servicos-extras", handlers.ListarServicosExtrasAcademia)
+ 		academiaRead.GET("/categorias-servico", handlers.ListarCategoriasServico)
++		academiaRead.GET("/categorias-servico/:id", handlers.GetCategoriaServico)
+ 		academiaRead.GET("/documentos-extra", handlers.ListarDocumentosExtraAcademia)
+ 		academiaRead.GET("/servicos-extras/:id", handlers.GetServicoExtra)
+ 		academiaRead.GET("/servicos-extras/solicitacoes", handlers.ListarSolicitacoesServicoExtraAcademia)
+diff --git a/internal/handlers/categoria_servico_get_by_id_integration_test.go b/internal/handlers/categoria_servico_get_by_id_integration_test.go
+new file mode 100644
+index 0000000..3d9204d
+--- /dev/null
++++ b/internal/handlers/categoria_servico_get_by_id_integration_test.go
+@@ -0,0 +1,105 @@
++package handlers
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/google/uuid"
++	"spuri/internal/db"
++)
++
++func seedAcademiaParaCategoriaServico(t *testing.T, client *db.Client, codigo string) uuid.UUID {
++	t.Helper()
++	id := uuid.New()
++	_, err := client.DB().Exec(`INSERT INTO projection_academias
++		(id,nivel,nome,nif,codigo_academia,senha_hash,provincia,endereco,nivel_escolar,status,cursos,anos_academicos,type,ano_letivo,created_at)
++		VALUES ($1,'escola','Academia categoria servico',$2,$3,'hash','LUA','endereco','fundamental','ativo','[]'::jsonb,'["7_ano_fundamental"]'::jsonb,'private','2026_2027',CURRENT_TIMESTAMP)`,
++		id, geraDigitos(10), codigo)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return id
++}
++
++// seedCategoriaServico grava direto na projection (em vez de passar pelo
++// fluxo real via CriarCategoriaServico/ledger) de propósito: uma escrita no
++// ledger só fica visível numa projection depois que o Projection Manager
++// (assíncrono, acordado por notifyLedgerWritten — ver internal/db/
++// ledger_hook.go) processa o evento; um teste isolado do pacote handlers,
++// sem subir esse worker, não tem como esperar por isso de forma
++// determinística. GetCategoriaServico só lê da projection, então testar o
++// endpoint não depende de como a linha chegou lá.
++func seedCategoriaServico(t *testing.T, client *db.Client, codigoAcademia, nome string) uuid.UUID {
++	t.Helper()
++	id := uuid.New()
++	_, err := client.DB().Exec(`INSERT INTO projection_categorias_servico
++		(id,codigo_academia,nome,ativo,created_at,updated_at,version)
++		VALUES ($1,$2,$3,true,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,1)`,
++		id, codigoAcademia, nome)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return id
++}
++
++// GetCategoriaServico é novo (Tarefa 110): antes não existia nenhuma rota
++// para buscar uma única categoria de serviço pelo id — a tela de edição do
++// frontend contornava isso buscando a lista inteira e filtrando pelo id no
++// cliente. Este teste cobre, para o novo endpoint, o mesmo contrato de
++// autorização que GetServicoExtra já tem: a academia dona vê; outra
++// academia recebe 403; um id inexistente retorna 404.
++func TestIntegrationGetCategoriaServicoRespeitaEscopoDaAcademia(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	client := integrationFinanceClient(t)
++	academiaDona := "CAT" + uuid.NewString()[:6]
++	academiaOutra := "OUT" + uuid.NewString()[:6]
++	idDona := seedAcademiaParaCategoriaServico(t, client, academiaDona)
++	idOutra := seedAcademiaParaCategoriaServico(t, client, academiaOutra)
++	idCategoria := seedCategoriaServico(t, client, academiaDona, "Transporte")
++
++	newGetCtx := func(id string, userID uuid.UUID) (*gin.Context, *httptest.ResponseRecorder) {
++		recorder := httptest.NewRecorder()
++		ctx, _ := gin.CreateTestContext(recorder)
++		ctx.Request = httptest.NewRequest(http.MethodGet, "/academia/categorias-servico/"+id, nil)
++		ctx.Params = gin.Params{{Key: "id", Value: id}}
++		ctx.Set("dbClient", client)
++		ctx.Set("user_id", userID)
++		ctx.Set("user_type", "academia")
++		return ctx, recorder
++	}
++
++	// 1) A própria academia consegue buscar, e vê o nome correto.
++	ctx, rec := newGetCtx(idCategoria.String(), idDona)
++	GetCategoriaServico(ctx)
++	if rec.Code != http.StatusOK {
++		t.Fatalf("get categoria (dona): esperava 200, obteve %d: %s", rec.Code, rec.Body.String())
++	}
++	var obtido struct {
++		Data struct {
++			Nome string `json:"nome"`
++		} `json:"data"`
++	}
++	if err := json.Unmarshal(rec.Body.Bytes(), &obtido); err != nil {
++		t.Fatal(err)
++	}
++	if obtido.Data.Nome != "Transporte" {
++		t.Fatalf("nome retornado = %q, queria %q", obtido.Data.Nome, "Transporte")
++	}
++
++	// 2) Outra academia recebe 403 (mesmo contrato de GetServicoExtra).
++	ctx, rec = newGetCtx(idCategoria.String(), idOutra)
++	GetCategoriaServico(ctx)
++	if rec.Code != http.StatusForbidden {
++		t.Fatalf("get categoria (outra academia): esperava 403, obteve %d: %s", rec.Code, rec.Body.String())
++	}
++
++	// 3) Id inexistente -> 404.
++	ctx, rec = newGetCtx(uuid.NewString(), idDona)
++	GetCategoriaServico(ctx)
++	if rec.Code != http.StatusNotFound {
++		t.Fatalf("get categoria (inexistente): esperava 404, obteve %d: %s", rec.Code, rec.Body.String())
++	}
++}
+diff --git a/internal/handlers/categoria_servico_handlers.go b/internal/handlers/categoria_servico_handlers.go
+index e66467b..c21075f 100644
+--- a/internal/handlers/categoria_servico_handlers.go
++++ b/internal/handlers/categoria_servico_handlers.go
+@@ -10,6 +10,7 @@ import (
+ 	"github.com/google/uuid"
+ 	"spuri/internal/db"
+ 	"spuri/internal/domain/aggregates"
++	"spuri/internal/middleware"
+ 	"spuri/internal/utils"
+ )
+ 
+@@ -224,6 +225,38 @@ func DeletarCategoriaServico(c *gin.Context) {
+ 	}
+ 	c.JSON(http.StatusOK, gin.H{"message": "categoria de serviço deletada com sucesso"})
+ }
++
++// GetCategoriaServico busca uma única categoria pelo id — mesmo padrão de
++// GetServicoExtra (internal/handlers/servico_extra_handlers.go): lê da
++// projection (mais barato que reconstituir o agregado via ledger, como
++// loadCategoriaServico faz para as operações de escrita), 404 se não
++// existir, 403 se pertencer a outra academia. Usado pela tela de edição do
++// frontend, que antes buscava a lista inteira e filtrava pelo id no
++// cliente por não ter essa rota disponível.
++func GetCategoriaServico(c *gin.Context) {
++	id, err := uuid.Parse(c.Param("id"))
++	if err != nil {
++		utils.RespondWithValidationError(c, err)
++		return
++	}
++	cat, err := getCategoriasServicoProjection(c).GetByID(id)
++	if err != nil || cat == nil {
++		utils.RespondWithNotFoundError(c, "categoria de serviço")
++		return
++	}
++	if role, _ := middleware.GetUserType(c); role != "admin" {
++		codigo, _, ok := academy(c)
++		if !ok {
++			return
++		}
++		if cat.CodigoAcademia != codigo {
++			utils.RespondWithForbiddenError(c, "categoria de serviço não pertence a esta academia")
++			return
++		}
++	}
++	c.JSON(http.StatusOK, gin.H{"data": cat})
++}
++
+ func ListarCategoriasServico(c *gin.Context) {
+ 	codigo, _, ok := academy(c)
+ 	if !ok {
