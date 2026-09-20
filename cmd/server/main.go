@@ -501,6 +501,7 @@ func setupRouter() *gin.Engine {
 		academiaRead.GET("/materias", handlers.ListarMaterias)
 		academiaRead.GET("/servicos-extras", handlers.ListarServicosExtrasAcademia)
 		academiaRead.GET("/categorias-servico", handlers.ListarCategoriasServico)
+		academiaRead.GET("/categorias-servico/:id", handlers.GetCategoriaServico)
 		academiaRead.GET("/documentos-extra", handlers.ListarDocumentosExtraAcademia)
 		academiaRead.GET("/servicos-extras/:id", handlers.GetServicoExtra)
 		academiaRead.GET("/servicos-extras/solicitacoes", handlers.ListarSolicitacoesServicoExtraAcademia)
