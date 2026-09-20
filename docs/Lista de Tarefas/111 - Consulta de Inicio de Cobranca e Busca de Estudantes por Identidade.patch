@@ -1,0 +1,418 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 07d1d41..6f0dd2f 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -437,6 +437,7 @@ func setupRouter() *gin.Engine {
+ 			financeiro.GET("/mensalidades/configuracoes", handlers.ListarConfiguracoesMensalidade)
+ 			financeiro.DELETE("/mensalidades/configuracoes", handlers.RemoverConfiguracaoMensalidade)
+ 			financeiro.POST("/mensalidades/inicio-cobranca", handlers.DefinirMesInicioCobranca)
++			financeiro.GET("/mensalidades/inicio-cobranca", handlers.ConsultarMesInicioCobranca)
+ 			financeiro.DELETE("/mensalidades/inicio-cobranca", handlers.RemoverMesInicioCobranca)
+ 			financeiro.POST("/mensalidades/obrigacoes/anular", handlers.AnularObrigacoesMensalidade)
+ 			financeiro.POST("/mensalidades/obrigacoes/reativar", handlers.ReativarObrigacoesMensalidade)
+diff --git a/internal/finance/mensalidade.go b/internal/finance/mensalidade.go
+index f6fc194..4b8ff57 100644
+--- a/internal/finance/mensalidade.go
++++ b/internal/finance/mensalidade.go
+@@ -190,6 +190,32 @@ func (s *Service) DefinirMesInicioCobranca(ctx context.Context, in MesInicioCobr
+ 	return s.recordMensalidade(ctx, in.CodigoAcademia, aggregates.MesInicioCobrancaDefinido, map[string]any{"codigo_academia": in.CodigoAcademia, "ano_letivo": in.AnoLetivo, "mes_inicio": in.MesInicio}, actorID, actorType, ip)
+ }
+ 
++// ConsultarMesInicioCobranca devolve o mês de início de cobrança
++// atualmente definido (exceção) para o ano letivo informado — ErrNotFound
++// quando nenhuma exceção foi definida para ele (nesse caso o mês natural
++// do ano letivo se aplica; ver mesInicioEfetivo, usado internamente para
++// resolver isso ao calcular cobranças). Existe para que o frontend só
++// permita remover a exceção quando realmente existe uma configurada,
++// em vez de mostrar o botão de remoção sempre disponível.
++func (s *Service) ConsultarMesInicioCobranca(ctx context.Context, codigoAcademia, anoLetivo string) (int, error) {
++	if s.client == nil {
++		return 0, errors.New("serviço financeiro não inicializado")
++	}
++	codigoAcademia, anoLetivo = strings.TrimSpace(codigoAcademia), strings.TrimSpace(anoLetivo)
++	if codigoAcademia == "" || !anoLetivoValido(anoLetivo) {
++		return 0, errors.New("academia e ano_letivo válido são obrigatórios")
++	}
++	var mes int
++	err := s.client.DB().QueryRowContext(ctx, `SELECT mes_inicio FROM financeiro_mensalidade_inicio_cobranca_atual WHERE codigo_academia=$1 AND ano_letivo=$2`, codigoAcademia, anoLetivo).Scan(&mes)
++	if err == sql.ErrNoRows {
++		return 0, fmt.Errorf("%w: nenhum mês de início de cobrança definido para este ano letivo", ErrNotFound)
++	}
++	if err != nil {
++		return 0, err
++	}
++	return mes, nil
++}
++
+ // RemoveMensalidadeConfiguracao remove a configuração de mensalidade
+ // (preço + métodos de pagamento) atualmente vigente para um escopo
+ // (academia+nível+ano acadêmico+curso). É registrada como um novo evento
+diff --git a/internal/finance/mensalidade_inicio_cobranca_consulta_integration_test.go b/internal/finance/mensalidade_inicio_cobranca_consulta_integration_test.go
+new file mode 100644
+index 0000000..bc8e62e
+--- /dev/null
++++ b/internal/finance/mensalidade_inicio_cobranca_consulta_integration_test.go
+@@ -0,0 +1,83 @@
++package finance
++
++import (
++	"context"
++	"errors"
++	"testing"
++)
++
++// Tarefa 111: ConsultarMesInicioCobranca é novo — antes não existia
++// nenhuma forma de descobrir, antes de tentar remover, se já existe uma
++// exceção de início de cobrança definida para o ano letivo.
++// RemoveMesInicioCobranca já validava isso internamente (devolvendo
++// ErrNotFound), mas o frontend não tinha como perguntar antecipadamente,
++// então o botão "Remover início de cobrança" ficava sempre disponível
++// mesmo quando não havia nada para remover.
++
++func TestIntegrationConsultarMesInicioCobrancaSemExcecaoDefinida(t *testing.T) {
++	client := integrationClient(t)
++	service := NewService(client)
++	academia := mensalidadeCodigo()
++	seedMensalidadeAcademia(t, client, academia, "private", "fundamental", "2025_2026")
++
++	if _, err := service.ConsultarMesInicioCobranca(context.Background(), academia, "2025_2026"); !errors.Is(err, ErrNotFound) {
++		t.Fatalf("esperava ErrNotFound quando nenhuma exceção foi definida para o ano letivo, obteve: %v", err)
++	}
++}
++
++func TestIntegrationConsultarMesInicioCobrancaComExcecaoDefinida(t *testing.T) {
++	client := integrationClient(t)
++	service := NewService(client)
++	academia := mensalidadeCodigo()
++	seedMensalidadeAcademia(t, client, academia, "private", "fundamental", "2025_2026")
++
++	in := MesInicioCobrancaInput{CodigoAcademia: academia, AnoLetivo: "2025_2026", MesInicio: 11}
++	if err := service.DefinirMesInicioCobranca(context.Background(), in, "actor-teste", "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("DefinirMesInicioCobranca falhou: %v", err)
++	}
++
++	mes, err := service.ConsultarMesInicioCobranca(context.Background(), academia, "2025_2026")
++	if err != nil {
++		t.Fatalf("ConsultarMesInicioCobranca falhou depois de DefinirMesInicioCobranca: %v", err)
++	}
++	if mes != 11 {
++		t.Fatalf("mes_inicio = %d, queria 11", mes)
++	}
++
++	// Outro ano letivo da mesma academia continua sem exceção — a consulta
++	// é isolada por ano letivo, não só por academia.
++	if _, err := service.ConsultarMesInicioCobranca(context.Background(), academia, "2026_2027"); !errors.Is(err, ErrNotFound) {
++		t.Fatalf("esperava ErrNotFound para um ano letivo sem exceção própria, obteve: %v", err)
++	}
++}
++
++func TestIntegrationConsultarMesInicioCobrancaVoltaAErrNotFoundAposRemocao(t *testing.T) {
++	client := integrationClient(t)
++	service := NewService(client)
++	academia := mensalidadeCodigo()
++	seedMensalidadeAcademia(t, client, academia, "private", "fundamental", "2025_2026")
++
++	in := MesInicioCobrancaInput{CodigoAcademia: academia, AnoLetivo: "2025_2026", MesInicio: 11}
++	if err := service.DefinirMesInicioCobranca(context.Background(), in, "actor-teste", "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("DefinirMesInicioCobranca falhou: %v", err)
++	}
++	if err := service.RemoveMesInicioCobranca(context.Background(), academia, "2025_2026", "actor-teste", "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("RemoveMesInicioCobranca falhou: %v", err)
++	}
++
++	if _, err := service.ConsultarMesInicioCobranca(context.Background(), academia, "2025_2026"); !errors.Is(err, ErrNotFound) {
++		t.Fatalf("esperava ErrNotFound depois de remover a exceção, obteve: %v", err)
++	}
++}
++
++func TestIntegrationConsultarMesInicioCobrancaExigeCodigoAcademiaEAnoLetivo(t *testing.T) {
++	client := integrationClient(t)
++	service := NewService(client)
++
++	if _, err := service.ConsultarMesInicioCobranca(context.Background(), "", "2025_2026"); err == nil || errors.Is(err, ErrNotFound) {
++		t.Fatalf("esperava erro de validação (não ErrNotFound) para codigo_academia vazio, obteve: %v", err)
++	}
++	if _, err := service.ConsultarMesInicioCobranca(context.Background(), "ACAD1", "ano-invalido"); err == nil || errors.Is(err, ErrNotFound) {
++		t.Fatalf("esperava erro de validação (não ErrNotFound) para ano_letivo inválido, obteve: %v", err)
++	}
++}
+diff --git a/internal/handlers/estudante_handlers.go b/internal/handlers/estudante_handlers.go
+index 0581e9c..31ec152 100644
+--- a/internal/handlers/estudante_handlers.go
++++ b/internal/handlers/estudante_handlers.go
+@@ -486,6 +486,23 @@ func ListarEstudantes(c *gin.Context) {
+ 		}
+ 	}
+ 
++	// Tarefa 111: busca livre por código, nome, BI ou telefone/e-mail (do
++	// estudante) — usada pelo seletor de estudante em telas que antes
++	// carregavam uma lista inteira (até um limite fixo) para um <select> no
++	// cliente, sem nenhuma forma de busca real. Um único termo é comparado
++	// contra as 5 colunas (ILIKE, case-insensitive, correspondência
++	// parcial); não substitui os filtros categóricos acima, que continuam
++	// funcionando normalmente combinados com busca.
++	if busca := strings.TrimSpace(c.Query("busca")); busca != "" {
++		termo := "%" + busca + "%"
++		args = append(args, termo)
++		idx := len(args)
++		conditions = append(conditions, fmt.Sprintf(
++			"(e.nome ILIKE $%d OR e.codigo_estudante ILIKE $%d OR e.bilhete_identidade ILIKE $%d OR e.telefone ILIKE $%d OR e.email ILIKE $%d)",
++			idx, idx, idx, idx, idx,
++		))
++	}
++
+ 	// Tarefa 73/2: nunca retornar estudantes deletados nesta listagem geral,
+ 	// independentemente de quais outros filtros de status foram combinados
+ 	// acima ("deletado" nem é um valor aceito no filtro ?status=). Quem
+diff --git a/internal/handlers/estudantes_busca_livre_integration_test.go b/internal/handlers/estudantes_busca_livre_integration_test.go
+new file mode 100644
+index 0000000..6797825
+--- /dev/null
++++ b/internal/handlers/estudantes_busca_livre_integration_test.go
+@@ -0,0 +1,115 @@
++package handlers
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/google/uuid"
++	"spuri/internal/db"
++)
++
++func seedEstudanteParaBusca(t *testing.T, client *db.Client, codigoAcademia, codigoEstudante, nome, bilhete, telefone, email string) {
++	t.Helper()
++	_, err := client.DB().Exec(`
++		INSERT INTO projection_estudantes (id, nome, codigo_estudante, senha_hash, telefone, email, bilhete_identidade, codigo_academia, status, created_at, updated_at)
++		VALUES ($1, $2, $3, 'hash', $4, $5, $6, $7, 'ativo', now(), now())
++	`, uuid.New(), nome, codigoEstudante, telefone, email, bilhete, codigoAcademia)
++	if err != nil {
++		t.Fatal(err)
++	}
++}
++
++// Tarefa 111: ?busca= é novo em GET /estudantes — antes a única forma de
++// localizar um estudante específico era paginar a lista inteira (ou
++// filtrar por categorias fixas como turma/curso/status), nunca por
++// identidade (código, nome, BI, telefone ou e-mail). Cobre que o termo
++// casa com as 5 colunas e que a busca continua isolada por academia.
++func TestIntegrationListarEstudantesBuscaLivre(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	client := integrationFinanceClient(t)
++	academia := "BUS" + uuid.NewString()[:6]
++	outraAcademia := "OUT" + uuid.NewString()[:6]
++	// ListarEstudantes (ramo "academia") resolve a academia pelo user_id
++	// autenticado (busca em projection_academias por id, não por
++	// codigo_academia do contexto) — por isso precisamos do UUID real.
++	idAcademia := seedAcademiaParaCategoriaServico(t, client, academia)
++	seedAcademiaParaCategoriaServico(t, client, outraAcademia)
++
++	// BI e telefone únicos por execução (índices únicos globais na tabela)
++	// para o teste poder ser reexecutado sem colidir com dados de uma
++	// execução anterior.
++	codigoAna := "E" + geraDigitos(6)
++	codigoBeto := "E" + geraDigitos(6)
++	biAna := geraDigitos(9) + "LA042"
++	biBeto := geraDigitos(9) + "LA042"
++	biOutraAna := geraDigitos(9) + "LA042"
++	telAna, telBeto, telOutraAna := "9"+geraDigitos(8), "9"+geraDigitos(8), "9"+geraDigitos(8)
++	seedEstudanteParaBusca(t, client, academia, codigoAna, "Ana Paula Silva", biAna, telAna, "ana.silva."+geraDigitos(6)+"@example.com")
++	seedEstudanteParaBusca(t, client, academia, codigoBeto, "Beto Manuel", biBeto, telBeto, "beto."+geraDigitos(6)+"@example.com")
++	// Mesmo nome em OUTRA academia — não deve aparecer na busca da primeira.
++	seedEstudanteParaBusca(t, client, outraAcademia, "E"+geraDigitos(6), "Ana Paula Silva", biOutraAna, telOutraAna, "ana.outra."+geraDigitos(6)+"@example.com")
++
++	type resposta struct {
++		Estudantes []struct {
++			Nome            string `json:"nome"`
++			CodigoEstudante string `json:"codigo_estudante"`
++		} `json:"estudantes"`
++	}
++	buscar := func(t *testing.T, termo string) []string {
++		t.Helper()
++		recorder := httptest.NewRecorder()
++		ctx, _ := gin.CreateTestContext(recorder)
++		qs := url.Values{"busca": {termo}, "limit": {"50"}, "offset": {"0"}}
++		ctx.Request = httptest.NewRequest(http.MethodGet, "/estudantes?"+qs.Encode(), nil)
++		ctx.Set("dbClient", client)
++		ctx.Set("user_id", idAcademia)
++		ctx.Set("user_type", "academia")
++		ListarEstudantes(ctx)
++		if recorder.Code != http.StatusOK {
++			t.Fatalf("busca=%q: esperava 200, obteve %d: %s", termo, recorder.Code, recorder.Body.String())
++		}
++		var body resposta
++		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
++			t.Fatal(err)
++		}
++		var codigos []string
++		for _, e := range body.Estudantes {
++			codigos = append(codigos, e.CodigoEstudante)
++		}
++		return codigos
++	}
++
++	// Por nome (parcial, case-insensitive).
++	if codigos := buscar(t, "ana paula"); len(codigos) != 1 || codigos[0] != codigoAna {
++		t.Fatalf("busca por nome: esperava só %q, obteve %v", codigoAna, codigos)
++	}
++	// Por código.
++	if codigos := buscar(t, codigoBeto); len(codigos) != 1 || codigos[0] != codigoBeto {
++		t.Fatalf("busca por código: esperava só %q, obteve %v", codigoBeto, codigos)
++	}
++	// Por BI (parcial).
++	if codigos := buscar(t, biAna[:9]); len(codigos) != 1 || codigos[0] != codigoAna {
++		t.Fatalf("busca por BI: esperava só %q, obteve %v", codigoAna, codigos)
++	}
++	// Por telefone.
++	if codigos := buscar(t, telBeto); len(codigos) != 1 || codigos[0] != codigoBeto {
++		t.Fatalf("busca por telefone: esperava só %q, obteve %v", codigoBeto, codigos)
++	}
++	// Por e-mail (parcial).
++	if codigos := buscar(t, "ana.silva."); len(codigos) != 1 || codigos[0] != codigoAna {
++		t.Fatalf("busca por e-mail: esperava só %q, obteve %v", codigoAna, codigos)
++	}
++	// "Ana Paula Silva" existe em DUAS academias, mas a busca desta academia
++	// só encontra a própria (isolamento por academia preservado).
++	if codigos := buscar(t, "Ana Paula"); len(codigos) != 1 {
++		t.Fatalf("busca isolada por academia: esperava 1 resultado, obteve %v", codigos)
++	}
++	// Sem correspondência.
++	if codigos := buscar(t, "NomeQueNaoExisteDeJeitoNenhum"); len(codigos) != 0 {
++		t.Fatalf("busca sem correspondência: esperava 0 resultados, obteve %v", codigos)
++	}
++}
+diff --git a/internal/handlers/mensalidade_handlers.go b/internal/handlers/mensalidade_handlers.go
+index 564008f..825ca3c 100644
+--- a/internal/handlers/mensalidade_handlers.go
++++ b/internal/handlers/mensalidade_handlers.go
+@@ -205,6 +205,29 @@ func DefinirMesInicioCobranca(c *gin.Context) {
+ 	c.Status(http.StatusCreated)
+ }
+ 
++// ConsultarMesInicioCobranca devolve o mês de início de cobrança
++// atualmente definido (exceção) para o ano letivo informado, ou 404
++// quando não há nenhuma exceção configurada — o frontend usa isto para só
++// habilitar a remoção quando existe algo para remover.
++func ConsultarMesInicioCobranca(c *gin.Context) {
++	codigo := c.Query("codigo_academia")
++	if !authorizeMensalidadeAcademia(c, &codigo, false) {
++		utils.RespondWithForbiddenError(c, "sem permissão para consultar o início de cobrança desta academia")
++		return
++	}
++	anoLetivo := strings.TrimSpace(c.Query("ano_letivo"))
++	if anoLetivo == "" {
++		utils.RespondWithValidationError(c, errors.New("ano_letivo é obrigatório"))
++		return
++	}
++	mesInicio, err := FinanceiroService.ConsultarMesInicioCobranca(c.Request.Context(), codigo, anoLetivo)
++	if err != nil {
++		financeError(c, err)
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"codigo_academia": codigo, "ano_letivo": anoLetivo, "mes_inicio": mesInicio})
++}
++
+ // RemoverMesInicioCobrancaInput identifica a academia e o ano letivo cuja
+ // redefinição de mês de início de cobrança deve deixar de valer, voltando
+ // o sistema a usar o mês natural padrão do ano letivo.
+diff --git a/internal/handlers/mensalidade_inicio_cobranca_consulta_integration_test.go b/internal/handlers/mensalidade_inicio_cobranca_consulta_integration_test.go
+new file mode 100644
+index 0000000..3f1c67d
+--- /dev/null
++++ b/internal/handlers/mensalidade_inicio_cobranca_consulta_integration_test.go
+@@ -0,0 +1,91 @@
++package handlers
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/google/uuid"
++	"spuri/internal/finance"
++)
++
++// ConsultarMesInicioCobranca (GET, Tarefa 111) é novo — antes não existia
++// nenhuma forma de descobrir, antes de tentar remover, se já existe uma
++// exceção de início de cobrança definida para o ano letivo (ver
++// RemoveMesInicioCobranca em internal/finance/mensalidade.go, que já fazia
++// essa checagem internamente, mas só no momento da remoção). Mesmo
++// contrato de escopo por academia que os endpoints de configuração
++// vizinhos: a academia só consulta o PRÓPRIO início de cobrança.
++func TestIntegrationConsultarMesInicioCobrancaHandlerRespeitaEscopo(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	client := integrationFinanceClient(t)
++	academiaDona := "INI" + uuid.NewString()[:6]
++	academiaOutra := "OUT" + uuid.NewString()[:6]
++	seedAcademiaParaRemocaoHandlers(t, client, academiaDona)
++
++	previousService := FinanceiroService
++	FinanceiroService = finance.NewService(client)
++	t.Cleanup(func() { FinanceiroService = previousService })
++
++	userID := uuid.New()
++	newGetCtx := func(codigoAcademiaAtor, codigoAcademiaQuery, anoLetivo string) (*gin.Context, *httptest.ResponseRecorder) {
++		recorder := httptest.NewRecorder()
++		ctx, _ := gin.CreateTestContext(recorder)
++		url := "/financeiro/mensalidades/inicio-cobranca?codigo_academia=" + codigoAcademiaQuery + "&ano_letivo=" + anoLetivo
++		ctx.Request = httptest.NewRequest(http.MethodGet, url, nil)
++		ctx.Set("dbClient", client)
++		ctx.Set("user_id", userID)
++		ctx.Set("user_type", "academia")
++		ctx.Set("codigo_academia", codigoAcademiaAtor)
++		return ctx, recorder
++	}
++
++	// 1) Sem nenhuma exceção definida ainda -> 404 (não 200 com valor
++	// zerado, nem 500 — o frontend depende de distinguir isto para só
++	// habilitar "Remover início de cobrança" quando há algo para remover).
++	ctx, rec := newGetCtx(academiaDona, academiaDona, "2025_2026")
++	ConsultarMesInicioCobranca(ctx)
++	if rec.Code != http.StatusNotFound {
++		t.Fatalf("sem exceção definida: esperava 404, obteve %d: %s", rec.Code, rec.Body.String())
++	}
++
++	// 2) Define via o Service diretamente (mais rápido que passar pelo
++	// handler de criação) e então consulta via o HANDLER, que é o que este
++	// teste precisa validar.
++	if err := FinanceiroService.DefinirMesInicioCobranca(ctx.Request.Context(), finance.MesInicioCobrancaInput{
++		CodigoAcademia: academiaDona, AnoLetivo: "2025_2026", MesInicio: 11,
++	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("DefinirMesInicioCobranca falhou: %v", err)
++	}
++	ctx, rec = newGetCtx(academiaDona, academiaDona, "2025_2026")
++	ConsultarMesInicioCobranca(ctx)
++	if rec.Code != http.StatusOK {
++		t.Fatalf("com exceção definida: esperava 200, obteve %d: %s", rec.Code, rec.Body.String())
++	}
++	var body struct {
++		MesInicio int `json:"mes_inicio"`
++	}
++	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
++		t.Fatal(err)
++	}
++	if body.MesInicio != 11 {
++		t.Fatalf("mes_inicio retornado = %d, queria 11", body.MesInicio)
++	}
++
++	// 3) Outra academia tentando consultar um codigo_academia que não é o
++	// próprio -> 403 (nunca revela se a outra academia tem ou não exceção).
++	ctx, rec = newGetCtx(academiaOutra, academiaDona, "2025_2026")
++	ConsultarMesInicioCobranca(ctx)
++	if rec.Code != http.StatusForbidden {
++		t.Fatalf("outra academia consultando escopo alheio: esperava 403, obteve %d: %s", rec.Code, rec.Body.String())
++	}
++
++	// 4) ano_letivo ausente -> 400 de validação, nunca 404/500.
++	ctx, rec = newGetCtx(academiaDona, academiaDona, "")
++	ConsultarMesInicioCobranca(ctx)
++	if rec.Code != http.StatusBadRequest {
++		t.Fatalf("ano_letivo ausente: esperava 400, obteve %d: %s", rec.Code, rec.Body.String())
++	}
++}
