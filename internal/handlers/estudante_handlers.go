@@ -486,6 +486,23 @@ func ListarEstudantes(c *gin.Context) {
 		}
 	}
 
+	// Tarefa 111: busca livre por código, nome, BI ou telefone/e-mail (do
+	// estudante) — usada pelo seletor de estudante em telas que antes
+	// carregavam uma lista inteira (até um limite fixo) para um <select> no
+	// cliente, sem nenhuma forma de busca real. Um único termo é comparado
+	// contra as 5 colunas (ILIKE, case-insensitive, correspondência
+	// parcial); não substitui os filtros categóricos acima, que continuam
+	// funcionando normalmente combinados com busca.
+	if busca := strings.TrimSpace(c.Query("busca")); busca != "" {
+		termo := "%" + busca + "%"
+		args = append(args, termo)
+		idx := len(args)
+		conditions = append(conditions, fmt.Sprintf(
+			"(e.nome ILIKE $%d OR e.codigo_estudante ILIKE $%d OR e.bilhete_identidade ILIKE $%d OR e.telefone ILIKE $%d OR e.email ILIKE $%d)",
+			idx, idx, idx, idx, idx,
+		))
+	}
+
 	// Tarefa 73/2: nunca retornar estudantes deletados nesta listagem geral,
 	// independentemente de quais outros filtros de status foram combinados
 	// acima ("deletado" nem é um valor aceito no filtro ?status=). Quem

@@ -190,6 +190,32 @@ func (s *Service) DefinirMesInicioCobranca(ctx context.Context, in MesInicioCobr
 	return s.recordMensalidade(ctx, in.CodigoAcademia, aggregates.MesInicioCobrancaDefinido, map[string]any{"codigo_academia": in.CodigoAcademia, "ano_letivo": in.AnoLetivo, "mes_inicio": in.MesInicio}, actorID, actorType, ip)
 }
 
+// ConsultarMesInicioCobranca devolve o mês de início de cobrança
+// atualmente definido (exceção) para o ano letivo informado — ErrNotFound
+// quando nenhuma exceção foi definida para ele (nesse caso o mês natural
+// do ano letivo se aplica; ver mesInicioEfetivo, usado internamente para
+// resolver isso ao calcular cobranças). Existe para que o frontend só
+// permita remover a exceção quando realmente existe uma configurada,
+// em vez de mostrar o botão de remoção sempre disponível.
+func (s *Service) ConsultarMesInicioCobranca(ctx context.Context, codigoAcademia, anoLetivo string) (int, error) {
+	if s.client == nil {
+		return 0, errors.New("serviço financeiro não inicializado")
+	}
+	codigoAcademia, anoLetivo = strings.TrimSpace(codigoAcademia), strings.TrimSpace(anoLetivo)
+	if codigoAcademia == "" || !anoLetivoValido(anoLetivo) {
+		return 0, errors.New("academia e ano_letivo válido são obrigatórios")
+	}
+	var mes int
+	err := s.client.DB().QueryRowContext(ctx, `SELECT mes_inicio FROM financeiro_mensalidade_inicio_cobranca_atual WHERE codigo_academia=$1 AND ano_letivo=$2`, codigoAcademia, anoLetivo).Scan(&mes)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("%w: nenhum mês de início de cobrança definido para este ano letivo", ErrNotFound)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return mes, nil
+}
+
 // RemoveMensalidadeConfiguracao remove a configuração de mensalidade
 // (preço + métodos de pagamento) atualmente vigente para um escopo
 // (academia+nível+ano acadêmico+curso). É registrada como um novo evento
