@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
+	"spuri/internal/middleware"
 	"spuri/internal/utils"
 )
 
@@ -224,6 +225,38 @@ func DeletarCategoriaServico(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "categoria de serviço deletada com sucesso"})
 }
+
+// GetCategoriaServico busca uma única categoria pelo id — mesmo padrão de
+// GetServicoExtra (internal/handlers/servico_extra_handlers.go): lê da
+// projection (mais barato que reconstituir o agregado via ledger, como
+// loadCategoriaServico faz para as operações de escrita), 404 se não
+// existir, 403 se pertencer a outra academia. Usado pela tela de edição do
+// frontend, que antes buscava a lista inteira e filtrava pelo id no
+// cliente por não ter essa rota disponível.
+func GetCategoriaServico(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	cat, err := getCategoriasServicoProjection(c).GetByID(id)
+	if err != nil || cat == nil {
+		utils.RespondWithNotFoundError(c, "categoria de serviço")
+		return
+	}
+	if role, _ := middleware.GetUserType(c); role != "admin" {
+		codigo, _, ok := academy(c)
+		if !ok {
+			return
+		}
+		if cat.CodigoAcademia != codigo {
+			utils.RespondWithForbiddenError(c, "categoria de serviço não pertence a esta academia")
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": cat})
+}
+
 func ListarCategoriasServico(c *gin.Context) {
 	codigo, _, ok := academy(c)
 	if !ok {
