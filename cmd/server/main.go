@@ -453,6 +453,7 @@ func setupRouter() *gin.Engine {
 	estudante.Use(middleware.AuthMiddleware())
 	estudante.Use(middleware.RequireEstudante())
 	{
+		estudante.GET("/servicos-extras/catalogo", handlers.ListarServicosExtrasCatalogoEstudante)
 		estudante.POST("/servicos-extras/:id/solicitacao", handlers.SolicitarServicoExtra)
 		estudante.GET("/servicos-extras/minhas-inscricoes", handlers.ListarMinhasInscricoesServicoExtra)
 		estudante.GET("/servicos-extras/minhas-inscricoes/:id/documento/download", handlers.DownloadDocumentoSolicitacaoServicoExtraEstudante)
