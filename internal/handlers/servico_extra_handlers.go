@@ -162,6 +162,22 @@ func estudanteElegivelServicoExtra(serv *projections.ServicoExtraDTO, est *proje
 	return false
 }
 
+// elegivelParaServicoExtra aplica a mesma regra que SolicitarServicoExtra já
+// usava (antes só descrita ali, inline): um serviço sem nenhuma restrição
+// definida (nem anos soltos, nem cursos) está disponível para todos os
+// estudantes da academia; havendo qualquer restrição, só estudanteElegivelServicoExtra
+// decide. Extraída para ser a MESMA regra usada tanto para decidir o que
+// aparece no catálogo do estudante (ListarServicosExtrasCatalogoEstudante)
+// quanto para aceitar ou rejeitar uma inscrição — antes só existia no
+// segundo lugar, então o catálogo podia mostrar um serviço que a inscrição
+// rejeitaria de qualquer forma.
+func elegivelParaServicoExtra(serv *projections.ServicoExtraDTO, est *projections.EstudanteDTO) bool {
+	if len(serv.AnosAcademicosDisponiveis) == 0 && len(serv.CursosDisponiveis) == 0 {
+		return true
+	}
+	return estudanteElegivelServicoExtra(serv, est)
+}
+
 // servicoExtraToJSON serializa o aggregate em memória com as MESMAS chaves
 // snake_case de ServicoExtraDTO (internal/projections/servico_extra_projection.go),
 // para que criar/atualizar/ativar/desativar devolvam exatamente o mesmo
@@ -435,4 +451,48 @@ func ListarServicosExtrasPublico(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"servicos_extras": x, "total": len(x)})
+}
+
+// ListarServicosExtrasCatalogoEstudante é o catálogo que o estudante
+// autenticado vê em /servicos-extras/catalogo, já filtrado pela própria
+// elegibilidade (ano/curso atual) com elegivelParaServicoExtra — a MESMA
+// regra que SolicitarServicoExtra usa para aceitar ou rejeitar uma
+// inscrição, então nunca mostra um serviço que a inscrição rejeitaria de
+// qualquer forma. Diferente de ListarServicosExtrasPublico (rota pública,
+// sem estudante autenticado e sem filtro de elegibilidade — usada em
+// contexto institucional/marketing).
+//
+// Também devolve categorias_servico (nome de cada categoria usada pelos
+// serviços da academia) na mesma resposta: o endpoint de categorias
+// (GET /academia/categorias-servico) exige RequireAcademiaOuAdmin, que
+// rejeita um estudante autenticado — o catálogo do estudante nunca
+// conseguia mostrar o nome da categoria por essa rota, e a chamada
+// duplicada ao próprio front (Promise.all sem tratamento de erro) fazia o
+// catálogo inteiro falhar em silêncio. Aqui a busca de categorias é feita
+// diretamente na projeção (sem passar pela rota restrita), então não tem
+// esse problema.
+func ListarServicosExtrasCatalogoEstudante(c *gin.Context) {
+	uid, _ := middleware.GetUserID(c)
+	est, e := getEstudanteProjection(c).GetByID(uid)
+	if e != nil || est == nil || est.CodigoAcademia == nil {
+		utils.RespondWithForbiddenError(c, "estudante não está vinculado a uma academia")
+		return
+	}
+	todos, e := getServicosExtrasProjection(c).GetByAcademia(*est.CodigoAcademia, true)
+	if e != nil {
+		utils.RespondWithInternalError(c, e)
+		return
+	}
+	disponiveis := make([]projections.ServicoExtraDTO, 0, len(todos))
+	for _, s := range todos {
+		if elegivelParaServicoExtra(&s, est) {
+			disponiveis = append(disponiveis, s)
+		}
+	}
+	categorias, e := getCategoriasServicoProjection(c).GetByAcademia(*est.CodigoAcademia, false)
+	if e != nil {
+		utils.RespondWithInternalError(c, e)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"servicos_extras": disponiveis, "categorias_servico": categorias, "total": len(disponiveis)})
 }
