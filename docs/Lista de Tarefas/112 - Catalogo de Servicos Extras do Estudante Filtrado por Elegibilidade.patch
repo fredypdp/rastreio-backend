@@ -1,0 +1,317 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 6f0dd2f..ebde90e 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -453,6 +453,7 @@ func setupRouter() *gin.Engine {
+ 	estudante.Use(middleware.AuthMiddleware())
+ 	estudante.Use(middleware.RequireEstudante())
+ 	{
++		estudante.GET("/servicos-extras/catalogo", handlers.ListarServicosExtrasCatalogoEstudante)
+ 		estudante.POST("/servicos-extras/:id/solicitacao", handlers.SolicitarServicoExtra)
+ 		estudante.GET("/servicos-extras/minhas-inscricoes", handlers.ListarMinhasInscricoesServicoExtra)
+ 		estudante.GET("/servicos-extras/minhas-inscricoes/:id/documento/download", handlers.DownloadDocumentoSolicitacaoServicoExtraEstudante)
+diff --git a/internal/handlers/servico_extra_catalogo_estudante_integration_test.go b/internal/handlers/servico_extra_catalogo_estudante_integration_test.go
+new file mode 100644
+index 0000000..486206d
+--- /dev/null
++++ b/internal/handlers/servico_extra_catalogo_estudante_integration_test.go
+@@ -0,0 +1,122 @@
++package handlers
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/google/uuid"
++	"spuri/internal/db"
++)
++
++func seedEstudanteComAnoEscolar(t *testing.T, client *db.Client, codigoAcademia, anoEscolarFundamental string) uuid.UUID {
++	t.Helper()
++	id := uuid.New()
++	_, err := client.DB().Exec(`
++		INSERT INTO projection_estudantes (id, nome, codigo_estudante, senha_hash, telefone, codigo_academia, status, genero, data_nascimento, ano_escolar_fundamental, created_at, updated_at)
++		VALUES ($1, 'Estudante Catálogo', $2, 'hash', $3, $4, 'ativo', 'feminino', '2012-05-10', $5, now(), now())
++	`, id, "E"+geraDigitos(6), "9"+geraDigitos(8), codigoAcademia, anoEscolarFundamental)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return id
++}
++
++func seedServicoExtraCatalogo(t *testing.T, client *db.Client, codigoAcademia, nome string, anosDisponiveis []string) uuid.UUID {
++	t.Helper()
++	id := uuid.New()
++	_, err := client.DB().Exec(`
++		INSERT INTO projection_servicos_extras
++			(id, codigo_academia, nome, descricao, pago, metodos_pagamento, tem_taxa_inscricao, metodos_pagamento_taxa_inscricao,
++			 anos_academicos_disponiveis, cursos_disponiveis, documento_obrigatorio, documento_instrucoes, detalhes_personalizados,
++			 ativo, criado_por, created_at, updated_at, version, last_event_id)
++		VALUES ($1, $2, $3, '', false, '{}', false, '{}', $4, '{}', false, '', '{}', true, $5, now(), now(), 1, $6)
++	`, id, codigoAcademia, nome, pqArray(anosDisponiveis), uuid.New(), uuid.New())
++	if err != nil {
++		t.Fatal(err)
++	}
++	return id
++}
++
++// Tarefa 112: ListarServicosExtrasCatalogoEstudante é novo — antes o
++// catálogo do estudante (/servicos-extras/catalogo no frontend) usava a
++// rota pública ListarServicosExtrasPublico, que devolve TODOS os serviços
++// ativos da academia sem filtrar por elegibilidade (ano/curso do
++// estudante). Esta rota nova filtra com a mesma regra que
++// SolicitarServicoExtra já usava para aceitar/rejeitar a inscrição
++// (elegivelParaServicoExtra) — o estudante só vê o que pode de fato
++// solicitar.
++func TestIntegrationListarServicosExtrasCatalogoEstudanteFiltraPorElegibilidade(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	client := integrationFinanceClient(t)
++	academia := "CAT" + uuid.NewString()[:6]
++	seedAcademiaParaCategoriaServico(t, client, academia)
++	idEstudante := seedEstudanteComAnoEscolar(t, client, academia, "7_ano_fundamental")
++
++	idElegivel := seedServicoExtraCatalogo(t, client, academia, "Xadrez", []string{"7_ano_fundamental"})
++	idOutroAno := seedServicoExtraCatalogo(t, client, academia, "Robótica", []string{"9_ano_fundamental"})
++	idSemRestricao := seedServicoExtraCatalogo(t, client, academia, "Biblioteca", nil)
++	seedCategoriaServico(t, client, academia, "Atividades Extracurriculares")
++
++	recorder := httptest.NewRecorder()
++	ctx, _ := gin.CreateTestContext(recorder)
++	ctx.Request = httptest.NewRequest(http.MethodGet, "/estudante/servicos-extras/catalogo", nil)
++	ctx.Set("dbClient", client)
++	ctx.Set("user_id", idEstudante)
++	ctx.Set("user_type", "estudante")
++
++	ListarServicosExtrasCatalogoEstudante(ctx)
++	if recorder.Code != http.StatusOK {
++		t.Fatalf("esperava 200, obteve %d: %s", recorder.Code, recorder.Body.String())
++	}
++	var body struct {
++		ServicosExtras []struct {
++			ID string `json:"id"`
++		} `json:"servicos_extras"`
++		CategoriasServico []struct {
++			Nome string `json:"nome"`
++		} `json:"categorias_servico"`
++		Total int `json:"total"`
++	}
++	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
++		t.Fatal(err)
++	}
++	if len(body.CategoriasServico) != 1 || body.CategoriasServico[0].Nome != "Atividades Extracurriculares" {
++		t.Errorf("categorias_servico = %+v, queria 1 categoria \"Atividades Extracurriculares\" — o catálogo do estudante precisa dela para não depender de GET /academia/categorias-servico, que rejeita estudantes", body.CategoriasServico)
++	}
++	if body.Total != 2 {
++		t.Fatalf("total = %d, queria 2 (elegível + sem restrição, sem o de outro ano)", body.Total)
++	}
++	ids := map[string]bool{}
++	for _, s := range body.ServicosExtras {
++		ids[s.ID] = true
++	}
++	if !ids[idElegivel.String()] {
++		t.Errorf("serviço elegível (%s) não apareceu no catálogo", idElegivel)
++	}
++	if !ids[idSemRestricao.String()] {
++		t.Errorf("serviço sem restrição (%s) não apareceu no catálogo", idSemRestricao)
++	}
++	if ids[idOutroAno.String()] {
++		t.Errorf("serviço de outro ano (%s) apareceu no catálogo — deveria ter sido filtrado", idOutroAno)
++	}
++}
++
++// pqArray formata um []string para o literal de array do Postgres
++// ('{"a","b"}'), incluindo o caso nil/vazio ('{}') — usado só neste
++// arquivo de teste para o INSERT direto em projection_servicos_extras.
++func pqArray(items []string) string {
++	if len(items) == 0 {
++		return "{}"
++	}
++	out := "{"
++	for i, it := range items {
++		if i > 0 {
++			out += ","
++		}
++		out += `"` + it + `"`
++	}
++	return out + "}"
++}
+diff --git a/internal/handlers/servico_extra_elegibilidade_test.go b/internal/handlers/servico_extra_elegibilidade_test.go
+new file mode 100644
+index 0000000..d942d19
+--- /dev/null
++++ b/internal/handlers/servico_extra_elegibilidade_test.go
+@@ -0,0 +1,77 @@
++package handlers
++
++import (
++	"testing"
++
++	"spuri/internal/projections"
++)
++
++// elegivelParaServicoExtra é a regra única usada tanto para o catálogo do
++// estudante (ListarServicosExtrasCatalogoEstudante) quanto para aceitar ou
++// rejeitar uma inscrição (SolicitarServicoExtra). strPtr já existe em
++// turmas_handler_test.go, no mesmo pacote — reaproveitado aqui, não
++// redeclarado.
++func TestElegivelParaServicoExtra(t *testing.T) {
++	casos := []struct {
++		nome      string
++		servico   projections.ServicoExtraDTO
++		estudante projections.EstudanteDTO
++		esperado  bool
++	}{
++		{
++			nome:      "sem nenhuma restrição — disponível para qualquer estudante",
++			servico:   projections.ServicoExtraDTO{},
++			estudante: projections.EstudanteDTO{},
++			esperado:  true,
++		},
++		{
++			nome:      "restrito a anos fundamentais — estudante no ano certo",
++			servico:   projections.ServicoExtraDTO{AnosAcademicosDisponiveis: []string{"7_ano_fundamental"}},
++			estudante: projections.EstudanteDTO{AnoEscolar: strPtr("7_ano_fundamental")},
++			esperado:  true,
++		},
++		{
++			nome:      "restrito a anos fundamentais — estudante em outro ano",
++			servico:   projections.ServicoExtraDTO{AnosAcademicosDisponiveis: []string{"7_ano_fundamental"}},
++			estudante: projections.EstudanteDTO{AnoEscolar: strPtr("8_ano_fundamental")},
++			esperado:  false,
++		},
++		{
++			nome:      "restrito a anos fundamentais — estudante do médio (sem ano fundamental)",
++			servico:   projections.ServicoExtraDTO{AnosAcademicosDisponiveis: []string{"7_ano_fundamental"}},
++			estudante: projections.EstudanteDTO{},
++			esperado:  false,
++		},
++		{
++			nome:      "restrito a um curso do médio — estudante no curso e ano certos",
++			servico:   projections.ServicoExtraDTO{CursosDisponiveis: []string{"curso-1|2_ano_medio"}},
++			estudante: projections.EstudanteDTO{CursoMedioID: strPtr("curso-1"), AnoEscolarMedio: strPtr("2_ano_medio")},
++			esperado:  true,
++		},
++		{
++			nome:      "restrito a um curso do médio — estudante no curso certo, ano diferente",
++			servico:   projections.ServicoExtraDTO{CursosDisponiveis: []string{"curso-1|2_ano_medio"}},
++			estudante: projections.EstudanteDTO{CursoMedioID: strPtr("curso-1"), AnoEscolarMedio: strPtr("1_ano_medio")},
++			esperado:  false,
++		},
++		{
++			nome:      "restrito a um curso superior — estudante no curso e ano certos",
++			servico:   projections.ServicoExtraDTO{CursosDisponiveis: []string{"curso-2|3_ano_superior"}},
++			estudante: projections.EstudanteDTO{CursoSuperiorID: strPtr("curso-2"), AnoSuperior: strPtr("3_ano_superior")},
++			esperado:  true,
++		},
++		{
++			nome:      "restrito a curso do médio — estudante do superior no mesmo curso/ano nominal (tipos não se misturam na prática, id+sufixo do ano já bastam para diferenciar)",
++			servico:   projections.ServicoExtraDTO{CursosDisponiveis: []string{"curso-1|2_ano_medio"}},
++			estudante: projections.EstudanteDTO{CursoSuperiorID: strPtr("curso-1"), AnoSuperior: strPtr("2_ano_superior")},
++			esperado:  false,
++		},
++	}
++	for _, c := range casos {
++		t.Run(c.nome, func(t *testing.T) {
++			if got := elegivelParaServicoExtra(&c.servico, &c.estudante); got != c.esperado {
++				t.Fatalf("elegivelParaServicoExtra() = %v, queria %v", got, c.esperado)
++			}
++		})
++	}
++}
+diff --git a/internal/handlers/servico_extra_handlers.go b/internal/handlers/servico_extra_handlers.go
+index 27d91db..a0bdd78 100644
+--- a/internal/handlers/servico_extra_handlers.go
++++ b/internal/handlers/servico_extra_handlers.go
+@@ -162,6 +162,22 @@ func estudanteElegivelServicoExtra(serv *projections.ServicoExtraDTO, est *proje
+ 	return false
+ }
+ 
++// elegivelParaServicoExtra aplica a mesma regra que SolicitarServicoExtra já
++// usava (antes só descrita ali, inline): um serviço sem nenhuma restrição
++// definida (nem anos soltos, nem cursos) está disponível para todos os
++// estudantes da academia; havendo qualquer restrição, só estudanteElegivelServicoExtra
++// decide. Extraída para ser a MESMA regra usada tanto para decidir o que
++// aparece no catálogo do estudante (ListarServicosExtrasCatalogoEstudante)
++// quanto para aceitar ou rejeitar uma inscrição — antes só existia no
++// segundo lugar, então o catálogo podia mostrar um serviço que a inscrição
++// rejeitaria de qualquer forma.
++func elegivelParaServicoExtra(serv *projections.ServicoExtraDTO, est *projections.EstudanteDTO) bool {
++	if len(serv.AnosAcademicosDisponiveis) == 0 && len(serv.CursosDisponiveis) == 0 {
++		return true
++	}
++	return estudanteElegivelServicoExtra(serv, est)
++}
++
+ // servicoExtraToJSON serializa o aggregate em memória com as MESMAS chaves
+ // snake_case de ServicoExtraDTO (internal/projections/servico_extra_projection.go),
+ // para que criar/atualizar/ativar/desativar devolvam exatamente o mesmo
+@@ -436,3 +452,47 @@ func ListarServicosExtrasPublico(c *gin.Context) {
+ 	}
+ 	c.JSON(200, gin.H{"servicos_extras": x, "total": len(x)})
+ }
++
++// ListarServicosExtrasCatalogoEstudante é o catálogo que o estudante
++// autenticado vê em /servicos-extras/catalogo, já filtrado pela própria
++// elegibilidade (ano/curso atual) com elegivelParaServicoExtra — a MESMA
++// regra que SolicitarServicoExtra usa para aceitar ou rejeitar uma
++// inscrição, então nunca mostra um serviço que a inscrição rejeitaria de
++// qualquer forma. Diferente de ListarServicosExtrasPublico (rota pública,
++// sem estudante autenticado e sem filtro de elegibilidade — usada em
++// contexto institucional/marketing).
++//
++// Também devolve categorias_servico (nome de cada categoria usada pelos
++// serviços da academia) na mesma resposta: o endpoint de categorias
++// (GET /academia/categorias-servico) exige RequireAcademiaOuAdmin, que
++// rejeita um estudante autenticado — o catálogo do estudante nunca
++// conseguia mostrar o nome da categoria por essa rota, e a chamada
++// duplicada ao próprio front (Promise.all sem tratamento de erro) fazia o
++// catálogo inteiro falhar em silêncio. Aqui a busca de categorias é feita
++// diretamente na projeção (sem passar pela rota restrita), então não tem
++// esse problema.
++func ListarServicosExtrasCatalogoEstudante(c *gin.Context) {
++	uid, _ := middleware.GetUserID(c)
++	est, e := getEstudanteProjection(c).GetByID(uid)
++	if e != nil || est == nil || est.CodigoAcademia == nil {
++		utils.RespondWithForbiddenError(c, "estudante não está vinculado a uma academia")
++		return
++	}
++	todos, e := getServicosExtrasProjection(c).GetByAcademia(*est.CodigoAcademia, true)
++	if e != nil {
++		utils.RespondWithInternalError(c, e)
++		return
++	}
++	disponiveis := make([]projections.ServicoExtraDTO, 0, len(todos))
++	for _, s := range todos {
++		if elegivelParaServicoExtra(&s, est) {
++			disponiveis = append(disponiveis, s)
++		}
++	}
++	categorias, e := getCategoriasServicoProjection(c).GetByAcademia(*est.CodigoAcademia, false)
++	if e != nil {
++		utils.RespondWithInternalError(c, e)
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"servicos_extras": disponiveis, "categorias_servico": categorias, "total": len(disponiveis)})
++}
+diff --git a/internal/handlers/servico_extra_solicitacao_handlers.go b/internal/handlers/servico_extra_solicitacao_handlers.go
+index 16e9327..80731c3 100644
+--- a/internal/handlers/servico_extra_solicitacao_handlers.go
++++ b/internal/handlers/servico_extra_solicitacao_handlers.go
+@@ -79,11 +79,9 @@ func SolicitarServicoExtra(c *gin.Context) {
+ 		utils.RespondWithForbiddenError(c, "serviço extra indisponível")
+ 		return
+ 	}
+-	if len(serv.AnosAcademicosDisponiveis) > 0 || len(serv.CursosDisponiveis) > 0 {
+-		if !estudanteElegivelServicoExtra(serv, est) {
+-			utils.RespondWithForbiddenError(c, "este serviço não está disponível para o seu ano/curso atual")
+-			return
+-		}
++	if !elegivelParaServicoExtra(serv, est) {
++		utils.RespondWithForbiddenError(c, "este serviço não está disponível para o seu ano/curso atual")
++		return
+ 	}
+ 	active, e := getSolicitacoesServicoExtraProjection(c).ExisteAtiva(sid, est.CodigoEstudante)
+ 	if e != nil {
