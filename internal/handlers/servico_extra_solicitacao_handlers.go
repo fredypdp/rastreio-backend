@@ -470,16 +470,16 @@ func pendenciasServicoExtra(c *gin.Context, s *aggregates.SolicitacaoServicoExtr
 		utils.RespondWithNotFoundError(c, "serviço extra")
 		return
 	}
-	// ServicoExtraDTO.Preco e .TipoCobranca são *float64/*string (nulos quando
-	// pago=false — ver CHECK chk_servico_extra_pago_campos na migration 118).
-	// Este código só é alcançado quando a inscrição está vinculada a um serviço
-	// com tipo_cobranca mensal/unico, o que implica pago=true e portanto ambos
-	// não-nulos na prática; ainda assim, checamos explicitamente em vez de
-	// desreferenciar direto, para nunca dar panic (500 cru) se essa invariante
-	// for quebrada por qualquer caminho futuro. Sem isto, o build falhava:
-	// "cannot use serv.TipoCobranca (variable of type *string) as string value".
+	// ServicoExtraDTO.Preco e .TipoCobranca são *float64/*string, nulos quando
+	// pago=false (ver CHECK chk_servico_extra_pago_campos na migration 118).
+	// Diferente do comentário anterior a esta correção, isto NÃO é uma
+	// invariante violada: uma inscrição pode ficar vinculada/cancelada num
+	// serviço extra gratuito normalmente, e nesse caso não existe cobrança
+	// nenhuma (nem taxa única, nem mensalidade) — logo, nunca há pendências.
+	// Antes, isto caía no branch de erro interno abaixo, devolvendo 500 ao
+	// estudante sempre que abria "Ver pendências" num serviço gratuito.
 	if serv.Preco == nil || serv.TipoCobranca == nil {
-		utils.RespondWithInternalError(c, errors.New("serviço extra sem preço configurado"))
+		c.JSON(http.StatusOK, gin.H{"pendencias": []finance.ServicoExtraPendenciaView{}})
 		return
 	}
 	fim := time.Now()

@@ -1,0 +1,155 @@
+package handlers
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
+	"spuri/internal/db"
+	"spuri/internal/domain/aggregates"
+	"spuri/internal/finance"
+)
+
+// Tarefa 113 — bug real de produção: estudante com inscrição vinculada a um
+// serviço extra GRATUITO (pago=false, preco/tipo_cobranca nulos por
+// invariante da migration 118 — CHECK chk_servico_extra_pago_campos) abria
+// "Ver pendências" e recebia 500 ("serviço extra sem preço configurado"),
+// porque pendenciasServicoExtra tratava esse estado — normal para um
+// serviço sem cobrança — como erro interno. Correção: devolver pendencias
+// vazia (200), igual ao early-return já existente para outros status.
+func TestIntegrationPendenciasServicoExtraGratuitoVinculadaDevolveVazia(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	client := integrationFinanceClient(t)
+
+	academia := "SCR" + uuid.NewString()[:6]
+	seedAcademiaParaCategoriaServico(t, client, academia)
+	idEstudante := seedEstudanteComAnoEscolar(t, client, academia, "7_ano_fundamental")
+
+	var codigoEstudante string
+	if err := client.DB().QueryRow(`SELECT codigo_estudante FROM projection_estudantes WHERE id=$1`, idEstudante).Scan(&codigoEstudante); err != nil {
+		t.Fatal(err)
+	}
+
+	idServico := seedServicoExtraCatalogo(t, client, academia, "Biblioteca Gratuita", nil) // pago=false
+
+	s := aggregates.NewSolicitacaoServicoExtra()
+	if err := s.Criar(idServico, academia, codigoEstudante, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Aprovar(false, 0, nil, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if s.Status != aggregates.StatusInscricaoVinculada {
+		t.Fatalf("esperava status vinculada, obteve %q", s.Status)
+	}
+
+	repository := db.NewAggregateRepository(client)
+	if err := repository.Save(s); err != nil {
+		t.Fatal(err)
+	}
+
+	previousService := FinanceiroService
+	FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { FinanceiroService = previousService })
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/estudante/servicos-extras/minhas-inscricoes/"+s.GetID().String()+"/pendencias", nil)
+	ctx.Params = gin.Params{{Key: "id", Value: s.GetID().String()}}
+	ctx.Set("dbClient", client)
+	ctx.Set("repository", repository)
+	ctx.Set("user_id", idEstudante)
+	ctx.Set("user_type", "estudante")
+
+	MinhasPendenciasServicoExtra(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("esperava 200 (serviço gratuito não deveria gerar erro), obteve %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Pendencias []any `json:"pendencias"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Pendencias) != 0 {
+		t.Fatalf("esperava pendencias vazia para serviço gratuito, obteve %d", len(body.Pendencias))
+	}
+}
+
+// Checagem de regressão da Tarefa 113: um serviço PAGO (tipo_cobranca=
+// "unico") continua devolvendo a pendência real — a correção só muda o
+// ramo do serviço gratuito, nunca deve silenciar pendências de serviços
+// pagos.
+func TestIntegrationPendenciasServicoExtraPagoVinculadaContinuaFuncionando(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	client := integrationFinanceClient(t)
+
+	academia := "SCR" + uuid.NewString()[:6]
+	seedAcademiaParaCategoriaServico(t, client, academia)
+	idEstudante := seedEstudanteComAnoEscolar(t, client, academia, "7_ano_fundamental")
+
+	var codigoEstudante string
+	if err := client.DB().QueryRow(`SELECT codigo_estudante FROM projection_estudantes WHERE id=$1`, idEstudante).Scan(&codigoEstudante); err != nil {
+		t.Fatal(err)
+	}
+
+	idServico := uuid.New()
+	if _, err := client.DB().Exec(`
+		INSERT INTO projection_servicos_extras
+			(id, codigo_academia, nome, descricao, pago, preco, tipo_cobranca, metodos_pagamento, tem_taxa_inscricao, metodos_pagamento_taxa_inscricao,
+			 anos_academicos_disponiveis, cursos_disponiveis, documento_obrigatorio, documento_instrucoes, detalhes_personalizados,
+			 ativo, criado_por, created_at, updated_at, version, last_event_id)
+		VALUES ($1, $2, 'Transporte Escolar', '', true, 5000, 'unico', '{"REF"}', false, '{}', '{}', '{}', false, '', '{}', true, $3, now(), now(), 1, $4)
+	`, idServico, academia, uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	s := aggregates.NewSolicitacaoServicoExtra()
+	if err := s.Criar(idServico, academia, codigoEstudante, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Aprovar(false, 0, nil, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	repository := db.NewAggregateRepository(client)
+	if err := repository.Save(s); err != nil {
+		t.Fatal(err)
+	}
+
+	previousService := FinanceiroService
+	FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { FinanceiroService = previousService })
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/estudante/servicos-extras/minhas-inscricoes/"+s.GetID().String()+"/pendencias", nil)
+	ctx.Params = gin.Params{{Key: "id", Value: s.GetID().String()}}
+	ctx.Set("dbClient", client)
+	ctx.Set("repository", repository)
+	ctx.Set("user_id", idEstudante)
+	ctx.Set("user_type", "estudante")
+
+	MinhasPendenciasServicoExtra(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("esperava 200, obteve %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Pendencias []struct {
+			TipoLancamento string  `json:"tipo_lancamento"`
+			Valor          float64 `json:"valor"`
+			Estado         string  `json:"estado"`
+		} `json:"pendencias"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Pendencias) != 1 || body.Pendencias[0].TipoLancamento != "preco_unico" || body.Pendencias[0].Valor != 5000 {
+		t.Fatalf("esperava 1 pendência preco_unico de 5000, obteve %+v", body.Pendencias)
+	}
+}
