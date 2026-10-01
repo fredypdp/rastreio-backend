@@ -96,6 +96,8 @@ func financeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, finance.ErrNotFound):
 		utils.RespondWithNotFoundError(c, "recurso financeiro")
+	case errors.Is(err, finance.ErrPagamentoExistente):
+		utils.RespondWithConflictError(c, finance.ErrPagamentoExistente.Error())
 	case errors.Is(err, finance.ErrConflict):
 		utils.RespondWithConflictError(c, "operação financeira equivalente em processamento")
 	case errors.Is(err, finance.ErrUpstream):
@@ -589,6 +591,15 @@ func CancelarCobrancaAppyPay(c *gin.Context) {
 	}
 	out, err := FinanceiroService.CancelCharge(c.Request.Context(), contexto, academia, c.Param("id"), in.Motivo, id.String(), actorType, c.ClientIP())
 	if err != nil {
+		// Um pagamento descoberto durante o cancelamento ainda precisa dos
+		// efeitos de confirmação (matrícula, serviço extra) — o mesmo que o
+		// webhook e a consulta executam.
+		if errors.Is(err, finance.ErrPagamentoExistente) {
+			if effectErr := executarEfeitosPagamentoConfirmado(c, c.Param("id"), id.String(), actorType); effectErr != nil {
+				utils.RespondWithInternalError(c, effectErr)
+				return
+			}
+		}
 		financeError(c, err)
 		return
 	}

@@ -226,6 +226,11 @@ func (s *Service) servicoExtraObrigacaoTemCobrancaAberta(ctx context.Context, id
 	return ok, err
 }
 func (s *Service) ConfirmarLancamentoServicoExtraPago(ctx context.Context, id, tipo string, ano, mes int, actor, actorType, ip string) error {
+	// Idempotente: repetir a confirmação (webhook, consulta, pagamento externo)
+	// não grava um segundo evento "pago" para o mesmo lançamento.
+	if estado, err := s.estadoObrigacaoServicoExtra(ctx, id, tipo, ano, mes); err == nil && estado == EstadoPago {
+		return nil
+	}
 	payload := map[string]any{"solicitacao_id": id, "tipo_lancamento": tipo}
 	if tipo == "mensalidade" {
 		payload["ano"], payload["mes"] = ano, mes
@@ -239,6 +244,11 @@ func (s *Service) ReativarObrigacaoServicoExtra(ctx context.Context, id, tipo st
 	return s.alterarObrigacaoServicoExtra(ctx, id, tipo, ano, mes, motivo, actor, actorType, ip, false)
 }
 func (s *Service) alterarObrigacaoServicoExtra(ctx context.Context, id, tipo string, ano, mes int, motivo, actor, actorType, ip string, anular bool) error {
+	// Só um lançamento que nunca foi pago e cujo pagamento não está aguardando
+	// confirmação pode ser anulado ou reativado.
+	if err := s.garantirObrigacaoServicoExtraSemPagamento(ctx, id, tipo, ano, mes, actor, actorType, ip); err != nil {
+		return err
+	}
 	estado, err := s.estadoObrigacaoServicoExtra(ctx, id, tipo, ano, mes)
 	if err != nil {
 		return err
@@ -249,6 +259,12 @@ func (s *Service) alterarObrigacaoServicoExtra(ctx context.Context, id, tipo str
 	if !anular && estado != EstadoAnulado {
 		return errors.New("só é possível reativar um lançamento anulado e não pago")
 	}
+	if anular {
+		// Cancela as cobranças abertas ANTES de gravar a anulação.
+		if err = s.servicoExtraObrigacaoCancelarCobrancasAbertas(ctx, id, tipo, ano, mes, actor, actorType, ip); err != nil {
+			return err
+		}
+	}
 	payload := map[string]any{"solicitacao_id": id, "tipo_lancamento": tipo, "motivo": strings.TrimSpace(motivo)}
 	if tipo == "mensalidade" {
 		payload["ano"], payload["mes"] = ano, mes
@@ -257,13 +273,7 @@ func (s *Service) alterarObrigacaoServicoExtra(ctx context.Context, id, tipo str
 	if anular {
 		event = aggregates.ObrigacaoServicoExtraAnulada
 	}
-	if err = s.recordServicoExtraObrigacao(ctx, id, event, payload, actor, actorType, ip); err != nil {
-		return err
-	}
-	if anular {
-		return s.servicoExtraObrigacaoCancelarCobrancasAbertas(ctx, id, tipo, ano, mes, actor, actorType, ip)
-	}
-	return nil
+	return s.recordServicoExtraObrigacao(ctx, id, event, payload, actor, actorType, ip)
 }
 func (s *Service) servicoExtraObrigacaoCancelarCobrancasAbertas(ctx context.Context, id, tipo string, ano, mes int, actor, actorType, ip string) error {
 	rows, err := s.client.DB().QueryContext(ctx, `SELECT id::text,codigo_academia FROM financeiro_cobrancas WHERE payload->>'codigo_inscricao_servico'=$1 AND payload->>'tipo_lancamento_servico_extra'=$2 AND COALESCE((payload->>'ano_referencia')::int,0)=$3 AND COALESCE((payload->>'mes_referencia')::int,0)=$4 AND lower(COALESCE(payload->>'status','')) NOT IN (`+chargeAbertaStatusExcluidos+`)`, id, tipo, ano, mes)

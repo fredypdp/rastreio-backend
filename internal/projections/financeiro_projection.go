@@ -249,7 +249,7 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
 	case "SegredoWebhookAppyPayRotacionado":
 		_, err := p.client.DB().Exec(`UPDATE financeiro_credenciais_appypay SET updated_at=CURRENT_TIMESTAMP WHERE id=$1`, e.AggregateID)
 		return err
-	case "CobrancaAppyPaySolicitada", "CobrancaAppyPayCriada", "CobrancaAppyPayFalhou", "CobrancaAppyPayConsultada", "CobrancaAppyPayCancelada", "CobrancaAppyPayConflitoPosCancelamento", "QRCodeAppyPaySolicitado", "QRCodeAppyPayGerado", "QRCodeAppyPayFalhou":
+	case "CobrancaAppyPaySolicitada", "CobrancaAppyPayCriada", "CobrancaAppyPayFalhou", "CobrancaAppyPayConsultada", "CobrancaAppyPayCancelada", "CobrancaAppyPayConflitoPosCancelamento", "CobrancaPagamentoExternoRegistrado", "QRCodeAppyPaySolicitado", "QRCodeAppyPayGerado", "QRCodeAppyPayFalhou":
 		merchant, _ := v["merchant_transaction_id"].(string)
 		provider, _ := v["provider_charge_id"].(string)
 		contexto, _ := v["contexto_tipo"].(string)

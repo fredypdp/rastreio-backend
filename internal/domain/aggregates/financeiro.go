@@ -33,6 +33,13 @@ const (
 	CredenciaisAppyPayRemovidas            = "CredenciaisAppyPayRemovidas"
 )
 
+// CobrancaPagamentoExternoRegistrado marca uma cobrança como paga FORA da
+// plataforma (decisão manual da academia). O payload leva status "Success" e
+// pagamento_externo=true, de modo que todo o pipeline posterior (confirmação
+// de mensalidade, matrícula, serviço extra) trate a cobrança exatamente como
+// uma paga dentro do ecossistema.
+const CobrancaPagamentoExternoRegistrado = "CobrancaPagamentoExternoRegistrado"
+
 func NewFinanceiro() *Financeiro { return NewFinanceiroWithID(uuid.New()) }
 func NewFinanceiroWithID(id uuid.UUID) *Financeiro {
 	return &Financeiro{BaseAggregate: &BaseAggregate{ID: id, UncommittedEvents: []DomainEvent{}}}
