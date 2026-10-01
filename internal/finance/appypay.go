@@ -258,6 +258,12 @@ type CobrancaResumo struct {
 	// Para uma cobrança real, continua sempre presente (a coluna é
 	// NOT NULL em financeiro_cobrancas).
 	AtualizadoEm *time.Time `json:"atualizado_em,omitempty"`
+	// PagamentoExterno é true quando a academia marcou manualmente a cobrança
+	// como paga fora da plataforma (evento CobrancaPagamentoExternoRegistrado).
+	// Nesse caso Status é "Success" e ReferenciaExterna (opcional) guarda o
+	// identificador do comprovativo informado pela academia.
+	PagamentoExterno  bool   `json:"pagamento_externo,omitempty"`
+	ReferenciaExterna string `json:"referencia_externa,omitempty"`
 }
 
 // CobrancaListResult é o resultado paginado de ListCobrancas.
@@ -742,6 +748,9 @@ func (s *Service) CancelCharge(ctx context.Context, contexto, academia, identifi
 	if row.Contexto != contexto || row.Academia != academia || !canCancelCharge(row, academia, actorType) {
 		return ChargeResult{}, fmt.Errorf("%w: cobrança não encontrada no contexto", ErrNotFound)
 	}
+	if isSuccessfulChargeStatus(row.Status) {
+		return ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}, ErrPagamentoExistente
+	}
 	if isTerminalChargeStatus(row.Status) {
 		return ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}, errors.New("cobrança já está em estado terminal e não pode ser cancelada")
 	}
@@ -750,7 +759,10 @@ func (s *Service) CancelCharge(ctx context.Context, contexto, academia, identifi
 		return current, err
 	}
 	if isSuccessfulChargeStatus(current.Status) {
-		return current, errors.New("cobrança já foi paga e não pode ser cancelada")
+		// O pagamento já existe no provedor mas ainda não tinha sido
+		// confirmado localmente: reconcilia antes de recusar o cancelamento.
+		s.reconciliarPagamentoDescoberto(ctx, row.ID, actorID, actorType, ip)
+		return current, ErrPagamentoExistente
 	}
 	payload := make(map[string]any, len(row.Payload)+4)
 	for key, value := range row.Payload {
@@ -964,6 +976,8 @@ func scanCobrancaResumo(rows *sql.Rows) (CobrancaResumo, error) {
 	if qrType, ok := payload["qr_code_type"].(string); ok && qrType != "" {
 		dto.MetodoPagamento = "GPO_QR"
 	}
+	dto.PagamentoExterno, _ = payload["pagamento_externo"].(bool)
+	dto.ReferenciaExterna, _ = payload["pagamento_externo_referencia"].(string)
 	dto.CodigoEstudante, _ = payload["codigo_estudante"].(string)
 	dto.CodigoSolicitacao, _ = payload["codigo_solicitacao"].(string)
 	dto.CodigoInscricaoServico, _ = payload["codigo_inscricao_servico"].(string)
@@ -1171,6 +1185,12 @@ func normalizeChargeStatus(raw string) string {
 // pre-check. A late Success after local cancellation is preserved as a
 // reconciliation conflict and never changes the local cancelled status.
 func (s *Service) consultCharge(ctx context.Context, row chargeRow, actorID, actorType, ip string) (ChargeResult, error) {
+	// Pagamento registado manualmente pela academia (fora da plataforma): o
+	// provedor continuará a reportar Pending/Expired para sempre, então uma
+	// consulta nunca pode rebaixar esta cobrança de Success.
+	if externo, _ := row.Payload["pagamento_externo"].(bool); externo && isSuccessfulChargeStatus(row.Status) {
+		return ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}, nil
+	}
 	cred, err := s.loadCredential(ctx, row.Contexto, row.Academia)
 	if err != nil {
 		return ChargeResult{}, err
@@ -1625,7 +1645,11 @@ func (s *Service) AcceptWebhook(ctx context.Context, metodo, eventID string, own
 			// cobrança que já chegou a um estado terminal (ex.: já paga, já
 			// cancelada) — só um sucesso tem tratamento de conflito próprio
 			// (abaixo) que pode correr por cima de um estado terminal local.
-			(success || !isTerminalChargeStatus(charge.Status)) {
+			(success || !isTerminalChargeStatus(charge.Status)) &&
+			// Cobrança que a academia marcou como paga fora da plataforma é
+			// definitiva: nenhum webhook posterior (nem um Success cuja
+			// consulta ao vivo ainda diga Pending) pode alterá-la.
+			!cobrancaPagaExternamente(charge) {
 			// Double-check: um webhook de sucesso "normal" (a cobrança não
 			// está cancelada localmente) só é tratado como definitivo depois
 			// de uma consulta ao vivo concordar. O caso de sucesso chegando

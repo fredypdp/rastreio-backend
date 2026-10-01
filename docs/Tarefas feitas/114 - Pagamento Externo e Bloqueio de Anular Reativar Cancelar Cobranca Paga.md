@@ -1,6 +1,6 @@
-# Tarefa 114 — Pagamento marcado como feito fora da plataforma + bloqueio de anular/reativar/cancelar cobrança já paga
+# (feito) Tarefa 114 — Pagamento marcado como feito fora da plataforma + bloqueio de anular/reativar/cancelar cobrança já paga
 
-**Estado:** pendente
+**Estado:** feito
 
 **Repositório:** https://github.com/fredypdp/rastreio-backend
 **Branch base:** main (validado contra o commit `bf8aa51`)
@@ -219,3 +219,8 @@ Depois que os Passos 1–2 passarem sem problema:
 - [ ] Nenhuma migration criada; `go.mod`/`go.sum` intactos
 - [ ] Estado trocado para **feito**, título com `(feito)`, secção **Resultado** adicionada
 - [ ] `.md` e `.patch` movidos para `docs/Tarefas feitas/` com o mesmo nome
+
+
+## Resultado
+
+O patch de pagamento externo e dos bloqueios para cobranças pagas foi aplicado conforme documentado. As verificações `gofmt -l .`, `go build ./...`, `go vet ./...` e `go test ./...` terminaram sem saída ou erros neste ambiente; não houve desvios.

@@ -288,6 +288,11 @@ func (s *Service) alterarObrigacoesMensalidade(ctx context.Context, in Obrigacao
 		if _, err := s.mesDevido(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes); err != nil {
 			return err
 		}
+		// Só uma mensalidade que nunca foi paga e cujo pagamento não está
+		// aguardando confirmação pode ser anulada ou reativada.
+		if err := s.garantirObrigacaoMensalidadeSemPagamento(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes, actorID, actorType, ip); err != nil {
+			return err
+		}
 		state, _, err := s.estadoObrigacao(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes)
 		if err != nil {
 			return err
@@ -299,16 +304,18 @@ func (s *Service) alterarObrigacoesMensalidade(ctx context.Context, in Obrigacao
 			return errors.New("só é possível reativar uma mensalidade anulada e não paga")
 		}
 	}
+	if eventType == aggregates.ObrigacaoMensalidadeAnulada {
+		// As cobranças abertas são canceladas ANTES de gravar a anulação: se o
+		// cancelamento falhar, nenhuma anulação é gravada.
+		for _, mes := range in.Meses {
+			if err := s.cancelOpenMensalidadeCharges(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes, actorID, actorType, ip); err != nil {
+				return err
+			}
+		}
+	}
 	for _, mes := range in.Meses {
 		if err := s.recordMensalidade(ctx, in.CodigoAcademia, eventType, map[string]any{"codigo_estudante": in.CodigoEstudante, "codigo_academia": in.CodigoAcademia, "ano_letivo": in.AnoLetivo, "mes": mes, "motivo": strings.TrimSpace(in.Motivo)}, actorID, actorType, ip); err != nil {
 			return err
-		}
-	}
-	if eventType == aggregates.ObrigacaoMensalidadeAnulada {
-		for _, mes := range in.Meses {
-			// The annulment is already committed. A charge that won the provider
-			// race is reconciled by CancelCharge and never invalidates it.
-			_ = s.cancelOpenMensalidadeCharges(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes, actorID, actorType, ip)
 		}
 	}
 	return nil
@@ -926,7 +933,9 @@ func (s *Service) cancelOpenMensalidadeCharges(ctx context.Context, estudante, a
 		if err := rows.Scan(&id); err != nil {
 			return err
 		}
-		_, _ = s.CancelCharge(ctx, ContextoAcademia, academia, id, "obrigação anulada pela academia", actorID, actorType, ip)
+		if _, err := s.CancelCharge(ctx, ContextoAcademia, academia, id, "obrigação anulada pela academia", actorID, actorType, ip); err != nil {
+			return err
+		}
 	}
 	return rows.Err()
 }
