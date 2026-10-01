@@ -1,0 +1,1544 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index ebde90e..578c993 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -429,6 +429,7 @@ func setupRouter() *gin.Engine {
+ 			financeiro.POST("/appypay/qr-codes", handlers.GerarQRCodeAppyPay)
+ 			financeiro.GET("/appypay/cobrancas/:id", handlers.ConsultarCobrancaAppyPay)
+ 			financeiro.POST("/appypay/cobrancas/:id/cancelar", handlers.CancelarCobrancaAppyPay)
++			financeiro.POST("/appypay/cobrancas/:id/pago-externamente", handlers.RegistrarPagamentoExternoCobranca)
+ 			financeiro.GET("/cobrancas", handlers.ListarCobrancasAppyPay)
+ 			financeiro.POST("/servicos-extras/obrigacao/anular", handlers.AnularObrigacaoServicoExtra)
+ 			financeiro.POST("/servicos-extras/obrigacao/reativar", handlers.ReativarObrigacaoServicoExtra)
+@@ -441,6 +442,7 @@ func setupRouter() *gin.Engine {
+ 			financeiro.DELETE("/mensalidades/inicio-cobranca", handlers.RemoverMesInicioCobranca)
+ 			financeiro.POST("/mensalidades/obrigacoes/anular", handlers.AnularObrigacoesMensalidade)
+ 			financeiro.POST("/mensalidades/obrigacoes/reativar", handlers.ReativarObrigacoesMensalidade)
++			financeiro.POST("/mensalidades/obrigacoes/pago-externamente", handlers.RegistrarPagamentoExternoMensalidades)
+ 			financeiro.POST("/matriculas/configuracoes", handlers.ConfigurarMatricula)
+ 			financeiro.PUT("/matriculas/configuracoes", handlers.ConfigurarMatricula)
+ 			financeiro.GET("/matriculas/configuracoes", handlers.ListarConfiguracoesMatricula)
+diff --git a/internal/db/safe_queries.go b/internal/db/safe_queries.go
+index 10dcd5f..1a0e9df 100644
+--- a/internal/db/safe_queries.go
++++ b/internal/db/safe_queries.go
+@@ -126,6 +126,7 @@ var validEventTypes = map[string]bool{
+ 	"CobrancaAppyPayConsultada":                          true,
+ 	"CobrancaAppyPayCancelada":                           true,
+ 	"CobrancaAppyPayConflitoPosCancelamento":             true,
++	"CobrancaPagamentoExternoRegistrado":                 true,
+ 	"QRCodeAppyPaySolicitado":                            true,
+ 	"QRCodeAppyPayGerado":                                true,
+ 	"QRCodeAppyPayFalhou":                                true,
+diff --git a/internal/domain/aggregates/financeiro.go b/internal/domain/aggregates/financeiro.go
+index 1e9355a..e99059f 100644
+--- a/internal/domain/aggregates/financeiro.go
++++ b/internal/domain/aggregates/financeiro.go
+@@ -33,6 +33,13 @@ const (
+ 	CredenciaisAppyPayRemovidas            = "CredenciaisAppyPayRemovidas"
+ )
+ 
++// CobrancaPagamentoExternoRegistrado marca uma cobrança como paga FORA da
++// plataforma (decisão manual da academia). O payload leva status "Success" e
++// pagamento_externo=true, de modo que todo o pipeline posterior (confirmação
++// de mensalidade, matrícula, serviço extra) trate a cobrança exatamente como
++// uma paga dentro do ecossistema.
++const CobrancaPagamentoExternoRegistrado = "CobrancaPagamentoExternoRegistrado"
++
+ func NewFinanceiro() *Financeiro { return NewFinanceiroWithID(uuid.New()) }
+ func NewFinanceiroWithID(id uuid.UUID) *Financeiro {
+ 	return &Financeiro{BaseAggregate: &BaseAggregate{ID: id, UncommittedEvents: []DomainEvent{}}}
+diff --git a/internal/finance/appypay.go b/internal/finance/appypay.go
+index 3335901..91fc287 100644
+--- a/internal/finance/appypay.go
++++ b/internal/finance/appypay.go
+@@ -258,6 +258,12 @@ type CobrancaResumo struct {
+ 	// Para uma cobrança real, continua sempre presente (a coluna é
+ 	// NOT NULL em financeiro_cobrancas).
+ 	AtualizadoEm *time.Time `json:"atualizado_em,omitempty"`
++	// PagamentoExterno é true quando a academia marcou manualmente a cobrança
++	// como paga fora da plataforma (evento CobrancaPagamentoExternoRegistrado).
++	// Nesse caso Status é "Success" e ReferenciaExterna (opcional) guarda o
++	// identificador do comprovativo informado pela academia.
++	PagamentoExterno  bool   `json:"pagamento_externo,omitempty"`
++	ReferenciaExterna string `json:"referencia_externa,omitempty"`
+ }
+ 
+ // CobrancaListResult é o resultado paginado de ListCobrancas.
+@@ -742,6 +748,9 @@ func (s *Service) CancelCharge(ctx context.Context, contexto, academia, identifi
+ 	if row.Contexto != contexto || row.Academia != academia || !canCancelCharge(row, academia, actorType) {
+ 		return ChargeResult{}, fmt.Errorf("%w: cobrança não encontrada no contexto", ErrNotFound)
+ 	}
++	if isSuccessfulChargeStatus(row.Status) {
++		return ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}, ErrPagamentoExistente
++	}
+ 	if isTerminalChargeStatus(row.Status) {
+ 		return ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}, errors.New("cobrança já está em estado terminal e não pode ser cancelada")
+ 	}
+@@ -750,7 +759,10 @@ func (s *Service) CancelCharge(ctx context.Context, contexto, academia, identifi
+ 		return current, err
+ 	}
+ 	if isSuccessfulChargeStatus(current.Status) {
+-		return current, errors.New("cobrança já foi paga e não pode ser cancelada")
++		// O pagamento já existe no provedor mas ainda não tinha sido
++		// confirmado localmente: reconcilia antes de recusar o cancelamento.
++		s.reconciliarPagamentoDescoberto(ctx, row.ID, actorID, actorType, ip)
++		return current, ErrPagamentoExistente
+ 	}
+ 	payload := make(map[string]any, len(row.Payload)+4)
+ 	for key, value := range row.Payload {
+@@ -964,6 +976,8 @@ func scanCobrancaResumo(rows *sql.Rows) (CobrancaResumo, error) {
+ 	if qrType, ok := payload["qr_code_type"].(string); ok && qrType != "" {
+ 		dto.MetodoPagamento = "GPO_QR"
+ 	}
++	dto.PagamentoExterno, _ = payload["pagamento_externo"].(bool)
++	dto.ReferenciaExterna, _ = payload["pagamento_externo_referencia"].(string)
+ 	dto.CodigoEstudante, _ = payload["codigo_estudante"].(string)
+ 	dto.CodigoSolicitacao, _ = payload["codigo_solicitacao"].(string)
+ 	dto.CodigoInscricaoServico, _ = payload["codigo_inscricao_servico"].(string)
+@@ -1171,6 +1185,12 @@ func normalizeChargeStatus(raw string) string {
+ // pre-check. A late Success after local cancellation is preserved as a
+ // reconciliation conflict and never changes the local cancelled status.
+ func (s *Service) consultCharge(ctx context.Context, row chargeRow, actorID, actorType, ip string) (ChargeResult, error) {
++	// Pagamento registado manualmente pela academia (fora da plataforma): o
++	// provedor continuará a reportar Pending/Expired para sempre, então uma
++	// consulta nunca pode rebaixar esta cobrança de Success.
++	if externo, _ := row.Payload["pagamento_externo"].(bool); externo && isSuccessfulChargeStatus(row.Status) {
++		return ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}, nil
++	}
+ 	cred, err := s.loadCredential(ctx, row.Contexto, row.Academia)
+ 	if err != nil {
+ 		return ChargeResult{}, err
+@@ -1625,7 +1645,11 @@ func (s *Service) AcceptWebhook(ctx context.Context, metodo, eventID string, own
+ 			// cobrança que já chegou a um estado terminal (ex.: já paga, já
+ 			// cancelada) — só um sucesso tem tratamento de conflito próprio
+ 			// (abaixo) que pode correr por cima de um estado terminal local.
+-			(success || !isTerminalChargeStatus(charge.Status)) {
++			(success || !isTerminalChargeStatus(charge.Status)) &&
++			// Cobrança que a academia marcou como paga fora da plataforma é
++			// definitiva: nenhum webhook posterior (nem um Success cuja
++			// consulta ao vivo ainda diga Pending) pode alterá-la.
++			!cobrancaPagaExternamente(charge) {
+ 			// Double-check: um webhook de sucesso "normal" (a cobrança não
+ 			// está cancelada localmente) só é tratado como definitivo depois
+ 			// de uma consulta ao vivo concordar. O caso de sucesso chegando
+diff --git a/internal/finance/mensalidade.go b/internal/finance/mensalidade.go
+index 4b8ff57..b7ab1c4 100644
+--- a/internal/finance/mensalidade.go
++++ b/internal/finance/mensalidade.go
+@@ -288,6 +288,11 @@ func (s *Service) alterarObrigacoesMensalidade(ctx context.Context, in Obrigacao
+ 		if _, err := s.mesDevido(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes); err != nil {
+ 			return err
+ 		}
++		// Só uma mensalidade que nunca foi paga e cujo pagamento não está
++		// aguardando confirmação pode ser anulada ou reativada.
++		if err := s.garantirObrigacaoMensalidadeSemPagamento(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes, actorID, actorType, ip); err != nil {
++			return err
++		}
+ 		state, _, err := s.estadoObrigacao(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes)
+ 		if err != nil {
+ 			return err
+@@ -299,18 +304,20 @@ func (s *Service) alterarObrigacoesMensalidade(ctx context.Context, in Obrigacao
+ 			return errors.New("só é possível reativar uma mensalidade anulada e não paga")
+ 		}
+ 	}
++	if eventType == aggregates.ObrigacaoMensalidadeAnulada {
++		// As cobranças abertas são canceladas ANTES de gravar a anulação: se o
++		// cancelamento falhar, nenhuma anulação é gravada.
++		for _, mes := range in.Meses {
++			if err := s.cancelOpenMensalidadeCharges(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes, actorID, actorType, ip); err != nil {
++				return err
++			}
++		}
++	}
+ 	for _, mes := range in.Meses {
+ 		if err := s.recordMensalidade(ctx, in.CodigoAcademia, eventType, map[string]any{"codigo_estudante": in.CodigoEstudante, "codigo_academia": in.CodigoAcademia, "ano_letivo": in.AnoLetivo, "mes": mes, "motivo": strings.TrimSpace(in.Motivo)}, actorID, actorType, ip); err != nil {
+ 			return err
+ 		}
+ 	}
+-	if eventType == aggregates.ObrigacaoMensalidadeAnulada {
+-		for _, mes := range in.Meses {
+-			// The annulment is already committed. A charge that won the provider
+-			// race is reconciled by CancelCharge and never invalidates it.
+-			_ = s.cancelOpenMensalidadeCharges(ctx, in.CodigoEstudante, in.CodigoAcademia, in.AnoLetivo, mes, actorID, actorType, ip)
+-		}
+-	}
+ 	return nil
+ }
+ 
+@@ -926,7 +933,9 @@ func (s *Service) cancelOpenMensalidadeCharges(ctx context.Context, estudante, a
+ 		if err := rows.Scan(&id); err != nil {
+ 			return err
+ 		}
+-		_, _ = s.CancelCharge(ctx, ContextoAcademia, academia, id, "obrigação anulada pela academia", actorID, actorType, ip)
++		if _, err := s.CancelCharge(ctx, ContextoAcademia, academia, id, "obrigação anulada pela academia", actorID, actorType, ip); err != nil {
++			return err
++		}
+ 	}
+ 	return rows.Err()
+ }
+diff --git a/internal/finance/pagamento_externo.go b/internal/finance/pagamento_externo.go
+new file mode 100644
+index 0000000..983ba4a
+--- /dev/null
++++ b/internal/finance/pagamento_externo.go
+@@ -0,0 +1,387 @@
++package finance
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net/http"
++	"net/url"
++	"strings"
++	"time"
++	"unicode/utf8"
++
++	"github.com/google/uuid"
++
++	"spuri/internal/domain/aggregates"
++)
++
++const (
++	// MetodoPagamentoExterno é gravado em payment_method das cobranças criadas
++	// para pendências pagas fora da plataforma.
++	MetodoPagamentoExterno = "EXTERNO"
++
++	maxObservacaoPagamentoExterno = 500
++	maxReferenciaPagamentoExterno = 100
++)
++
++// ErrPagamentoExistente é devolvido quando uma cobrança/obrigação já foi paga
++// (dentro ou fora da plataforma) ou tem um pagamento já confirmado pelo
++// provedor, ainda aguardando confirmação local. Nesses casos ela não pode ser
++// cancelada, anulada nem reativada. O handler mapeia este erro para HTTP 409.
++var ErrPagamentoExistente = errors.New("esta cobrança já foi paga ou tem um pagamento aguardando confirmação, por isso não pode ser cancelada, anulada nem reativada")
++
++// PagamentoExternoInput são os dados opcionais informados pela academia ao
++// marcar uma cobrança existente como paga fora da plataforma.
++type PagamentoExternoInput struct {
++	Observacao        string `json:"observacao,omitempty"`
++	ReferenciaExterna string `json:"referencia_externa,omitempty"`
++}
++
++// PagamentoExternoMensalidadesInput marca pendências de mensalidade (sem
++// cobrança em aberto) como pagas fora da plataforma.
++type PagamentoExternoMensalidadesInput struct {
++	CodigoEstudante   string                  `json:"codigo_estudante"`
++	Meses             []MensalidadeSelecaoMes `json:"meses"`
++	Observacao        string                  `json:"observacao,omitempty"`
++	ReferenciaExterna string                  `json:"referencia_externa,omitempty"`
++}
++
++// PagamentoExternoResultado é a resposta de ambos os endpoints de pagamento
++// externo. JaRegistrado é true quando a mesma cobrança já tinha sido marcada
++// antes (a operação é idempotente e não grava um segundo evento).
++type PagamentoExternoResultado struct {
++	ChargeResult
++	JaRegistrado bool                    `json:"ja_registrado,omitempty"`
++	Valor        float64                 `json:"valor,omitempty"`
++	Meses        []MensalidadeSelecaoMes `json:"meses,omitempty"`
++}
++
++func normalizarCamposExternos(observacao, referencia *string) error {
++	*observacao, *referencia = strings.TrimSpace(*observacao), strings.TrimSpace(*referencia)
++	if utf8.RuneCountInString(*observacao) > maxObservacaoPagamentoExterno {
++		return fmt.Errorf("observacao deve ter no máximo %d caracteres", maxObservacaoPagamentoExterno)
++	}
++	if utf8.RuneCountInString(*referencia) > maxReferenciaPagamentoExterno {
++		return fmt.Errorf("referencia_externa deve ter no máximo %d caracteres", maxReferenciaPagamentoExterno)
++	}
++	return nil
++}
++
++func marcarPagamentoExterno(payload map[string]any, observacao, referencia, actorID string) {
++	payload["pagamento_externo"] = true
++	payload["pagamento_externo_em"] = time.Now().UTC().Format(time.RFC3339)
++	payload["pagamento_externo_por"] = actorID
++	if observacao != "" {
++		payload["pagamento_externo_observacao"] = observacao
++	}
++	if referencia != "" {
++		payload["pagamento_externo_referencia"] = referencia
++	}
++}
++
++func copiarPayload(src map[string]any) map[string]any {
++	out := make(map[string]any, len(src)+8)
++	for k, v := range src {
++		out[k] = v
++	}
++	return out
++}
++
++// payloadIndicaPagamento é true quando o payload de uma cobrança carrega
++// qualquer sinal de pagamento: status Success, Success observado no provedor
++// depois de um cancelamento local (provider_status) ou pagamento externo.
++func payloadIndicaPagamento(payload map[string]any) bool {
++	if status, _ := payload["status"].(string); isSuccessfulChargeStatus(normalizeChargeStatus(status)) {
++		return true
++	}
++	if status, _ := payload["provider_status"].(string); isSuccessfulChargeStatus(normalizeChargeStatus(status)) {
++		return true
++	}
++	externo, _ := payload["pagamento_externo"].(bool)
++	return externo
++}
++
++// cobrancaPagaExternamente é true para uma cobrança Success marcada como paga
++// fora da plataforma.
++func cobrancaPagaExternamente(row chargeRow) bool {
++	externo, _ := row.Payload["pagamento_externo"].(bool)
++	return externo && isSuccessfulChargeStatus(row.Status)
++}
++
++// CobrancaEstaPaga informa se a cobrança está com status Success localmente.
++func (s *Service) CobrancaEstaPaga(ctx context.Context, identifier string) (bool, error) {
++	row, err := s.loadCharge(ctx, identifier)
++	if err != nil {
++		return false, err
++	}
++	return isSuccessfulChargeStatus(row.Status), nil
++}
++
++// statusAoVivoSeDisponivel consulta o provedor. Devolve verificada=false (sem
++// erro) apenas quando o escopo não tem credencial AppyPay — não há provedor
++// com que o pagamento possa conflitar. Qualquer outra falha bloqueia, porque
++// sem consulta não se sabe se o pagador já pagou.
++func (s *Service) statusAoVivoSeDisponivel(ctx context.Context, row chargeRow) (status string, verificada bool, err error) {
++	cred, err := s.loadCredential(ctx, row.Contexto, row.Academia)
++	if err != nil {
++		if errors.Is(err, ErrNotFound) {
++			return "", false, nil
++		}
++		return "", false, err
++	}
++	path := "/charges/" + url.PathEscape(row.ProviderID)
++	if row.ProviderID == "" {
++		path = "/charges?merchantTransactionId=" + url.QueryEscape(row.Merchant)
++	}
++	response, err := s.callJSON(ctx, cred, http.MethodGet, path, nil, false)
++	if err != nil {
++		return "", false, fmt.Errorf("%w: não foi possível confirmar com a AppyPay se a cobrança já foi paga", ErrUpstream)
++	}
++	status = normalizeChargeStatus(extractProviderOutcome(response).Status)
++	return status, status != "", nil
++}
++
++// reconciliarPagamentoDescoberto aplica, em melhor esforço, os efeitos
++// financeiros de um pagamento que acabou de ser descoberto fora do fluxo
++// normal (mensalidade e lançamento de serviço extra). Os efeitos de matrícula
++// e taxa de inscrição vivem na camada de handlers.
++func (s *Service) reconciliarPagamentoDescoberto(ctx context.Context, chargeID uuid.UUID, actorID, actorType, ip string) {
++	_ = s.confirmMensalidadeCharge(ctx, chargeID, actorID, actorType, ip)
++	codigo, tipo, mes, ano, err := s.DadosServicoExtraDaCobranca(ctx, chargeID.String())
++	if err == nil && codigo != "" && (tipo == "mensalidade" || tipo == "preco_unico") {
++		_ = s.ConfirmarLancamentoServicoExtraPago(ctx, codigo, tipo, ano, mes, actorID, actorType, ip)
++	}
++}
++
++// RegistrarPagamentoExternoCobranca marca uma cobrança real da academia, ainda
++// aguardando pagamento, como paga fora da plataforma. Antes de gravar consulta
++// o provedor: se a AppyPay já reporta Success, o pagamento aconteceu dentro do
++// ecossistema — reconcilia e devolve ErrPagamentoExistente.
++func (s *Service) RegistrarPagamentoExternoCobranca(ctx context.Context, academia, identifier string, in PagamentoExternoInput, actorID, actorType, ip string) (PagamentoExternoResultado, error) {
++	if err := normalizarCamposExternos(&in.Observacao, &in.ReferenciaExterna); err != nil {
++		return PagamentoExternoResultado{}, err
++	}
++	if strings.TrimSpace(identifier) == "" {
++		return PagamentoExternoResultado{}, errors.New("id da cobrança é obrigatório")
++	}
++	row, err := s.loadCharge(ctx, identifier)
++	if err != nil {
++		return PagamentoExternoResultado{}, err
++	}
++	if actorType != "academia" || strings.TrimSpace(academia) == "" || row.Contexto != ContextoAcademia || row.Academia != academia {
++		return PagamentoExternoResultado{}, fmt.Errorf("%w: cobrança não encontrada no contexto", ErrNotFound)
++	}
++	resultado := PagamentoExternoResultado{ChargeResult: ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}}
++
++	if externo, _ := row.Payload["pagamento_externo"].(bool); externo && isSuccessfulChargeStatus(row.Status) {
++		// Repetição do mesmo pedido: não grava outro evento, só garante que a
++		// confirmação de mensalidade (idempotente) foi aplicada.
++		if err = s.confirmMensalidadeCharge(ctx, row.ID, actorID, actorType, ip); err != nil {
++			return resultado, err
++		}
++		resultado.JaRegistrado = true
++		return resultado, nil
++	}
++	if isSuccessfulChargeStatus(row.Status) {
++		return resultado, ErrPagamentoExistente
++	}
++	if isTerminalChargeStatus(row.Status) {
++		return resultado, errors.New("somente cobranças aguardando pagamento podem ser marcadas como pagas fora da plataforma")
++	}
++
++	live, verificada, err := s.statusAoVivoSeDisponivel(ctx, row)
++	if err != nil {
++		return resultado, err
++	}
++	if verificada && isSuccessfulChargeStatus(live) {
++		current, err := s.consultCharge(ctx, row, actorID, actorType, ip)
++		if err != nil {
++			return resultado, err
++		}
++		s.reconciliarPagamentoDescoberto(ctx, row.ID, actorID, actorType, ip)
++		return PagamentoExternoResultado{ChargeResult: current}, ErrPagamentoExistente
++	}
++
++	payload := copiarPayload(row.Payload)
++	payload["status_anterior"] = row.Status
++	payload["status"] = "Success"
++	marcarPagamentoExterno(payload, in.Observacao, in.ReferenciaExterna, actorID)
++	if err = s.record(ctx, row.ID, aggregates.CobrancaPagamentoExternoRegistrado, payload, actorID, actorType, ip); err != nil {
++		return resultado, err
++	}
++	resultado.Status = "Success"
++	if err = s.confirmMensalidadeCharge(ctx, row.ID, actorID, actorType, ip); err != nil {
++		return resultado, err
++	}
++	return resultado, nil
++}
++
++func merchantExterno(id uuid.UUID) string {
++	return "EXT" + strings.ToUpper(strings.ReplaceAll(id.String(), "-", ""))[:12]
++}
++
++// RegistrarPagamentoExternoMensalidades marca mensalidades pendentes (sem
++// cobrança em aberto) como pagas fora da plataforma. Cria uma cobrança já
++// paga — para que o pagamento apareça no histórico — e confirma as
++// mensalidades pelo mesmo caminho do pagamento normal.
++func (s *Service) RegistrarPagamentoExternoMensalidades(ctx context.Context, academia string, in PagamentoExternoMensalidadesInput, actorID, actorType, ip string) (PagamentoExternoResultado, error) {
++	academia, in.CodigoEstudante = strings.TrimSpace(academia), strings.TrimSpace(in.CodigoEstudante)
++	if actorType != "academia" || academia == "" || strings.TrimSpace(actorID) == "" {
++		return PagamentoExternoResultado{}, errors.New("somente a academia pode registar um pagamento feito fora da plataforma")
++	}
++	if err := normalizarCamposExternos(&in.Observacao, &in.ReferenciaExterna); err != nil {
++		return PagamentoExternoResultado{}, err
++	}
++	if in.CodigoEstudante == "" || len(in.Meses) == 0 {
++		return PagamentoExternoResultado{}, errors.New("codigo_estudante e pelo menos um mês são obrigatórios")
++	}
++	seen := map[string]bool{}
++	meses := make([]MensalidadeSelecaoMes, 0, len(in.Meses))
++	total := 0.0
++	for _, m := range in.Meses {
++		m.AnoLetivo = strings.TrimSpace(m.AnoLetivo)
++		if !anoLetivoValido(m.AnoLetivo) || !mesValido(m.Mes) {
++			return PagamentoExternoResultado{}, errors.New("cada mês deve ter ano_letivo válido e mes entre 1 e 12")
++		}
++		key := fmt.Sprintf("%s:%d", m.AnoLetivo, m.Mes)
++		if seen[key] {
++			return PagamentoExternoResultado{}, errors.New("mês selecionado mais de uma vez")
++		}
++		seen[key] = true
++		view, err := s.mesDevido(ctx, in.CodigoEstudante, academia, m.AnoLetivo, m.Mes)
++		if err != nil {
++			return PagamentoExternoResultado{}, err
++		}
++		estado, _, err := s.estadoObrigacao(ctx, in.CodigoEstudante, academia, m.AnoLetivo, m.Mes)
++		if err != nil {
++			return PagamentoExternoResultado{}, err
++		}
++		switch estado {
++		case EstadoPago:
++			return PagamentoExternoResultado{}, ErrPagamentoExistente
++		case EstadoAnulado:
++			return PagamentoExternoResultado{}, fmt.Errorf("mensalidade %s/%02d está anulada: reative-a antes de registar o pagamento", m.AnoLetivo, m.Mes)
++		}
++		aberta, err := s.mensalidadeTemCobrancaAberta(ctx, in.CodigoEstudante, academia, m.AnoLetivo, m.Mes)
++		if err != nil {
++			return PagamentoExternoResultado{}, err
++		}
++		if aberta {
++			return PagamentoExternoResultado{}, fmt.Errorf("mensalidade %s/%02d já possui cobrança em aberto: marque essa cobrança como paga", m.AnoLetivo, m.Mes)
++		}
++		total += view.Valor
++		meses = append(meses, MensalidadeSelecaoMes{AnoLetivo: m.AnoLetivo, Mes: m.Mes})
++	}
++	total = roundAmount(total)
++	id := uuid.New()
++	request := ChargeRequest{
++		ContextoTipo:          ContextoAcademia,
++		CodigoAcademia:        academia,
++		Amount:                total,
++		Currency:              "AOA",
++		Description:           fmt.Sprintf("Propinas %s: %d mensalidade(s) — pagamento fora da plataforma", academia, len(meses)),
++		MerchantTransactionID: merchantExterno(id),
++		PaymentMethod:         MetodoPagamentoExterno,
++		CodigoEstudante:       in.CodigoEstudante,
++		Mensalidades:          meses,
++	}
++	payload := chargePayload(id, request, "", "Success", nil)
++	payload["status_anterior"] = EstadoPendente
++	marcarPagamentoExterno(payload, in.Observacao, in.ReferenciaExterna, actorID)
++	if err := s.record(ctx, id, aggregates.CobrancaPagamentoExternoRegistrado, payload, actorID, actorType, ip); err != nil {
++		return PagamentoExternoResultado{}, err
++	}
++	resultado := PagamentoExternoResultado{
++		ChargeResult: ChargeResult{ID: id, MerchantTransactionID: request.MerchantTransactionID, Status: "Success"},
++		Valor:        total,
++		Meses:        meses,
++	}
++	if err := s.confirmMensalidadeCharge(ctx, id, actorID, actorType, ip); err != nil {
++		return resultado, err
++	}
++	return resultado, nil
++}
++
++// garantirCobrancasSemPagamento falha com ErrPagamentoExistente quando alguma
++// das cobranças mostra sinal de pagamento — local, externo ou, para as ainda
++// abertas, confirmado ao vivo no provedor (Success ainda não confirmado
++// localmente). Uma falha de comunicação com o provedor também bloqueia.
++func (s *Service) garantirCobrancasSemPagamento(ctx context.Context, ids []string, actorID, actorType, ip string) error {
++	for _, id := range ids {
++		row, err := s.loadCharge(ctx, id)
++		if err != nil {
++			return err
++		}
++		if payloadIndicaPagamento(row.Payload) {
++			s.reconciliarPagamentoDescoberto(ctx, row.ID, actorID, actorType, ip)
++			return ErrPagamentoExistente
++		}
++		if isTerminalChargeStatus(row.Status) {
++			continue
++		}
++		live, verificada, err := s.statusAoVivoSeDisponivel(ctx, row)
++		if err != nil {
++			return err
++		}
++		if verificada && isSuccessfulChargeStatus(live) {
++			if _, err = s.consultCharge(ctx, row, actorID, actorType, ip); err != nil {
++				return err
++			}
++			s.reconciliarPagamentoDescoberto(ctx, row.ID, actorID, actorType, ip)
++			return ErrPagamentoExistente
++		}
++	}
++	return nil
++}
++
++func (s *Service) idsDeCobrancas(ctx context.Context, query string, args ...any) ([]string, error) {
++	rows, err := s.client.DB().QueryContext(ctx, query, args...)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	var ids []string
++	for rows.Next() {
++		var id string
++		if err = rows.Scan(&id); err != nil {
++			return nil, err
++		}
++		ids = append(ids, id)
++	}
++	return ids, rows.Err()
++}
++
++// garantirObrigacaoMensalidadeSemPagamento é a regra única de "nunca foi paga e
++// não está aguardando confirmação" para anular/reativar uma mensalidade.
++func (s *Service) garantirObrigacaoMensalidadeSemPagamento(ctx context.Context, estudante, academia, ano string, mes int, actorID, actorType, ip string) error {
++	estado, _, err := s.estadoObrigacao(ctx, estudante, academia, ano, mes)
++	if err != nil {
++		return err
++	}
++	if estado == EstadoPago {
++		return ErrPagamentoExistente
++	}
++	ids, err := s.idsDeCobrancas(ctx, `SELECT c.id::text FROM financeiro_mensalidade_cobrancas m JOIN financeiro_cobrancas c ON c.id=m.charge_id
++		WHERE m.codigo_estudante=$1 AND m.codigo_academia=$2 AND m.ano_letivo=$3 AND m.mes=$4`, estudante, academia, ano, mes)
++	if err != nil {
++		return err
++	}
++	return s.garantirCobrancasSemPagamento(ctx, ids, actorID, actorType, ip)
++}
++
++// garantirObrigacaoServicoExtraSemPagamento é o equivalente para lançamentos
++// de serviço extra (mensalidade e preço único).
++func (s *Service) garantirObrigacaoServicoExtraSemPagamento(ctx context.Context, id, tipo string, ano, mes int, actorID, actorType, ip string) error {
++	estado, err := s.estadoObrigacaoServicoExtra(ctx, id, tipo, ano, mes)
++	if err != nil {
++		return err
++	}
++	if estado == EstadoPago {
++		return ErrPagamentoExistente
++	}
++	ids, err := s.idsDeCobrancas(ctx, `SELECT id::text FROM financeiro_cobrancas WHERE payload->>'codigo_inscricao_servico'=$1 AND payload->>'tipo_lancamento_servico_extra'=$2 AND COALESCE((payload->>'ano_referencia')::int,0)=$3 AND COALESCE((payload->>'mes_referencia')::int,0)=$4`, id, tipo, ano, mes)
++	if err != nil {
++		return err
++	}
++	return s.garantirCobrancasSemPagamento(ctx, ids, actorID, actorType, ip)
++}
+diff --git a/internal/finance/pagamento_externo_integration_test.go b/internal/finance/pagamento_externo_integration_test.go
+new file mode 100644
+index 0000000..e855941
+--- /dev/null
++++ b/internal/finance/pagamento_externo_integration_test.go
+@@ -0,0 +1,503 @@
++package finance
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/google/uuid"
++
++	"spuri/internal/db"
++)
++
++// failingTransport simula o provedor indisponível.
++type failingTransport struct{}
++
++func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
++	return nil, errors.New("provedor indisponível (simulado)")
++}
++
++type extFixture struct {
++	client    *db.Client
++	service   *Service
++	transport *appyPayMockTransport
++	academia  string
++	estudante string
++	alvo      MensalidadeMesView
++}
++
++func (f *extFixture) meses() []MensalidadeSelecaoMes {
++	return []MensalidadeSelecaoMes{{AnoLetivo: f.alvo.AnoLetivo, Mes: f.alvo.Mes}}
++}
++
++func newExtFixture(t *testing.T, comCredencial bool) *extFixture {
++	t.Helper()
++	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
++	client := integrationClient(t)
++	service := NewService(client)
++	academia := mensalidadeCodigo()
++	estudante := "EST-EXT-" + uuid.NewString()[:8]
++	seedMensalidadeAcademia(t, client, academia, "private", "fundamental", "2025_2026")
++	seedMensalidadeTurma(t, client, academia, "T-EXT", "2025_2026", estudante, nil)
++	seedMensalidadeConfiguracao(t, client, academia, NivelFundamental, "6_ano_fundamental", nil, 1000, 7, time.Date(2025, 8, 1, 0, 0, 0, 0, time.UTC))
++	if _, err := client.DB().Exec(`UPDATE financeiro_mensalidade_configuracoes SET metodos_pagamento='{GPO}' WHERE codigo_academia=$1`, academia); err != nil {
++		t.Fatal(err)
++	}
++	f := &extFixture{client: client, service: service, transport: &appyPayMockTransport{status: "Pending"}, academia: academia, estudante: estudante}
++	if comCredencial {
++		configureIntegrationCredential(t, service, ContextoAcademia, academia)
++		service.SetHTTPClient(&http.Client{Transport: f.transport})
++	}
++	todas, err := service.ListMensalidades(context.Background(), estudante, &academia)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, m := range todas {
++		if m.Estado == EstadoPendente {
++			f.alvo = m
++			break
++		}
++	}
++	if f.alvo.AnoLetivo == "" {
++		t.Fatal("esperava pelo menos uma mensalidade pendente")
++	}
++	return f
++}
++
++// abrirCobranca cria, como o estudante, uma cobrança GPO aguardando pagamento
++// para o mês alvo.
++func (f *extFixture) abrirCobranca(t *testing.T) uuid.UUID {
++	t.Helper()
++	view, err := f.service.IniciarPagamentoMensalidades(context.Background(), MensalidadePagamentoInput{
++		CodigoEstudante: f.estudante, CodigoAcademia: f.academia, Meses: f.meses(), MetodoPagamento: "GPO", Telefone: "923000000",
++	}, f.estudante, "estudante", "127.0.0.1")
++	if err != nil {
++		t.Fatalf("IniciarPagamentoMensalidades falhou: %v", err)
++	}
++	if view.Charge.Status != EstadoCobrancaAguardandoPagamento {
++		t.Fatalf("esperava %q, obteve %q", EstadoCobrancaAguardandoPagamento, view.Charge.Status)
++	}
++	return view.Charge.ID
++}
++
++func (f *extFixture) estado(t *testing.T) string {
++	t.Helper()
++	estado, _, err := f.service.estadoObrigacao(context.Background(), f.estudante, f.academia, f.alvo.AnoLetivo, f.alvo.Mes)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return estado
++}
++
++func (f *extFixture) eventosObrigacao(t *testing.T, tipo string) int {
++	t.Helper()
++	var n int
++	if err := f.client.DB().QueryRow(`SELECT count(*) FROM financeiro_mensalidade_obrigacoes_eventos WHERE codigo_estudante=$1 AND codigo_academia=$2 AND ano_letivo=$3 AND mes=$4 AND tipo=$5`,
++		f.estudante, f.academia, f.alvo.AnoLetivo, f.alvo.Mes, tipo).Scan(&n); err != nil {
++		t.Fatal(err)
++	}
++	return n
++}
++
++func (f *extFixture) cobranca(t *testing.T, id uuid.UUID) map[string]any {
++	t.Helper()
++	row, err := f.service.loadCharge(context.Background(), id.String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	return row.Payload
++}
++
++func ledgerCount(t *testing.T, client *db.Client, aggregate uuid.UUID, evento string) int {
++	t.Helper()
++	var n int
++	if err := client.DB().QueryRow(`SELECT count(*) FROM spuri_ledger WHERE aggregate_id=$1 AND event_type=$2`, aggregate, evento).Scan(&n); err != nil {
++		t.Fatal(err)
++	}
++	return n
++}
++
++func TestIntegrationPagamentoExternoMensalidadeSemCobranca(t *testing.T) {
++	f := newExtFixture(t, false) // sem credencial AppyPay: o pagamento externo não depende do provedor
++	ctx := context.Background()
++
++	out, err := f.service.RegistrarPagamentoExternoMensalidades(ctx, f.academia, PagamentoExternoMensalidadesInput{
++		CodigoEstudante: f.estudante, Meses: f.meses(), Observacao: "Pago em numerário na secretaria", ReferenciaExterna: "REC-001",
++	}, uuid.NewString(), "academia", "127.0.0.1")
++	if err != nil {
++		t.Fatalf("RegistrarPagamentoExternoMensalidades falhou: %v", err)
++	}
++	if out.Status != "Success" || out.Valor != 1000 || len(out.Meses) != 1 {
++		t.Fatalf("resultado inesperado: %+v", out)
++	}
++	if got := f.estado(t); got != EstadoPago {
++		t.Fatalf("mês deveria estar %q depois do pagamento externo, obteve %q", EstadoPago, got)
++	}
++	if n := f.eventosObrigacao(t, "paga"); n != 1 {
++		t.Fatalf("esperava 1 evento paga, obteve %d", n)
++	}
++	p := f.cobranca(t, out.ID)
++	if p["status"] != "Success" || p["pagamento_externo"] != true || p["payment_method"] != MetodoPagamentoExterno || p["pagamento_externo_referencia"] != "REC-001" {
++		t.Fatalf("payload da cobrança inesperado: %v", p)
++	}
++	var chargeID string
++	if err = f.client.DB().QueryRow(`SELECT charge_id::text FROM financeiro_mensalidade_obrigacoes_eventos WHERE codigo_estudante=$1 AND codigo_academia=$2 AND ano_letivo=$3 AND mes=$4 AND tipo='paga'`,
++		f.estudante, f.academia, f.alvo.AnoLetivo, f.alvo.Mes).Scan(&chargeID); err != nil || chargeID != out.ID.String() {
++		t.Fatalf("evento paga deveria apontar para a cobrança externa %s, obteve %q (%v)", out.ID, chargeID, err)
++	}
++	// aparece na listagem com a marca de pagamento externo
++	lista, err := f.service.ListCobrancas(ctx, ContextoAcademia, f.academia, nil, nil, nil, nil, "", "", nil, 50, 0)
++	if err != nil {
++		t.Fatalf("ListCobrancas falhou: %v", err)
++	}
++	achou := false
++	for _, c := range lista.Cobrancas {
++		if c.ID == out.ID {
++			achou = c.PagamentoExterno && c.Status == "Success" && c.ReferenciaExterna == "REC-001" && c.MetodoPagamento == MetodoPagamentoExterno
++		}
++	}
++	if !achou {
++		t.Fatal("a cobrança externa deveria aparecer em ListCobrancas com pagamento_externo=true")
++	}
++	// repetir é recusado: o mês já está pago
++	if _, err = f.service.RegistrarPagamentoExternoMensalidades(ctx, f.academia, PagamentoExternoMensalidadesInput{CodigoEstudante: f.estudante, Meses: f.meses()}, uuid.NewString(), "academia", "127.0.0.1"); !errors.Is(err, ErrPagamentoExistente) {
++		t.Fatalf("segundo pagamento externo do mesmo mês deveria falhar com ErrPagamentoExistente, obteve %v", err)
++	}
++	// regra 2: mês pago não pode ser anulado nem reativado
++	in := ObrigacaoMensalidadeInput{CodigoEstudante: f.estudante, CodigoAcademia: f.academia, AnoLetivo: f.alvo.AnoLetivo, Meses: []int{f.alvo.Mes}}
++	if err = f.service.AnularObrigacoesMensalidade(ctx, in, uuid.NewString(), "academia", "127.0.0.1"); err == nil {
++		t.Fatal("anular mensalidade paga fora da plataforma foi aceite")
++	}
++	if err = f.service.ReativarObrigacoesMensalidade(ctx, in, uuid.NewString(), "academia", "127.0.0.1"); err == nil {
++		t.Fatal("reativar mensalidade paga fora da plataforma foi aceite")
++	}
++	// o estado sobrevive a um Rebuild do ledger (a projeção conhece o evento novo)
++	if err = f.service.projection.Rebuild(); err != nil {
++		t.Fatalf("Rebuild() falhou: %v", err)
++	}
++	if got := f.estado(t); got != EstadoPago {
++		t.Fatalf("após Rebuild o mês deveria continuar %q, obteve %q", EstadoPago, got)
++	}
++	if p = f.cobranca(t, out.ID); p["pagamento_externo"] != true {
++		t.Fatalf("após Rebuild a cobrança perdeu a marca de pagamento externo: %v", p)
++	}
++}
++
++func TestIntegrationPagamentoExternoMensalidadeRecusaMesComCobrancaAberta(t *testing.T) {
++	f := newExtFixture(t, true)
++	f.abrirCobranca(t)
++	_, err := f.service.RegistrarPagamentoExternoMensalidades(context.Background(), f.academia, PagamentoExternoMensalidadesInput{CodigoEstudante: f.estudante, Meses: f.meses()}, uuid.NewString(), "academia", "127.0.0.1")
++	if err == nil {
++		t.Fatal("pagamento externo por mês com cobrança aberta deveria exigir marcar a cobrança")
++	}
++	if got := f.estado(t); got != EstadoPendente {
++		t.Fatalf("mês deveria continuar pendente, obteve %q", got)
++	}
++}
++
++func TestIntegrationPagamentoExternoCobrancaAbertaSegueMesmoPipeline(t *testing.T) {
++	f := newExtFixture(t, true)
++	ctx := context.Background()
++	id := f.abrirCobranca(t)
++
++	out, err := f.service.RegistrarPagamentoExternoCobranca(ctx, f.academia, id.String(), PagamentoExternoInput{ReferenciaExterna: "TRF-77"}, uuid.NewString(), "academia", "127.0.0.1")
++	if err != nil {
++		t.Fatalf("RegistrarPagamentoExternoCobranca falhou: %v", err)
++	}
++	if out.Status != "Success" || out.JaRegistrado {
++		t.Fatalf("resultado inesperado: %+v", out)
++	}
++	if got := f.estado(t); got != EstadoPago {
++		t.Fatalf("mês deveria estar %q, obteve %q", EstadoPago, got)
++	}
++	p := f.cobranca(t, id)
++	if p["status"] != "Success" || p["pagamento_externo"] != true || p["status_anterior"] != EstadoCobrancaAguardandoPagamento {
++		t.Fatalf("payload inesperado: %v", p)
++	}
++	if n := f.eventosObrigacao(t, "paga"); n != 1 {
++		t.Fatalf("esperava 1 evento paga, obteve %d", n)
++	}
++
++	// idempotente: repetir não grava outro evento nem outra confirmação
++	again, err := f.service.RegistrarPagamentoExternoCobranca(ctx, f.academia, id.String(), PagamentoExternoInput{}, uuid.NewString(), "academia", "127.0.0.1")
++	if err != nil || !again.JaRegistrado {
++		t.Fatalf("repetição deveria devolver JaRegistrado=true sem erro: %+v %v", again, err)
++	}
++	if n := ledgerCount(t, f.client, id, "CobrancaPagamentoExternoRegistrado"); n != 1 {
++		t.Fatalf("esperava exatamente 1 CobrancaPagamentoExternoRegistrado no ledger, obteve %d", n)
++	}
++	if n := ledgerCount(t, f.client, id, "MensalidadesCobrancaConfirmada"); n != 1 {
++		t.Fatalf("esperava exatamente 1 MensalidadesCobrancaConfirmada no ledger, obteve %d", n)
++	}
++
++	// o provedor continua a dizer Pending: uma consulta NÃO pode rebaixar a cobrança
++	consultada, err := f.service.ConsultCharge(ctx, ContextoAcademia, f.academia, id.String(), uuid.NewString(), "academia", "127.0.0.1")
++	if err != nil || consultada.Status != "Success" {
++		t.Fatalf("consulta deveria manter Success: %+v %v", consultada, err)
++	}
++	if p = f.cobranca(t, id); p["status"] != "Success" {
++		t.Fatalf("consulta rebaixou a cobrança paga externamente: %v", p["status"])
++	}
++	// e a cobrança paga não pode ser cancelada
++	if _, err = f.service.CancelCharge(ctx, ContextoAcademia, f.academia, id.String(), "tentativa", uuid.NewString(), "academia", "127.0.0.1"); !errors.Is(err, ErrPagamentoExistente) {
++		t.Fatalf("cancelar cobrança paga deveria falhar com ErrPagamentoExistente, obteve %v", err)
++	}
++}
++
++func TestIntegrationPagamentoExternoCobrancaJaPagaNoProvedorBloqueiaEReconcilia(t *testing.T) {
++	f := newExtFixture(t, true)
++	ctx := context.Background()
++	id := f.abrirCobranca(t)
++	f.transport.status = "Success" // o pagador pagou na AppyPay; o webhook ainda não chegou
++
++	_, err := f.service.RegistrarPagamentoExternoCobranca(ctx, f.academia, id.String(), PagamentoExternoInput{}, uuid.NewString(), "academia", "127.0.0.1")
++	if !errors.Is(err, ErrPagamentoExistente) {
++		t.Fatalf("esperava ErrPagamentoExistente, obteve %v", err)
++	}
++	p := f.cobranca(t, id)
++	if p["status"] != "Success" || p["pagamento_externo"] == true {
++		t.Fatalf("a cobrança deveria ficar Success pelo provedor, sem marca de pagamento externo: %v", p)
++	}
++	if got := f.estado(t); got != EstadoPago {
++		t.Fatalf("o pagamento descoberto deveria ter confirmado a mensalidade, obteve %q", got)
++	}
++	if n := ledgerCount(t, f.client, id, "CobrancaPagamentoExternoRegistrado"); n != 0 {
++		t.Fatalf("não deveria existir evento de pagamento externo, obteve %d", n)
++	}
++}
++
++func TestIntegrationPagamentoExternoCobrancaBloqueiaQuandoProvedorIndisponivel(t *testing.T) {
++	f := newExtFixture(t, true)
++	id := f.abrirCobranca(t)
++	f.service.SetHTTPClient(&http.Client{Transport: failingTransport{}})
++
++	_, err := f.service.RegistrarPagamentoExternoCobranca(context.Background(), f.academia, id.String(), PagamentoExternoInput{}, uuid.NewString(), "academia", "127.0.0.1")
++	if !errors.Is(err, ErrUpstream) {
++		t.Fatalf("sem confirmar com o provedor deveria falhar com ErrUpstream, obteve %v", err)
++	}
++	if n := ledgerCount(t, f.client, id, "CobrancaPagamentoExternoRegistrado"); n != 0 {
++		t.Fatalf("nada deveria ter sido gravado, obteve %d eventos", n)
++	}
++}
++
++func TestIntegrationPagamentoExternoCobrancaRecusaOutraAcademia(t *testing.T) {
++	f := newExtFixture(t, true)
++	id := f.abrirCobranca(t)
++	_, err := f.service.RegistrarPagamentoExternoCobranca(context.Background(), "OUTRA-ACAD", id.String(), PagamentoExternoInput{}, uuid.NewString(), "academia", "127.0.0.1")
++	if !errors.Is(err, ErrNotFound) {
++		t.Fatalf("outra academia deveria receber ErrNotFound, obteve %v", err)
++	}
++	if _, err = f.service.RegistrarPagamentoExternoCobranca(context.Background(), f.academia, id.String(), PagamentoExternoInput{}, uuid.NewString(), "admin", "127.0.0.1"); !errors.Is(err, ErrNotFound) {
++		t.Fatalf("ator que não é academia deveria receber ErrNotFound, obteve %v", err)
++	}
++}
++
++// Regra 2 — o pagador pagou no provedor mas a confirmação ainda não chegou:
++// anular NÃO pode gravar a anulação (antes da correção ela era gravada antes
++// de o cancelamento descobrir o pagamento).
++func TestIntegrationAnularBloqueadoQuandoPagamentoAguardaConfirmacao(t *testing.T) {
++	f := newExtFixture(t, true)
++	ctx := context.Background()
++	f.abrirCobranca(t)
++	f.transport.status = "Success"
++
++	in := ObrigacaoMensalidadeInput{CodigoEstudante: f.estudante, CodigoAcademia: f.academia, AnoLetivo: f.alvo.AnoLetivo, Meses: []int{f.alvo.Mes}}
++	err := f.service.AnularObrigacoesMensalidade(ctx, in, uuid.NewString(), "academia", "127.0.0.1")
++	if !errors.Is(err, ErrPagamentoExistente) {
++		t.Fatalf("esperava ErrPagamentoExistente, obteve %v", err)
++	}
++	if n := f.eventosObrigacao(t, "anulada"); n != 0 {
++		t.Fatalf("nenhuma anulação deveria ter sido gravada, obteve %d", n)
++	}
++	if got := f.estado(t); got != EstadoPago {
++		t.Fatalf("o pagamento descoberto deveria ter confirmado a mensalidade, obteve %q", got)
++	}
++}
++
++func TestIntegrationAnularCancelaCobrancaAbertaENaoPagaEReativaDepois(t *testing.T) {
++	f := newExtFixture(t, true)
++	ctx := context.Background()
++	id := f.abrirCobranca(t) // continua Pending no provedor: ninguém pagou
++
++	in := ObrigacaoMensalidadeInput{CodigoEstudante: f.estudante, CodigoAcademia: f.academia, AnoLetivo: f.alvo.AnoLetivo, Meses: []int{f.alvo.Mes}}
++	if err := f.service.AnularObrigacoesMensalidade(ctx, in, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("anular mês nunca pago deveria funcionar: %v", err)
++	}
++	if got := f.estado(t); got != EstadoAnulado {
++		t.Fatalf("esperava %q, obteve %q", EstadoAnulado, got)
++	}
++	if p := f.cobranca(t, id); p["status"] != "cancelada" {
++		t.Fatalf("a cobrança aberta deveria ter sido cancelada, status=%v", p["status"])
++	}
++	if err := f.service.ReativarObrigacoesMensalidade(ctx, in, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("reativar mês anulado nunca pago deveria funcionar: %v", err)
++	}
++	if got := f.estado(t); got != EstadoPendente {
++		t.Fatalf("esperava %q, obteve %q", EstadoPendente, got)
++	}
++}
++
++func TestIntegrationAnularBloqueadoQuandoProvedorIndisponivel(t *testing.T) {
++	f := newExtFixture(t, true)
++	f.abrirCobranca(t)
++	f.service.SetHTTPClient(&http.Client{Transport: failingTransport{}})
++
++	in := ObrigacaoMensalidadeInput{CodigoEstudante: f.estudante, CodigoAcademia: f.academia, AnoLetivo: f.alvo.AnoLetivo, Meses: []int{f.alvo.Mes}}
++	err := f.service.AnularObrigacoesMensalidade(context.Background(), in, uuid.NewString(), "academia", "127.0.0.1")
++	if !errors.Is(err, ErrUpstream) {
++		t.Fatalf("sem confirmar com o provedor deveria falhar com ErrUpstream, obteve %v", err)
++	}
++	if n := f.eventosObrigacao(t, "anulada"); n != 0 {
++		t.Fatalf("nenhuma anulação deveria ter sido gravada, obteve %d", n)
++	}
++}
++
++// Um Success tardio depois do cancelamento local (conflito) significa que a
++// mensalidade foi paga: reativar deixa de ser permitido.
++func TestIntegrationReativarBloqueadoAposPagamentoTardioDoProvedor(t *testing.T) {
++	f := newExtFixture(t, true)
++	ctx := context.Background()
++	id := f.abrirCobranca(t)
++	if _, err := f.service.CancelCharge(ctx, ContextoAcademia, f.academia, id.String(), "cancelada pela academia", uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("CancelCharge falhou: %v", err)
++	}
++	in := ObrigacaoMensalidadeInput{CodigoEstudante: f.estudante, CodigoAcademia: f.academia, AnoLetivo: f.alvo.AnoLetivo, Meses: []int{f.alvo.Mes}}
++	if err := f.service.AnularObrigacoesMensalidade(ctx, in, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("anular falhou: %v", err)
++	}
++	f.transport.status = "Success" // pagamento tardio no provedor
++	if _, err := f.service.ConsultCharge(ctx, ContextoAcademia, f.academia, id.String(), uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("ConsultCharge falhou: %v", err)
++	}
++	if n := ledgerCount(t, f.client, id, "CobrancaAppyPayConflitoPosCancelamento"); n != 1 {
++		t.Fatalf("esperava 1 conflito pós-cancelamento, obteve %d", n)
++	}
++	err := f.service.ReativarObrigacoesMensalidade(ctx, in, uuid.NewString(), "academia", "127.0.0.1")
++	if !errors.Is(err, ErrPagamentoExistente) {
++		t.Fatalf("reativar após pagamento tardio deveria falhar com ErrPagamentoExistente, obteve %v", err)
++	}
++	if got := f.estado(t); got != EstadoAnulado {
++		t.Fatalf("o mês deveria continuar %q, obteve %q", EstadoAnulado, got)
++	}
++}
++
++func TestIntegrationCancelarCobrancaDescobreSuccessEReconcilia(t *testing.T) {
++	f := newExtFixture(t, true)
++	ctx := context.Background()
++	id := f.abrirCobranca(t)
++	f.transport.status = "Success"
++
++	_, err := f.service.CancelCharge(ctx, ContextoAcademia, f.academia, id.String(), "tentativa", uuid.NewString(), "academia", "127.0.0.1")
++	if !errors.Is(err, ErrPagamentoExistente) {
++		t.Fatalf("esperava ErrPagamentoExistente, obteve %v", err)
++	}
++	if got := f.estado(t); got != EstadoPago {
++		t.Fatalf("o pagamento descoberto no cancelamento deveria confirmar a mensalidade, obteve %q", got)
++	}
++}
++
++// Serviço extra: mesmas regras, usando cobranças sintéticas (não é preciso
++// montar uma inscrição completa porque as regras vivem no serviço financeiro).
++func seedCobrancaServicoExtra(t *testing.T, f *extFixture, inscricao string, ano, mes int) uuid.UUID {
++	t.Helper()
++	id := uuid.New()
++	payload := map[string]any{
++		"charge_id": id.String(), "contexto_tipo": ContextoAcademia, "codigo_academia": f.academia,
++		"codigo_inscricao_servico": inscricao, "tipo_lancamento_servico_extra": "mensalidade",
++		"ano_referencia": ano, "mes_referencia": mes, "amount": 500.0, "currency": "AOA",
++		"merchant_transaction_id": merchantExterno(id), "payment_method": "GPO", "provider_charge_id": "",
++		"status": EstadoCobrancaAguardandoPagamento,
++	}
++	if err := f.service.record(context.Background(), id, "CobrancaAppyPaySolicitada", payload, "teste", "sistema", "127.0.0.1"); err != nil {
++		t.Fatal(err)
++	}
++	return id
++}
++
++func contaEventosServicoExtra(t *testing.T, f *extFixture, inscricao, tipo string) int {
++	t.Helper()
++	var n int
++	if err := f.client.DB().QueryRow(`SELECT count(*) FROM financeiro_servico_extra_obrigacoes_eventos WHERE solicitacao_id=$1 AND tipo=$2`, inscricao, tipo).Scan(&n); err != nil {
++		t.Fatal(err)
++	}
++	return n
++}
++
++func TestIntegrationServicoExtraAnularBloqueadoQuandoPagamentoAguardaConfirmacao(t *testing.T) {
++	f := newExtFixture(t, true)
++	ctx := context.Background()
++	inscricao := uuid.NewString()
++	seedCobrancaServicoExtra(t, f, inscricao, 2026, 3)
++	f.transport.status = "Success"
++
++	err := f.service.AnularObrigacaoServicoExtra(ctx, inscricao, "mensalidade", 2026, 3, "teste", uuid.NewString(), "academia", "127.0.0.1")
++	if !errors.Is(err, ErrPagamentoExistente) {
++		t.Fatalf("esperava ErrPagamentoExistente, obteve %v", err)
++	}
++	if n := contaEventosServicoExtra(t, f, inscricao, "anulada"); n != 0 {
++		t.Fatalf("nenhuma anulação deveria ter sido gravada, obteve %d", n)
++	}
++	if n := contaEventosServicoExtra(t, f, inscricao, "paga"); n != 1 {
++		t.Fatalf("o pagamento descoberto deveria ter gravado 1 lançamento pago, obteve %d", n)
++	}
++	// repetir a confirmação é idempotente (não duplica o evento)
++	if err = f.service.ConfirmarLancamentoServicoExtraPago(ctx, inscricao, "mensalidade", 2026, 3, "teste", "sistema", "127.0.0.1"); err != nil {
++		t.Fatal(err)
++	}
++	if n := contaEventosServicoExtra(t, f, inscricao, "paga"); n != 1 {
++		t.Fatalf("confirmação repetida não deveria duplicar o evento, obteve %d", n)
++	}
++	if err = f.service.AnularObrigacaoServicoExtra(ctx, inscricao, "mensalidade", 2026, 3, "teste", uuid.NewString(), "academia", "127.0.0.1"); !errors.Is(err, ErrPagamentoExistente) {
++		t.Fatalf("anular lançamento já pago deveria falhar com ErrPagamentoExistente, obteve %v", err)
++	}
++}
++
++func TestIntegrationServicoExtraAnularCancelaCobrancaAbertaNaoPaga(t *testing.T) {
++	f := newExtFixture(t, true)
++	ctx := context.Background()
++	inscricao := uuid.NewString()
++	id := seedCobrancaServicoExtra(t, f, inscricao, 2026, 4) // provedor: Pending
++
++	if err := f.service.AnularObrigacaoServicoExtra(ctx, inscricao, "mensalidade", 2026, 4, "teste", uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("anular lançamento nunca pago deveria funcionar: %v", err)
++	}
++	if p := f.cobranca(t, id); p["status"] != "cancelada" {
++		t.Fatalf("a cobrança aberta deveria ter sido cancelada, status=%v", p["status"])
++	}
++	if n := contaEventosServicoExtra(t, f, inscricao, "anulada"); n != 1 {
++		t.Fatalf("esperava 1 anulação, obteve %d", n)
++	}
++	if err := f.service.ReativarObrigacaoServicoExtra(ctx, inscricao, "mensalidade", 2026, 4, "teste", uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatalf("reativar lançamento anulado nunca pago deveria funcionar: %v", err)
++	}
++}
++
++// Um webhook "Success" tardio, com a consulta ao vivo ainda "Pending" (o
++// provedor nunca viu o pagamento), não pode rebaixar uma cobrança que a
++// academia marcou como paga fora da plataforma.
++func TestIntegrationWebhookNaoRebaixaCobrancaPagaExternamente(t *testing.T) {
++	f := newExtFixture(t, true)
++	ctx := context.Background()
++	id := f.abrirCobranca(t)
++	row, err := f.service.loadCharge(ctx, id.String())
++	if err != nil || row.ProviderID == "" {
++		t.Fatalf("a cobrança deveria ter provider id: %+v %v", row, err)
++	}
++	if _, err = f.service.RegistrarPagamentoExternoCobranca(ctx, f.academia, id.String(), PagamentoExternoInput{}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
++		t.Fatal(err)
++	}
++	owner := WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: f.academia}
++	payload := map[string]any{"id": row.ProviderID, "responseStatus": map[string]any{"successful": true, "status": "Success", "source": "GPO"}}
++	if _, _, err = f.service.AcceptWebhook(ctx, "GPO", row.ProviderID, owner, payload); err != nil {
++		t.Fatalf("AcceptWebhook falhou: %v", err)
++	}
++	p := f.cobranca(t, id)
++	if p["status"] != "Success" || p["pagamento_externo"] != true {
++		t.Fatalf("o webhook rebaixou/alterou a cobrança paga externamente: status=%v externo=%v", p["status"], p["pagamento_externo"])
++	}
++	if n := ledgerCount(t, f.client, id, "MensalidadesCobrancaConfirmada"); n != 1 {
++		t.Fatalf("esperava 1 confirmação, obteve %d", n)
++	}
++}
+diff --git a/internal/finance/servico_extra.go b/internal/finance/servico_extra.go
+index 8ecc58f..720a468 100644
+--- a/internal/finance/servico_extra.go
++++ b/internal/finance/servico_extra.go
+@@ -226,6 +226,11 @@ func (s *Service) servicoExtraObrigacaoTemCobrancaAberta(ctx context.Context, id
+ 	return ok, err
+ }
+ func (s *Service) ConfirmarLancamentoServicoExtraPago(ctx context.Context, id, tipo string, ano, mes int, actor, actorType, ip string) error {
++	// Idempotente: repetir a confirmação (webhook, consulta, pagamento externo)
++	// não grava um segundo evento "pago" para o mesmo lançamento.
++	if estado, err := s.estadoObrigacaoServicoExtra(ctx, id, tipo, ano, mes); err == nil && estado == EstadoPago {
++		return nil
++	}
+ 	payload := map[string]any{"solicitacao_id": id, "tipo_lancamento": tipo}
+ 	if tipo == "mensalidade" {
+ 		payload["ano"], payload["mes"] = ano, mes
+@@ -239,6 +244,11 @@ func (s *Service) ReativarObrigacaoServicoExtra(ctx context.Context, id, tipo st
+ 	return s.alterarObrigacaoServicoExtra(ctx, id, tipo, ano, mes, motivo, actor, actorType, ip, false)
+ }
+ func (s *Service) alterarObrigacaoServicoExtra(ctx context.Context, id, tipo string, ano, mes int, motivo, actor, actorType, ip string, anular bool) error {
++	// Só um lançamento que nunca foi pago e cujo pagamento não está aguardando
++	// confirmação pode ser anulado ou reativado.
++	if err := s.garantirObrigacaoServicoExtraSemPagamento(ctx, id, tipo, ano, mes, actor, actorType, ip); err != nil {
++		return err
++	}
+ 	estado, err := s.estadoObrigacaoServicoExtra(ctx, id, tipo, ano, mes)
+ 	if err != nil {
+ 		return err
+@@ -249,6 +259,12 @@ func (s *Service) alterarObrigacaoServicoExtra(ctx context.Context, id, tipo str
+ 	if !anular && estado != EstadoAnulado {
+ 		return errors.New("só é possível reativar um lançamento anulado e não pago")
+ 	}
++	if anular {
++		// Cancela as cobranças abertas ANTES de gravar a anulação.
++		if err = s.servicoExtraObrigacaoCancelarCobrancasAbertas(ctx, id, tipo, ano, mes, actor, actorType, ip); err != nil {
++			return err
++		}
++	}
+ 	payload := map[string]any{"solicitacao_id": id, "tipo_lancamento": tipo, "motivo": strings.TrimSpace(motivo)}
+ 	if tipo == "mensalidade" {
+ 		payload["ano"], payload["mes"] = ano, mes
+@@ -257,13 +273,7 @@ func (s *Service) alterarObrigacaoServicoExtra(ctx context.Context, id, tipo str
+ 	if anular {
+ 		event = aggregates.ObrigacaoServicoExtraAnulada
+ 	}
+-	if err = s.recordServicoExtraObrigacao(ctx, id, event, payload, actor, actorType, ip); err != nil {
+-		return err
+-	}
+-	if anular {
+-		return s.servicoExtraObrigacaoCancelarCobrancasAbertas(ctx, id, tipo, ano, mes, actor, actorType, ip)
+-	}
+-	return nil
++	return s.recordServicoExtraObrigacao(ctx, id, event, payload, actor, actorType, ip)
+ }
+ func (s *Service) servicoExtraObrigacaoCancelarCobrancasAbertas(ctx context.Context, id, tipo string, ano, mes int, actor, actorType, ip string) error {
+ 	rows, err := s.client.DB().QueryContext(ctx, `SELECT id::text,codigo_academia FROM financeiro_cobrancas WHERE payload->>'codigo_inscricao_servico'=$1 AND payload->>'tipo_lancamento_servico_extra'=$2 AND COALESCE((payload->>'ano_referencia')::int,0)=$3 AND COALESCE((payload->>'mes_referencia')::int,0)=$4 AND lower(COALESCE(payload->>'status','')) NOT IN (`+chargeAbertaStatusExcluidos+`)`, id, tipo, ano, mes)
+diff --git a/internal/handlers/financeiro_handlers.go b/internal/handlers/financeiro_handlers.go
+index eb30844..83caca4 100644
+--- a/internal/handlers/financeiro_handlers.go
++++ b/internal/handlers/financeiro_handlers.go
+@@ -96,6 +96,8 @@ func financeError(c *gin.Context, err error) {
+ 	switch {
+ 	case errors.Is(err, finance.ErrNotFound):
+ 		utils.RespondWithNotFoundError(c, "recurso financeiro")
++	case errors.Is(err, finance.ErrPagamentoExistente):
++		utils.RespondWithConflictError(c, finance.ErrPagamentoExistente.Error())
+ 	case errors.Is(err, finance.ErrConflict):
+ 		utils.RespondWithConflictError(c, "operação financeira equivalente em processamento")
+ 	case errors.Is(err, finance.ErrUpstream):
+@@ -589,6 +591,15 @@ func CancelarCobrancaAppyPay(c *gin.Context) {
+ 	}
+ 	out, err := FinanceiroService.CancelCharge(c.Request.Context(), contexto, academia, c.Param("id"), in.Motivo, id.String(), actorType, c.ClientIP())
+ 	if err != nil {
++		// Um pagamento descoberto durante o cancelamento ainda precisa dos
++		// efeitos de confirmação (matrícula, serviço extra) — o mesmo que o
++		// webhook e a consulta executam.
++		if errors.Is(err, finance.ErrPagamentoExistente) {
++			if effectErr := executarEfeitosPagamentoConfirmado(c, c.Param("id"), id.String(), actorType); effectErr != nil {
++				utils.RespondWithInternalError(c, effectErr)
++				return
++			}
++		}
+ 		financeError(c, err)
+ 		return
+ 	}
+diff --git a/internal/handlers/financeiro_pagamento_externo_handlers.go b/internal/handlers/financeiro_pagamento_externo_handlers.go
+new file mode 100644
+index 0000000..85f2549
+--- /dev/null
++++ b/internal/handlers/financeiro_pagamento_externo_handlers.go
+@@ -0,0 +1,118 @@
++package handlers
++
++import (
++	"errors"
++	"io"
++	"net/http"
++	"strings"
++
++	"github.com/gin-gonic/gin"
++
++	"spuri/internal/finance"
++	"spuri/internal/utils"
++)
++
++// executarEfeitosPagamentoConfirmado aplica os efeitos de uma cobrança paga
++// que vivem na camada de handlers (efetivação da matrícula, taxa de inscrição
++// e lançamentos de serviço extra) — a mesma sequência de
++// ConsultarCobrancaAppyPay e ReceberWebhookAppyPay. É idempotente e não faz
++// nada quando a cobrança não está com status Success.
++func executarEfeitosPagamentoConfirmado(c *gin.Context, identifier, actorID, actorType string) error {
++	ctx := c.Request.Context()
++	paga, err := FinanceiroService.CobrancaEstaPaga(ctx, identifier)
++	if err != nil || !paga {
++		return err
++	}
++	if codigo, err := FinanceiroService.CodigoSolicitacaoDaCobranca(ctx, identifier); err == nil && codigo != "" {
++		if err := efetivarVinculoMatriculaPaga(c, codigo); err != nil {
++			return err
++		}
++	}
++	if codigo, tipo, mes, ano, err := FinanceiroService.DadosServicoExtraDaCobranca(ctx, identifier); err == nil && codigo != "" {
++		switch tipo {
++		case "taxa_inscricao":
++			if err := efetivarVinculoServicoExtraPago(c, codigo); err != nil {
++				return err
++			}
++		case "mensalidade", "preco_unico":
++			_ = FinanceiroService.ConfirmarLancamentoServicoExtraPago(ctx, codigo, tipo, ano, mes, actorID, actorType, c.ClientIP())
++		}
++	}
++	return nil
++}
++
++// bindJSONOpcional aceita corpo vazio (todos os campos são opcionais).
++func bindJSONOpcional(c *gin.Context, target any) bool {
++	if err := c.ShouldBindJSON(target); err != nil && !errors.Is(err, io.EOF) {
++		utils.RespondWithValidationError(c, errors.New("payload inválido"))
++		return false
++	}
++	return true
++}
++
++// RegistrarPagamentoExternoCobranca marca uma cobrança da própria academia,
++// ainda aguardando pagamento, como paga fora da plataforma e executa o mesmo
++// pipeline de confirmação de um pagamento validado pela AppyPay.
++func RegistrarPagamentoExternoCobranca(c *gin.Context) {
++	var in finance.PagamentoExternoInput
++	if !bindJSONOpcional(c, &in) {
++		return
++	}
++	id, typ, own, ok := financeActor(c)
++	if !ok {
++		utils.RespondWithUnauthorizedError(c)
++		return
++	}
++	if typ != "academia" {
++		utils.RespondWithForbiddenError(c, "somente a academia dona pode marcar um pagamento como feito fora da plataforma")
++		return
++	}
++	out, err := FinanceiroService.RegistrarPagamentoExternoCobranca(c.Request.Context(), own, c.Param("id"), in, id.String(), typ, c.ClientIP())
++	if err != nil {
++		// Pagamento já feito dentro da plataforma: completa os efeitos que
++		// faltavam antes de recusar.
++		if errors.Is(err, finance.ErrPagamentoExistente) {
++			if effectErr := executarEfeitosPagamentoConfirmado(c, c.Param("id"), id.String(), typ); effectErr != nil {
++				utils.RespondWithInternalError(c, effectErr)
++				return
++			}
++		}
++		financeError(c, err)
++		return
++	}
++	if effectErr := executarEfeitosPagamentoConfirmado(c, c.Param("id"), id.String(), typ); effectErr != nil {
++		utils.RespondWithInternalError(c, effectErr)
++		return
++	}
++	c.JSON(http.StatusOK, out)
++}
++
++// RegistrarPagamentoExternoMensalidades marca mensalidades pendentes de um
++// estudante da própria academia como pagas fora da plataforma.
++func RegistrarPagamentoExternoMensalidades(c *gin.Context) {
++	var in finance.PagamentoExternoMensalidadesInput
++	if c.ShouldBindJSON(&in) != nil {
++		utils.RespondWithValidationError(c, errors.New("payload inválido"))
++		return
++	}
++	id, typ, own, ok := financeActor(c)
++	if !ok {
++		utils.RespondWithUnauthorizedError(c)
++		return
++	}
++	if typ != "academia" {
++		utils.RespondWithForbiddenError(c, "somente a academia dona pode marcar um pagamento como feito fora da plataforma")
++		return
++	}
++	in.CodigoEstudante = strings.TrimSpace(in.CodigoEstudante)
++	if !academiaPossuiVinculoMensalidade(c, in.CodigoEstudante, own) {
++		utils.RespondWithForbiddenError(c, "estudante não pertence a esta academia")
++		return
++	}
++	out, err := FinanceiroService.RegistrarPagamentoExternoMensalidades(c.Request.Context(), own, in, id.String(), typ, c.ClientIP())
++	if err != nil {
++		financeError(c, err)
++		return
++	}
++	c.JSON(http.StatusCreated, out)
++}
+diff --git a/internal/handlers/financeiro_pagamento_externo_integration_test.go b/internal/handlers/financeiro_pagamento_externo_integration_test.go
+new file mode 100644
+index 0000000..4ea00c6
+--- /dev/null
++++ b/internal/handlers/financeiro_pagamento_externo_integration_test.go
+@@ -0,0 +1,235 @@
++package handlers
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/google/uuid"
++
++	"spuri/internal/db"
++	"spuri/internal/finance"
++	"spuri/internal/projections"
++)
++
++// handlerStatusTransport simula a AppyPay com um status de consulta mutável
++// (GET /charges/{id}) e um provider id único por cobrança criada.
++type handlerStatusTransport struct{ status *string }
++
++func (t handlerStatusTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	body := `{"id":"provider-charge-ext-` + uuid.NewString() + `","status":"Pending"}`
++	switch {
++	case strings.Contains(req.URL.Path, "/oauth2/token"):
++		body = `{"access_token":"test-token","expires_in":3600}`
++	case req.Method == http.MethodGet:
++		providerID := strings.TrimPrefix(req.URL.EscapedPath(), "/v2.0/charges/")
++		body = `{"payment":{"id":"` + providerID + `","status":"` + *t.status + `","transactionEvents":[{"responseStatus":{"successful":true,"status":"` + *t.status + `","source":"REF"}}]}}`
++	}
++	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
++}
++
++type pagamentoExternoHandlerFixture struct {
++	client          *db.Client
++	router          *gin.Engine
++	academia        string
++	codigo          string // solicitação de matrícula
++	codigoEstudante string
++	chargeID        string
++	providerStatus  *string
++}
++
++func newPagamentoExternoHandlerRouter(client *db.Client, userType, academia string) *gin.Engine {
++	repository := db.NewAggregateRepository(client)
++	router := gin.New()
++	router.Use(func(c *gin.Context) {
++		c.Set("dbClient", client)
++		c.Set("repository", repository)
++		c.Set("user_id", uuid.New())
++		c.Set("user_type", userType)
++		c.Set("codigo_academia", academia)
++	})
++	router.POST("/financeiro/appypay/cobrancas/:id/pago-externamente", RegistrarPagamentoExternoCobranca)
++	router.POST("/financeiro/appypay/cobrancas/:id/cancelar", CancelarCobrancaAppyPay)
++	router.POST("/financeiro/mensalidades/obrigacoes/pago-externamente", RegistrarPagamentoExternoMensalidades)
++	return router
++}
++
++// newMatriculaPendenteFixture cria uma academia, uma solicitação de matrícula
++// aprovada aguardando pagamento e uma cobrança REF aguardando pagamento.
++func newMatriculaPendenteFixture(t *testing.T) *pagamentoExternoHandlerFixture {
++	t.Helper()
++	gin.SetMode(gin.TestMode)
++	client := integrationFinanceClient(t)
++	t.Setenv("ENV", "test")
++	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
++	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
++
++	academia := "PE" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
++	seedAcademiaParaMatriculaWebhook(t, client, academia)
++	codigo, codigoEstudante := seedSolicitacaoMatriculaPendenteComLedger(t, client, academia, 750)
++
++	status := "Pending"
++	service := finance.NewService(client)
++	service.SetHTTPClient(&http.Client{Transport: handlerStatusTransport{status: &status}})
++	if _, _, err := service.ConfigureCredential(context.Background(), nil, finance.CredentialInput{
++		ContextoTipo: finance.ContextoAcademia, CodigoAcademia: academia, ClientID: "integration-client", ClientSecret: "integration-secret",
++		GPOPaymentMethod: "GPO_INTEGRATION", REFPaymentMethod: "REF_INTEGRATION",
++	}, "integration-test", "sistema", "127.0.0.1"); err != nil {
++		t.Fatal(err)
++	}
++	charge, err := service.IniciarPagamentoMatricula(context.Background(), finance.MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
++	if err != nil {
++		t.Fatal(err)
++	}
++	previous := FinanceiroService
++	FinanceiroService = service
++	t.Cleanup(func() { FinanceiroService = previous })
++
++	return &pagamentoExternoHandlerFixture{
++		client: client, router: newPagamentoExternoHandlerRouter(client, "academia", academia), academia: academia,
++		codigo: codigo, codigoEstudante: codigoEstudante, chargeID: charge.Charge.ID.String(), providerStatus: &status,
++	}
++}
++
++func (f *pagamentoExternoHandlerFixture) post(path, body string) *httptest.ResponseRecorder {
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
++	req.Header.Set("Content-Type", "application/json")
++	f.router.ServeHTTP(rec, req)
++	return rec
++}
++
++func (f *pagamentoExternoHandlerFixture) estudantes(t *testing.T) int {
++	t.Helper()
++	if err := projections.NewSolicitacaoMatriculaProjection(f.client).Rebuild(); err != nil {
++		t.Fatal(err)
++	}
++	if err := projections.NewEstudanteProjection(f.client).Rebuild(); err != nil {
++		t.Fatal(err)
++	}
++	var n int
++	if err := f.client.DB().QueryRow(`SELECT COUNT(*) FROM projection_estudantes WHERE codigo_estudante=$1 AND codigo_academia=$2`, f.codigoEstudante, f.academia).Scan(&n); err != nil {
++		t.Fatal(err)
++	}
++	return n
++}
++
++func (f *pagamentoExternoHandlerFixture) eventos(t *testing.T, evento string) int {
++	t.Helper()
++	var n int
++	if err := f.client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_id=$1 AND event_type=$2`, f.chargeID, evento).Scan(&n); err != nil {
++		t.Fatal(err)
++	}
++	return n
++}
++
++// O pagamento marcado como externo dispara os MESMOS efeitos do webhook: a
++// matrícula é efetivada e o estudante criado, exatamente uma vez.
++func TestIntegrationPagamentoExternoMatriculaEfetivaVinculoComoWebhook(t *testing.T) {
++	f := newMatriculaPendenteFixture(t)
++
++	rec := f.post("/financeiro/appypay/cobrancas/"+f.chargeID+"/pago-externamente", `{"referencia_externa":"DEP-123","observacao":"depósito no balcão"}`)
++	if rec.Code != http.StatusOK {
++		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
++	}
++	var out map[string]any
++	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out["status"] != "Success" {
++		t.Fatalf("resposta inesperada: %s (%v)", rec.Body.String(), err)
++	}
++	if n := f.estudantes(t); n != 1 {
++		t.Fatalf("a matrícula deveria ter sido efetivada (1 estudante), obteve %d", n)
++	}
++	var status string
++	if err := f.client.DB().QueryRow(`SELECT status FROM projection_solicitacoes_matricula WHERE codigo_solicitacao=$1`, f.codigo).Scan(&status); err != nil || status != "aprovada" {
++		t.Fatalf("status da solicitação = %q (%v), queria aprovada", status, err)
++	}
++	if n := f.eventos(t, "CobrancaPagamentoExternoRegistrado"); n != 1 {
++		t.Fatalf("esperava 1 evento de pagamento externo, obteve %d", n)
++	}
++
++	// repetir é idempotente: 200, ja_registrado, sem segundo estudante nem segundo evento
++	rec = f.post("/financeiro/appypay/cobrancas/"+f.chargeID+"/pago-externamente", `{}`)
++	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ja_registrado":true`) {
++		t.Fatalf("repetição: status = %d: %s", rec.Code, rec.Body.String())
++	}
++	if n := f.estudantes(t); n != 1 {
++		t.Fatalf("a repetição duplicou o estudante: %d", n)
++	}
++	if n := f.eventos(t, "CobrancaPagamentoExternoRegistrado"); n != 1 {
++		t.Fatalf("a repetição gravou outro evento: %d", n)
++	}
++	// uma cobrança paga fora da plataforma não pode ser cancelada
++	rec = f.post("/financeiro/appypay/cobrancas/"+f.chargeID+"/cancelar", `{}`)
++	if rec.Code != http.StatusConflict {
++		t.Fatalf("cancelar cobrança paga: status = %d, queria 409: %s", rec.Code, rec.Body.String())
++	}
++}
++
++// Se a AppyPay já confirmou o pagamento (aguardando confirmação local), o
++// endpoint responde 409 — mas ainda completa os efeitos que o webhook faria.
++func TestIntegrationPagamentoExternoComProvedorJaPagoRespondeConflitoECompletaEfeitos(t *testing.T) {
++	f := newMatriculaPendenteFixture(t)
++	*f.providerStatus = "Success"
++
++	rec := f.post("/financeiro/appypay/cobrancas/"+f.chargeID+"/pago-externamente", `{}`)
++	if rec.Code != http.StatusConflict {
++		t.Fatalf("status = %d, queria 409: %s", rec.Code, rec.Body.String())
++	}
++	if n := f.eventos(t, "CobrancaPagamentoExternoRegistrado"); n != 0 {
++		t.Fatalf("não deveria existir evento de pagamento externo: %d", n)
++	}
++	if n := f.estudantes(t); n != 1 {
++		t.Fatalf("o pagamento já confirmado no provedor deveria ter efetivado a matrícula, obteve %d estudantes", n)
++	}
++}
++
++// Cancelar uma cobrança cujo pagamento já está no provedor devolve 409 e
++// completa os efeitos (antes da correção a matrícula ficava sem efetivar).
++func TestIntegrationCancelarCobrancaComPagamentoNoProvedorCompletaEfeitos(t *testing.T) {
++	f := newMatriculaPendenteFixture(t)
++	*f.providerStatus = "Success"
++
++	rec := f.post("/financeiro/appypay/cobrancas/"+f.chargeID+"/cancelar", `{"motivo":"teste"}`)
++	if rec.Code != http.StatusConflict {
++		t.Fatalf("status = %d, queria 409: %s", rec.Code, rec.Body.String())
++	}
++	if n := f.estudantes(t); n != 1 {
++		t.Fatalf("o pagamento descoberto no cancelamento deveria ter efetivado a matrícula, obteve %d estudantes", n)
++	}
++}
++
++func TestIntegrationPagamentoExternoSoAcademiaDona(t *testing.T) {
++	f := newMatriculaPendenteFixture(t)
++	for _, role := range []string{"admin", "estudante", "gerente"} {
++		router := newPagamentoExternoHandlerRouter(f.client, role, f.academia)
++		for _, path := range []string{
++			"/financeiro/appypay/cobrancas/" + f.chargeID + "/pago-externamente",
++			"/financeiro/mensalidades/obrigacoes/pago-externamente",
++		} {
++			rec := httptest.NewRecorder()
++			req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"codigo_estudante":"X","meses":[{"ano_letivo":"2025_2026","mes":9}]}`))
++			req.Header.Set("Content-Type", "application/json")
++			router.ServeHTTP(rec, req)
++			if rec.Code != http.StatusForbidden {
++				t.Fatalf("%s em %s: status = %d, queria 403: %s", role, path, rec.Code, rec.Body.String())
++			}
++		}
++	}
++	if n := f.eventos(t, "CobrancaPagamentoExternoRegistrado"); n != 0 {
++		t.Fatalf("nada deveria ter sido gravado: %d", n)
++	}
++}
++
++func TestIntegrationPagamentoExternoMensalidadesExigeVinculoDoEstudante(t *testing.T) {
++	f := newMatriculaPendenteFixture(t)
++	rec := f.post("/financeiro/mensalidades/obrigacoes/pago-externamente", `{"codigo_estudante":"EST-INEXISTENTE","meses":[{"ano_letivo":"2025_2026","mes":9}]}`)
++	if rec.Code != http.StatusForbidden {
++		t.Fatalf("status = %d, queria 403: %s", rec.Code, rec.Body.String())
++	}
++}
+diff --git a/internal/projections/financeiro_projection.go b/internal/projections/financeiro_projection.go
+index 46149f6..ea661c0 100644
+--- a/internal/projections/financeiro_projection.go
++++ b/internal/projections/financeiro_projection.go
+@@ -249,7 +249,7 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
+ 	case "SegredoWebhookAppyPayRotacionado":
+ 		_, err := p.client.DB().Exec(`UPDATE financeiro_credenciais_appypay SET updated_at=CURRENT_TIMESTAMP WHERE id=$1`, e.AggregateID)
+ 		return err
+-	case "CobrancaAppyPaySolicitada", "CobrancaAppyPayCriada", "CobrancaAppyPayFalhou", "CobrancaAppyPayConsultada", "CobrancaAppyPayCancelada", "CobrancaAppyPayConflitoPosCancelamento", "QRCodeAppyPaySolicitado", "QRCodeAppyPayGerado", "QRCodeAppyPayFalhou":
++	case "CobrancaAppyPaySolicitada", "CobrancaAppyPayCriada", "CobrancaAppyPayFalhou", "CobrancaAppyPayConsultada", "CobrancaAppyPayCancelada", "CobrancaAppyPayConflitoPosCancelamento", "CobrancaPagamentoExternoRegistrado", "QRCodeAppyPaySolicitado", "QRCodeAppyPayGerado", "QRCodeAppyPayFalhou":
+ 		merchant, _ := v["merchant_transaction_id"].(string)
+ 		provider, _ := v["provider_charge_id"].(string)
+ 		contexto, _ := v["contexto_tipo"].(string)
