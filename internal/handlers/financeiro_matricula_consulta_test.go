@@ -18,12 +18,16 @@ import (
 type matriculaConsultaMockTransport struct{ status string }
 
 func (t *matriculaConsultaMockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	body := `{"id":"provider-charge-consulta","status":"Pending"}`
+	// provider_id único por criação: financeiro_cobrancas tem índice único em
+	// provider_id e o ledger é append-only, então um id fixo faria a segunda
+	// execução da suíte no mesmo banco falhar (e envenenaria os Rebuild()).
+	body := `{"id":"provider-charge-consulta-` + uuid.NewString() + `","status":"Pending"}`
 	switch {
 	case strings.Contains(req.URL.Path, "/oauth2/token"):
 		body = `{"access_token":"test-token","expires_in":3600}`
 	case req.Method == http.MethodGet:
-		body = `{"id":"provider-charge-consulta","status":"` + t.status + `"}`
+		// GET /charges/{id}: devolve o id pedido na própria URL.
+		body = `{"id":"` + req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:] + `","status":"` + t.status + `"}`
 	}
 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 }

@@ -35,7 +35,7 @@ func TestIntegrationConfigureMensalidadeGravaNoLedgerEProjectaCorretamente(t *te
 	}
 
 	var ledgerCount int
-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MensalidadeConfigurada'`).Scan(&ledgerCount); err != nil {
+	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MensalidadeConfigurada' AND payload->>'codigo_academia'=$1`, academia).Scan(&ledgerCount); err != nil {
 		t.Fatal(err)
 	}
 	if ledgerCount != 1 {
@@ -78,7 +78,7 @@ func TestIntegrationConfigureMatriculaGravaNoLedgerEProjectaCorretamente(t *test
 	}
 
 	var ledgerCount int
-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MatriculaConfigurada'`).Scan(&ledgerCount); err != nil {
+	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MatriculaConfigurada' AND payload->>'codigo_academia'=$1`, academia).Scan(&ledgerCount); err != nil {
 		t.Fatal(err)
 	}
 	if ledgerCount != 1 {
@@ -156,7 +156,7 @@ func TestIntegrationPagamentoMensalidadeConfirmadoPelaAppyPayMarcaComoPago(t *te
 	}
 
 	var ledgerCountConfirmada int
-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MensalidadesCobrancaConfirmada'`).Scan(&ledgerCountConfirmada); err != nil {
+	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MensalidadesCobrancaConfirmada' AND aggregate_id=$1`, view.Charge.ID).Scan(&ledgerCountConfirmada); err != nil {
 		t.Fatal(err)
 	}
 	if ledgerCountConfirmada != 1 {

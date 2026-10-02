@@ -24,7 +24,9 @@ import (
 type handlerAppyPayMockTransport struct{}
 
 func (handlerAppyPayMockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	body := `{"id":"provider-charge-handler","status":"Pending"}`
+	// provider_id único por criação (índice único em financeiro_cobrancas e
+	// ledger append-only: um id fixo quebra a segunda execução no mesmo banco).
+	body := `{"id":"provider-charge-handler-` + uuid.NewString() + `","status":"Pending"}`
 	switch {
 	case strings.Contains(req.URL.Path, "/oauth2/token"):
 		body = `{"access_token":"test-token","expires_in":3600}`
@@ -39,7 +41,7 @@ func (handlerAppyPayMockTransport) RoundTrip(req *http.Request) (*http.Response,
 		// internal/finance/appypay.go); devolver aqui o mesmo resultado que
 		// o webhook do teste relata (Success) reflete o cenário sendo
 		// testado — a AppyPay já confirmou o pagamento.
-		body = `{"payment":{"id":"provider-charge-handler","status":"Success","transactionEvents":[{"responseStatus":{"successful":true,"status":"Success","code":100,"source":"REF"}}]}}`
+		body = `{"payment":{"id":"` + req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:] + `","status":"Success","transactionEvents":[{"responseStatus":{"successful":true,"status":"Success","code":100,"source":"REF"}}]}}`
 	}
 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 }
@@ -234,9 +236,10 @@ func TestIntegrationFinanceRejectsNonFPPAdmins(t *testing.T) {
 	for _, role := range []string{"gerente", "adm"} {
 		t.Run(role, func(t *testing.T) {
 			adminID := uuid.New()
-			if _, err := client.DB().Exec(`INSERT INTO projection_admins (id,nome,email,senha_hash,role,status) VALUES ($1,$2,$3,'hash',$4,'ativo')`, adminID, role, role+"-"+uuid.NewString()+"@example.test", role); err != nil {
+			if _, err := client.DB().Exec(`INSERT INTO projection_admins (id,nome,email,senha_hash,role,status,created_by) VALUES ($1,$2,$3,'hash',$4,'ativo',$1)`, adminID, role, role+"-"+uuid.NewString()+"@example.test", role); err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _, _ = client.DB().Exec(`DELETE FROM projection_admins WHERE id=$1`, adminID) })
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			ctx.Request = httptest.NewRequest(http.MethodPost, "/financeiro/appypay/cobrancas", bytes.NewBufferString(`{}`))
@@ -263,9 +266,10 @@ func TestIntegrationFinanceFPPAdminCannotCancelAcademyCharge(t *testing.T) {
 		t.Fatal(err)
 	}
 	adminID := uuid.New()
-	if _, err := client.DB().Exec(`INSERT INTO projection_admins (id,nome,email,senha_hash,role,status) VALUES ($1,'fpp-cancel',$2,'hash','fpp','ativo')`, adminID, "fpp-cancel-"+uuid.NewString()+"@example.test"); err != nil {
+	if _, err := client.DB().Exec(`INSERT INTO projection_admins (id,nome,email,senha_hash,role,status,created_by) VALUES ($1,'fpp-cancel',$2,'hash','fpp','ativo',$1)`, adminID, "fpp-cancel-"+uuid.NewString()+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _, _ = client.DB().Exec(`DELETE FROM projection_admins WHERE id=$1`, adminID) })
 	previousService := FinanceiroService
 	FinanceiroService = finance.NewService(client)
 	t.Cleanup(func() { FinanceiroService = previousService })

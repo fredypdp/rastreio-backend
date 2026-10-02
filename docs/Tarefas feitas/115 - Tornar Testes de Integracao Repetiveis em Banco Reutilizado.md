@@ -1,6 +1,6 @@
-# Tarefa 115 — Tornar os testes de integração repetíveis em banco reutilizado
+# (feito) Tarefa 115 — Tornar os testes de integração repetíveis em banco reutilizado
 
-**Estado:** pendente
+**Estado:** feito
 
 **Repositório:** https://github.com/fredypdp/rastreio-backend
 **Branch base:** main (validado contra o commit `9345dc3`, já com a Tarefa 114 integrada)
@@ -146,3 +146,8 @@ Depois que os Passos 1–2 passarem sem problema:
 - [ ] Apenas arquivos `_test.go` alterados; `go.mod`/`go.sum` e migrations intactos
 - [ ] Estado trocado para **feito**, título com `(feito)`, secção **Resultado** adicionada
 - [ ] `.md` e `.patch` movidos para `docs/Tarefas feitas/` com o mesmo nome
+
+
+## Resultado
+
+Patch aplicado sem conflitos nos três testes de integração previstos. `gofmt -l .`, `go build ./...`, `go vet ./...` e `go test ./...` foram executados com sucesso; não houve desvios pontuais.
