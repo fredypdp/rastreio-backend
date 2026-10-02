@@ -1,0 +1,102 @@
+diff --git a/internal/finance/financeiro_ledger_integrity_test.go b/internal/finance/financeiro_ledger_integrity_test.go
+index f079ecc..8c5a61e 100644
+--- a/internal/finance/financeiro_ledger_integrity_test.go
++++ b/internal/finance/financeiro_ledger_integrity_test.go
+@@ -35,7 +35,7 @@ func TestIntegrationConfigureMensalidadeGravaNoLedgerEProjectaCorretamente(t *te
+ 	}
+ 
+ 	var ledgerCount int
+-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MensalidadeConfigurada'`).Scan(&ledgerCount); err != nil {
++	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MensalidadeConfigurada' AND payload->>'codigo_academia'=$1`, academia).Scan(&ledgerCount); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if ledgerCount != 1 {
+@@ -78,7 +78,7 @@ func TestIntegrationConfigureMatriculaGravaNoLedgerEProjectaCorretamente(t *test
+ 	}
+ 
+ 	var ledgerCount int
+-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MatriculaConfigurada'`).Scan(&ledgerCount); err != nil {
++	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MatriculaConfigurada' AND payload->>'codigo_academia'=$1`, academia).Scan(&ledgerCount); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if ledgerCount != 1 {
+@@ -156,7 +156,7 @@ func TestIntegrationPagamentoMensalidadeConfirmadoPelaAppyPayMarcaComoPago(t *te
+ 	}
+ 
+ 	var ledgerCountConfirmada int
+-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MensalidadesCobrancaConfirmada'`).Scan(&ledgerCountConfirmada); err != nil {
++	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MensalidadesCobrancaConfirmada' AND aggregate_id=$1`, view.Charge.ID).Scan(&ledgerCountConfirmada); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if ledgerCountConfirmada != 1 {
+diff --git a/internal/handlers/financeiro_handlers_integration_test.go b/internal/handlers/financeiro_handlers_integration_test.go
+index 2d12563..5fdc1b9 100644
+--- a/internal/handlers/financeiro_handlers_integration_test.go
++++ b/internal/handlers/financeiro_handlers_integration_test.go
+@@ -24,7 +24,9 @@ import (
+ type handlerAppyPayMockTransport struct{}
+ 
+ func (handlerAppyPayMockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+-	body := `{"id":"provider-charge-handler","status":"Pending"}`
++	// provider_id único por criação (índice único em financeiro_cobrancas e
++	// ledger append-only: um id fixo quebra a segunda execução no mesmo banco).
++	body := `{"id":"provider-charge-handler-` + uuid.NewString() + `","status":"Pending"}`
+ 	switch {
+ 	case strings.Contains(req.URL.Path, "/oauth2/token"):
+ 		body = `{"access_token":"test-token","expires_in":3600}`
+@@ -39,7 +41,7 @@ func (handlerAppyPayMockTransport) RoundTrip(req *http.Request) (*http.Response,
+ 		// internal/finance/appypay.go); devolver aqui o mesmo resultado que
+ 		// o webhook do teste relata (Success) reflete o cenário sendo
+ 		// testado — a AppyPay já confirmou o pagamento.
+-		body = `{"payment":{"id":"provider-charge-handler","status":"Success","transactionEvents":[{"responseStatus":{"successful":true,"status":"Success","code":100,"source":"REF"}}]}}`
++		body = `{"payment":{"id":"` + req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:] + `","status":"Success","transactionEvents":[{"responseStatus":{"successful":true,"status":"Success","code":100,"source":"REF"}}]}}`
+ 	}
+ 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+ }
+@@ -234,9 +236,10 @@ func TestIntegrationFinanceRejectsNonFPPAdmins(t *testing.T) {
+ 	for _, role := range []string{"gerente", "adm"} {
+ 		t.Run(role, func(t *testing.T) {
+ 			adminID := uuid.New()
+-			if _, err := client.DB().Exec(`INSERT INTO projection_admins (id,nome,email,senha_hash,role,status) VALUES ($1,$2,$3,'hash',$4,'ativo')`, adminID, role, role+"-"+uuid.NewString()+"@example.test", role); err != nil {
++			if _, err := client.DB().Exec(`INSERT INTO projection_admins (id,nome,email,senha_hash,role,status,created_by) VALUES ($1,$2,$3,'hash',$4,'ativo',$1)`, adminID, role, role+"-"+uuid.NewString()+"@example.test", role); err != nil {
+ 				t.Fatal(err)
+ 			}
++			t.Cleanup(func() { _, _ = client.DB().Exec(`DELETE FROM projection_admins WHERE id=$1`, adminID) })
+ 			recorder := httptest.NewRecorder()
+ 			ctx, _ := gin.CreateTestContext(recorder)
+ 			ctx.Request = httptest.NewRequest(http.MethodPost, "/financeiro/appypay/cobrancas", bytes.NewBufferString(`{}`))
+@@ -263,9 +266,10 @@ func TestIntegrationFinanceFPPAdminCannotCancelAcademyCharge(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	adminID := uuid.New()
+-	if _, err := client.DB().Exec(`INSERT INTO projection_admins (id,nome,email,senha_hash,role,status) VALUES ($1,'fpp-cancel',$2,'hash','fpp','ativo')`, adminID, "fpp-cancel-"+uuid.NewString()+"@example.test"); err != nil {
++	if _, err := client.DB().Exec(`INSERT INTO projection_admins (id,nome,email,senha_hash,role,status,created_by) VALUES ($1,'fpp-cancel',$2,'hash','fpp','ativo',$1)`, adminID, "fpp-cancel-"+uuid.NewString()+"@example.test"); err != nil {
+ 		t.Fatal(err)
+ 	}
++	t.Cleanup(func() { _, _ = client.DB().Exec(`DELETE FROM projection_admins WHERE id=$1`, adminID) })
+ 	previousService := FinanceiroService
+ 	FinanceiroService = finance.NewService(client)
+ 	t.Cleanup(func() { FinanceiroService = previousService })
+diff --git a/internal/handlers/financeiro_matricula_consulta_test.go b/internal/handlers/financeiro_matricula_consulta_test.go
+index d0799c9..66018fe 100644
+--- a/internal/handlers/financeiro_matricula_consulta_test.go
++++ b/internal/handlers/financeiro_matricula_consulta_test.go
+@@ -18,12 +18,16 @@ import (
+ type matriculaConsultaMockTransport struct{ status string }
+ 
+ func (t *matriculaConsultaMockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+-	body := `{"id":"provider-charge-consulta","status":"Pending"}`
++	// provider_id único por criação: financeiro_cobrancas tem índice único em
++	// provider_id e o ledger é append-only, então um id fixo faria a segunda
++	// execução da suíte no mesmo banco falhar (e envenenaria os Rebuild()).
++	body := `{"id":"provider-charge-consulta-` + uuid.NewString() + `","status":"Pending"}`
+ 	switch {
+ 	case strings.Contains(req.URL.Path, "/oauth2/token"):
+ 		body = `{"access_token":"test-token","expires_in":3600}`
+ 	case req.Method == http.MethodGet:
+-		body = `{"id":"provider-charge-consulta","status":"` + t.status + `"}`
++		// GET /charges/{id}: devolve o id pedido na própria URL.
++		body = `{"id":"` + req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:] + `","status":"` + t.status + `"}`
+ 	}
+ 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+ }
