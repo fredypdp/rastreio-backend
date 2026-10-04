@@ -1,0 +1,931 @@
+diff --git a/cmd/server/turma_vinculo_estudante_integration_test.go b/cmd/server/turma_vinculo_estudante_integration_test.go
+index 0f5df32..21bc636 100644
+--- a/cmd/server/turma_vinculo_estudante_integration_test.go
++++ b/cmd/server/turma_vinculo_estudante_integration_test.go
+@@ -85,7 +85,7 @@ func setupTurmaVinculoIntegration(t *testing.T) *turmaVinculoFixture {
+ 	}
+ 	makeTurma := func(cod string, acad *aggregates.Academia, inactive bool) *aggregates.Turma {
+ 		tr := aggregates.NewTurma()
+-		if err := tr.Criar(cod, acad.CodigoAcademia, "1_ano_fundamental", nil, "manha", acad.ID); err != nil {
++		if err := tr.Criar(cod, acad.CodigoAcademia, "1_ano_fundamental", nil, "manha", nil, acad.ID); err != nil {
+ 			t.Fatalf("criar turma: %v", err)
+ 		}
+ 		if inactive {
+@@ -371,7 +371,7 @@ func TestTurmaVinculo09FalhaPosCriacaoGeraTurmaAvisoSemAbortarCadastro(t *testin
+ 		t.Fatalf("rebuild academias: %v", err)
+ 	}
+ 	turma := aggregates.NewTurma()
+-	if err := turma.Criar("9A", academiaSemAnoLetivo.CodigoAcademia, "1_ano_fundamental", nil, "manha", academiaSemAnoLetivo.ID); err != nil {
++	if err := turma.Criar("9A", academiaSemAnoLetivo.CodigoAcademia, "1_ano_fundamental", nil, "manha", nil, academiaSemAnoLetivo.ID); err != nil {
+ 		t.Fatalf("criar turma sem ano letivo: %v", err)
+ 	}
+ 	if err := fx.repository.SaveWithAudit(turma, db.AuditContext{UserID: academiaSemAnoLetivo.ID.String(), UserType: "academia", IP: "127.0.0.1"}); err != nil {
+diff --git a/internal/domain/aggregates/turma.go b/internal/domain/aggregates/turma.go
+index a8aa9c3..d295369 100644
+--- a/internal/domain/aggregates/turma.go
++++ b/internal/domain/aggregates/turma.go
+@@ -18,8 +18,10 @@ type Turma struct {
+ 	CodigoAcademia string
+ 	Nivel          string
+ 	CursoID        *uuid.UUID
+-	Turno          string   // "manha", "tarde", "noite"
+-	Estudantes     []string // lista de codigo_estudante
++	Turno          string // "manha", "tarde", "noite"
++	// TemaTrabalho só existe nos grupos do 4º ano médio (NivelGruposTrabalho).
++	TemaTrabalho *string
++	Estudantes   []string // lista de codigo_estudante
+ 	// HistoricoAnosLetivos é reconstruído dos eventos de vínculo com ano letivo.
+ 	// Ele impede que a identidade acadêmica seja reescrita retroativamente.
+ 	HistoricoAnosLetivos map[string]struct{}
+@@ -108,12 +110,48 @@ func NormalizarCodigoTurma(codigoTurma string) (string, error) {
+ 
+ // ── Comandos ──────────────────────────────────────────────────────────────────
+ 
++// NivelGruposTrabalho é o único ano acadêmico em que os estudantes não são
++// organizados em turmas: são separados em grupos, cada um com um trabalho de
++// tema próprio. O agregado continua sendo Turma (mesmo stream, mesmas rotas);
++// apenas a apresentação muda para "grupo" e passa a existir tema_trabalho.
++const NivelGruposTrabalho = "4_ano_medio"
++
++const maxTemaTrabalho = 200
++
++// TipoAgrupamentoDoNivel devolve "grupo" para o 4º ano médio e "turma" nos demais.
++func TipoAgrupamentoDoNivel(nivel string) string {
++	if strings.TrimSpace(nivel) == NivelGruposTrabalho {
++		return "grupo"
++	}
++	return "turma"
++}
++
++// normalizarTemaTrabalho valida o tema contra o nível efetivo. Devolve nil quando
++// o tema vem vazio (sem tema) e erro quando o nível não é de grupos.
++func normalizarTemaTrabalho(nivel string, tema *string) (*string, error) {
++	if tema == nil {
++		return nil, nil
++	}
++	valor := strings.TrimSpace(*tema)
++	if valor == "" {
++		return nil, nil
++	}
++	if strings.TrimSpace(nivel) != NivelGruposTrabalho {
++		return nil, fmt.Errorf("tema_trabalho só é permitido em grupos do 4º ano médio")
++	}
++	if len([]rune(valor)) > maxTemaTrabalho {
++		return nil, fmt.Errorf("tema_trabalho deve ter no máximo %d caracteres", maxTemaTrabalho)
++	}
++	return &valor, nil
++}
++
+ func (t *Turma) Criar(
+ 	codigoTurma string,
+ 	codigoAcademia string,
+ 	nivel string,
+ 	cursoID *uuid.UUID,
+ 	turno string,
++	temaTrabalho *string,
+ 	criadoPor uuid.UUID,
+ ) error {
+ 	codigoTurmaNormalizado, err := NormalizarCodigoTurma(codigoTurma)
+@@ -129,6 +167,10 @@ func (t *Turma) Criar(
+ 	if turno != "manha" && turno != "tarde" && turno != "noite" {
+ 		return fmt.Errorf("turno deve ser 'manha', 'tarde' ou 'noite'")
+ 	}
++	temaNormalizado, err := normalizarTemaTrabalho(nivel, temaTrabalho)
++	if err != nil {
++		return err
++	}
+ 
+ 	event := &TurmaCriadaEvent{
+ 		BaseEvent:      BaseEvent{EventType: "TurmaCriada", AggregateID: t.ID},
+@@ -137,6 +179,7 @@ func (t *Turma) Criar(
+ 		Nivel:          nivel,
+ 		CursoID:        cursoID,
+ 		Turno:          turno,
++		TemaTrabalho:   temaNormalizado,
+ 		CriadoPor:      criadoPor,
+ 		CreatedAt:      time.Now(),
+ 	}
+@@ -216,18 +259,41 @@ func (t *Turma) RemoverEstudanteNoAnoLectivo(codigoEstudante, anoLectivo string,
+ 	return t.Apply(event)
+ }
+ 
+-func (t *Turma) AtualizarDados(nivel *string, cursoID *uuid.UUID, turno *string, atualizadoPor uuid.UUID) error {
++// AtualizarDados altera nivel, curso, turno e tema_trabalho. Em temaTrabalho,
++// nil significa "não alterar" e string vazia significa "remover o tema".
++// Se o nível passar a ser diferente de 4_ano_medio, o tema existente é removido.
++func (t *Turma) AtualizarDados(nivel *string, cursoID *uuid.UUID, turno *string, temaTrabalho *string, atualizadoPor uuid.UUID) error {
+ 	if turno != nil && *turno != "manha" && *turno != "tarde" && *turno != "noite" {
+ 		return fmt.Errorf("turno deve ser 'manha', 'tarde' ou 'noite'")
+ 	}
+ 	if t.temHistoricoLetivo() && (nivelAlterado(t.Nivel, nivel) || cursoAlterado(t.CursoID, cursoID)) {
+ 		return fmt.Errorf("não é possível alterar nivel ou curso_id de turma com histórico de anos letivos")
+ 	}
++	nivelEfetivo := t.Nivel
++	if nivel != nil && strings.TrimSpace(*nivel) != "" {
++		nivelEfetivo = strings.TrimSpace(*nivel)
++	}
++	var temaEvento *string
++	if temaTrabalho != nil {
++		normalizado, err := normalizarTemaTrabalho(nivelEfetivo, temaTrabalho)
++		if err != nil {
++			return err
++		}
++		vazio := ""
++		temaEvento = &vazio
++		if normalizado != nil {
++			temaEvento = normalizado
++		}
++	} else if t.TemaTrabalho != nil && nivelEfetivo != NivelGruposTrabalho {
++		vazio := ""
++		temaEvento = &vazio
++	}
+ 	event := &TurmaDadosAtualizadosEvent{
+ 		BaseEvent:     BaseEvent{EventType: "TurmaDadosAtualizados", AggregateID: t.ID},
+ 		Nivel:         nivel,
+ 		CursoID:       cursoID,
+ 		Turno:         turno,
++		TemaTrabalho:  temaEvento,
+ 		AtualizadoPor: atualizadoPor,
+ 	}
+ 	t.RaiseEvent(event)
+@@ -293,6 +359,7 @@ func (t *Turma) applyTurmaCriada(event DomainEvent) error {
+ 	t.Nivel = ev.Nivel
+ 	t.CursoID = ev.CursoID
+ 	t.Turno = ev.Turno
++	t.TemaTrabalho = ev.TemaTrabalho
+ 	t.Status = "ativo"
+ 	t.CreatedAt = ev.CreatedAt
+ 	return nil
+@@ -373,6 +440,13 @@ func (t *Turma) applyTurmaDadosAtualizados(event DomainEvent) error {
+ 	if ev.Turno != nil {
+ 		t.Turno = *ev.Turno
+ 	}
++	if ev.TemaTrabalho != nil {
++		if *ev.TemaTrabalho == "" {
++			t.TemaTrabalho = nil
++		} else {
++			t.TemaTrabalho = ev.TemaTrabalho
++		}
++	}
+ 	return nil
+ }
+ 
+@@ -399,6 +473,7 @@ type TurmaCriadaEvent struct {
+ 	Nivel          string
+ 	CursoID        *uuid.UUID
+ 	Turno          string
++	TemaTrabalho   *string
+ 	CriadoPor      uuid.UUID
+ 	CreatedAt      time.Time
+ }
+@@ -429,6 +504,7 @@ type TurmaDadosAtualizadosEvent struct {
+ 	Nivel         *string
+ 	CursoID       *uuid.UUID
+ 	Turno         *string
++	TemaTrabalho  *string
+ 	AtualizadoPor uuid.UUID
+ }
+ 
+diff --git a/internal/domain/aggregates/turma_test.go b/internal/domain/aggregates/turma_test.go
+index aa7d71c..95af7c1 100644
+--- a/internal/domain/aggregates/turma_test.go
++++ b/internal/domain/aggregates/turma_test.go
+@@ -10,7 +10,7 @@ import (
+ func novaTurmaParaHistorico(t *testing.T) *Turma {
+ 	t.Helper()
+ 	turma := NewTurma()
+-	if err := turma.Criar("TURMA_HIST", "ACA_HIST", "6_ano_fundamental", nil, "manha", uuid.New()); err != nil {
++	if err := turma.Criar("TURMA_HIST", "ACA_HIST", "6_ano_fundamental", nil, "manha", nil, uuid.New()); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	return turma
+@@ -19,7 +19,7 @@ func novaTurmaParaHistorico(t *testing.T) *Turma {
+ func TestTurmaAtualizarDadosPermiteIdentidadeSemHistorico(t *testing.T) {
+ 	turma := novaTurmaParaHistorico(t)
+ 	nivel := "7_ano_fundamental"
+-	if err := turma.AtualizarDados(&nivel, nil, nil, uuid.New()); err != nil {
++	if err := turma.AtualizarDados(&nivel, nil, nil, nil, uuid.New()); err != nil {
+ 		t.Fatalf("turma sem histórico deve aceitar correção de nível: %v", err)
+ 	}
+ }
+@@ -33,13 +33,13 @@ func TestTurmaAtualizarDadosBloqueiaIdentidadeComHistorico(t *testing.T) {
+ 	// Antes da proteção da tarefa 31 este comando era aceite e permitia que a
+ 	// projeção resolvesse meses antigos com a identidade atual da turma.
+ 	nivel := "7_ano_fundamental"
+-	err := turma.AtualizarDados(&nivel, nil, nil, uuid.New())
++	err := turma.AtualizarDados(&nivel, nil, nil, nil, uuid.New())
+ 	if err == nil || !strings.Contains(err.Error(), "histórico") {
+ 		t.Fatalf("alteração de nível com histórico = %v, queria erro claro", err)
+ 	}
+ 
+ 	cursoID := uuid.New()
+-	err = turma.AtualizarDados(nil, &cursoID, nil, uuid.New())
++	err = turma.AtualizarDados(nil, &cursoID, nil, nil, uuid.New())
+ 	if err == nil || !strings.Contains(err.Error(), "histórico") {
+ 		t.Fatalf("alteração de curso com histórico = %v, queria erro claro", err)
+ 	}
+@@ -51,7 +51,138 @@ func TestTurmaAtualizarDadosPermiteTurnoComHistorico(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	turno := "tarde"
+-	if err := turma.AtualizarDados(nil, nil, &turno, uuid.New()); err != nil {
++	if err := turma.AtualizarDados(nil, nil, &turno, nil, uuid.New()); err != nil {
+ 		t.Fatalf("turno com histórico deve continuar editável: %v", err)
+ 	}
+ }
++
++func TestTipoAgrupamentoDoNivel(t *testing.T) {
++	casos := map[string]string{
++		"4_ano_medio":       "grupo",
++		" 4_ano_medio ":     "grupo",
++		"3_ano_medio":       "turma",
++		"1_ano_medio":       "turma",
++		"7_ano_fundamental": "turma",
++		"1_semestre":        "turma",
++	}
++	for nivel, esperado := range casos {
++		if got := TipoAgrupamentoDoNivel(nivel); got != esperado {
++			t.Fatalf("TipoAgrupamentoDoNivel(%q) = %q, esperado %q", nivel, got, esperado)
++		}
++	}
++}
++
++func TestTurmaGrupoDoQuartoAnoMedioAceitaTemaDeTrabalho(t *testing.T) {
++	tema := "  Sistema de gestão escolar  "
++	turma := NewTurma()
++	if err := turma.Criar("GRUPO_A", "ACA_GRUPO", "4_ano_medio", nil, "manha", &tema, uuid.New()); err != nil {
++		t.Fatalf("criar grupo com tema: %v", err)
++	}
++	if turma.TemaTrabalho == nil || *turma.TemaTrabalho != "Sistema de gestão escolar" {
++		t.Fatalf("tema esperado normalizado (sem espaços nas pontas), obteve %v", turma.TemaTrabalho)
++	}
++}
++
++func TestTurmaGrupoDoQuartoAnoMedioPermiteCriarSemTema(t *testing.T) {
++	vazio := "   "
++	turma := NewTurma()
++	if err := turma.Criar("GRUPO_B", "ACA_GRUPO", "4_ano_medio", nil, "tarde", &vazio, uuid.New()); err != nil {
++		t.Fatalf("tema em branco deve ser tratado como ausente: %v", err)
++	}
++	if turma.TemaTrabalho != nil {
++		t.Fatalf("tema em branco deveria virar nil, obteve %q", *turma.TemaTrabalho)
++	}
++}
++
++func TestTurmaTemaDeTrabalhoRejeitadoForaDoQuartoAnoMedio(t *testing.T) {
++	tema := "Tema qualquer"
++	turma := NewTurma()
++	if err := turma.Criar("TURMA_X", "ACA_GRUPO", "3_ano_medio", nil, "manha", &tema, uuid.New()); err == nil {
++		t.Fatal("tema_trabalho em turma do 3º ano médio deveria ser rejeitado")
++	}
++	turma = NewTurma()
++	if err := turma.Criar("TURMA_Y", "ACA_GRUPO", "3_ano_medio", nil, "manha", nil, uuid.New()); err != nil {
++		t.Fatalf("criar turma sem tema: %v", err)
++	}
++	if err := turma.AtualizarDados(nil, nil, nil, &tema, uuid.New()); err == nil {
++		t.Fatal("atualizar tema_trabalho em turma do 3º ano médio deveria ser rejeitado")
++	}
++}
++
++func TestTurmaTemaDeTrabalhoRejeitaTextoMuitoLongo(t *testing.T) {
++	longo := ""
++	for i := 0; i < 201; i++ {
++		longo += "a"
++	}
++	turma := NewTurma()
++	if err := turma.Criar("GRUPO_C", "ACA_GRUPO", "4_ano_medio", nil, "manha", &longo, uuid.New()); err == nil {
++		t.Fatal("tema com 201 caracteres deveria ser rejeitado")
++	}
++}
++
++func TestTurmaAtualizarTemaDoGrupo(t *testing.T) {
++	inicial := "Tema inicial"
++	turma := NewTurma()
++	if err := turma.Criar("GRUPO_D", "ACA_GRUPO", "4_ano_medio", nil, "manha", &inicial, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	novo := "Tema novo"
++	if err := turma.AtualizarDados(nil, nil, nil, &novo, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	if turma.TemaTrabalho == nil || *turma.TemaTrabalho != "Tema novo" {
++		t.Fatalf("tema deveria ser atualizado, obteve %v", turma.TemaTrabalho)
++	}
++	// nil = não altera
++	turno := "noite"
++	if err := turma.AtualizarDados(nil, nil, &turno, nil, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	if turma.TemaTrabalho == nil || *turma.TemaTrabalho != "Tema novo" {
++		t.Fatalf("tema não pode mudar quando tema_trabalho é omitido, obteve %v", turma.TemaTrabalho)
++	}
++	// "" = remove
++	vazio := ""
++	if err := turma.AtualizarDados(nil, nil, nil, &vazio, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	if turma.TemaTrabalho != nil {
++		t.Fatalf("string vazia deveria remover o tema, obteve %q", *turma.TemaTrabalho)
++	}
++}
++
++func TestTurmaMudarNivelParaForaDoQuartoAnoLimpaTema(t *testing.T) {
++	tema := "Tema do grupo"
++	turma := NewTurma()
++	if err := turma.Criar("GRUPO_E", "ACA_GRUPO", "4_ano_medio", nil, "manha", &tema, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	nivel := "3_ano_medio"
++	if err := turma.AtualizarDados(&nivel, nil, nil, nil, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	if turma.TemaTrabalho != nil {
++		t.Fatalf("ao sair do 4º ano médio o tema deve ser removido, obteve %q", *turma.TemaTrabalho)
++	}
++}
++
++func TestTurmaTemaDeTrabalhoSobreviveAoReplayDoLedger(t *testing.T) {
++	tema := "Tema persistido"
++	origem := NewTurma()
++	if err := origem.Criar("GRUPO_F", "ACA_GRUPO", "4_ano_medio", nil, "manha", &tema, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	novo := "Tema depois do replay"
++	if err := origem.AtualizarDados(nil, nil, nil, &novo, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	reconstruida := NewTurma()
++	for _, ev := range origem.GetUncommittedEvents() {
++		if err := reconstruida.Apply(ev); err != nil {
++			t.Fatalf("replay de %s: %v", ev.GetEventType(), err)
++		}
++	}
++	if reconstruida.TemaTrabalho == nil || *reconstruida.TemaTrabalho != "Tema depois do replay" {
++		t.Fatalf("replay deveria reconstruir o tema final, obteve %v", reconstruida.TemaTrabalho)
++	}
++}
+diff --git a/internal/handlers/turmas_grupo_integration_test.go b/internal/handlers/turmas_grupo_integration_test.go
+new file mode 100644
+index 0000000..9af9a96
+--- /dev/null
++++ b/internal/handlers/turmas_grupo_integration_test.go
+@@ -0,0 +1,258 @@
++package handlers
++
++import (
++	"bytes"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/google/uuid"
++	"spuri/internal/db"
++	"spuri/internal/domain/aggregates"
++	"spuri/internal/projections"
++)
++
++// aplicarEventosDaTurmaNaProjecao leva os eventos ainda não persistidos do agregado
++// até a projeção, na mesma ordem. Escritas reais no ledger só chegam à projeção
++// pelo Projection Manager assíncrono, que não sobe em testes isolados do pacote.
++func aplicarEventosDaTurmaNaProjecao(t *testing.T, proj *projections.TurmasProjection, turma *aggregates.Turma, versaoInicial int) int {
++	t.Helper()
++	versao := versaoInicial
++	for _, ev := range turma.GetUncommittedEvents() {
++		versao++
++		payload, err := json.Marshal(ev.GetPayload())
++		if err != nil {
++			t.Fatal(err)
++		}
++		if err := proj.Handle(db.Event{
++			EventID:       uuid.New(),
++			AggregateID:   turma.ID,
++			AggregateType: "Turma",
++			EventType:     ev.GetEventType(),
++			EventVersion:  versao,
++			Payload:       payload,
++			OccurredAt:    time.Now(),
++		}); err != nil {
++			t.Fatalf("projeção falhou em %s: %v", ev.GetEventType(), err)
++		}
++	}
++	turma.ClearUncommittedEvents()
++	return versao
++}
++
++func TestIntegrationProjecaoDeGrupoDoQuartoAnoMedio(t *testing.T) {
++	client := integrationFinanceClient(t)
++	codigoAcademia := "GRP" + uuid.NewString()[:6]
++	seedAcademiaParaCategoriaServico(t, client, codigoAcademia)
++	proj := projections.NewTurmasProjection(client)
++
++	// 4º ano médio: grupo com tema.
++	tema := "Sistema de gestão escolar"
++	grupo := aggregates.NewTurma()
++	if err := grupo.Criar("GRUPO_1", codigoAcademia, "4_ano_medio", nil, "manha", &tema, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	versao := aplicarEventosDaTurmaNaProjecao(t, proj, grupo, 0)
++
++	dto, err := proj.GetByCodigoTurma("GRUPO_1", codigoAcademia)
++	if err != nil || dto == nil {
++		t.Fatalf("grupo não encontrado na projeção: %v", err)
++	}
++	if dto.TipoAgrupamento != "grupo" {
++		t.Fatalf("tipo_agrupamento = %q, esperado grupo", dto.TipoAgrupamento)
++	}
++	if dto.TemaTrabalho == nil || *dto.TemaTrabalho != tema {
++		t.Fatalf("tema_trabalho = %v, esperado %q", dto.TemaTrabalho, tema)
++	}
++
++	// Atualização do tema.
++	novo := "Tema revisto"
++	if err := grupo.AtualizarDados(nil, nil, nil, &novo, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	versao = aplicarEventosDaTurmaNaProjecao(t, proj, grupo, versao)
++	dto, _ = proj.GetByID(grupo.ID)
++	if dto == nil || dto.TemaTrabalho == nil || *dto.TemaTrabalho != novo {
++		t.Fatalf("tema deveria ser atualizado para %q, obteve %+v", novo, dto)
++	}
++
++	// Remoção do tema (string vazia).
++	vazio := ""
++	if err := grupo.AtualizarDados(nil, nil, nil, &vazio, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	aplicarEventosDaTurmaNaProjecao(t, proj, grupo, versao)
++	dto, _ = proj.GetByID(grupo.ID)
++	if dto == nil || dto.TemaTrabalho != nil {
++		t.Fatalf("tema deveria ter sido removido, obteve %+v", dto)
++	}
++
++	// Listagem por academia também devolve o tipo.
++	lista, err := proj.GetByAcademia(codigoAcademia)
++	if err != nil || len(lista) != 1 || lista[0].TipoAgrupamento != "grupo" {
++		t.Fatalf("GetByAcademia deveria devolver 1 grupo, obteve %+v (err=%v)", lista, err)
++	}
++}
++
++func TestIntegrationProjecaoDeTurmaNormalNaoTemTema(t *testing.T) {
++	client := integrationFinanceClient(t)
++	codigoAcademia := "TUR" + uuid.NewString()[:6]
++	seedAcademiaParaCategoriaServico(t, client, codigoAcademia)
++	proj := projections.NewTurmasProjection(client)
++
++	turma := aggregates.NewTurma()
++	if err := turma.Criar("TURMA_1", codigoAcademia, "3_ano_medio", nil, "tarde", nil, uuid.New()); err != nil {
++		t.Fatal(err)
++	}
++	aplicarEventosDaTurmaNaProjecao(t, proj, turma, 0)
++
++	dto, err := proj.GetByCodigoTurma("TURMA_1", codigoAcademia)
++	if err != nil || dto == nil {
++		t.Fatalf("turma não encontrada: %v", err)
++	}
++	if dto.TipoAgrupamento != "turma" || dto.TemaTrabalho != nil {
++		t.Fatalf("turma comum deve ter tipo turma e sem tema, obteve %q / %v", dto.TipoAgrupamento, dto.TemaTrabalho)
++	}
++}
++
++// --- fluxo HTTP completo (handlers reais + ledger + projeção) -----------------
++
++func ctxTurmaHandler(client *db.Client, academiaID uuid.UUID, metodo, rota, codigo string, body any) (*gin.Context, *httptest.ResponseRecorder) {
++	rec := httptest.NewRecorder()
++	ctx, _ := gin.CreateTestContext(rec)
++	var buf bytes.Buffer
++	if body != nil {
++		_ = json.NewEncoder(&buf).Encode(body)
++	}
++	ctx.Request = httptest.NewRequest(metodo, rota, &buf)
++	ctx.Request.Header.Set("Content-Type", "application/json")
++	if codigo != "" {
++		ctx.Params = gin.Params{{Key: "codigo", Value: codigo}}
++	}
++	ctx.Set("dbClient", client)
++	ctx.Set("repository", db.NewAggregateRepository(client))
++	ctx.Set("user_id", academiaID)
++	ctx.Set("user_type", "academia")
++	return ctx, rec
++}
++
++// projetarNovosEventosDaTurma leva para a projeção os eventos do ledger que ainda
++// não foram aplicados (o Projection Manager assíncrono não sobe em testes de handler).
++func projetarNovosEventosDaTurma(t *testing.T, client *db.Client, proj *projections.TurmasProjection, turmaID uuid.UUID, jaAplicados int) int {
++	t.Helper()
++	eventos, err := db.NewAggregateRepository(client).GetEventHistory(turmaID)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, ev := range eventos[jaAplicados:] {
++		if err := proj.Handle(ev); err != nil {
++			t.Fatalf("projeção falhou em %s: %v", ev.EventType, err)
++		}
++	}
++	return len(eventos)
++}
++
++func TestIntegrationHandlersDeGrupoDoQuartoAnoMedioComTema(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	client := integrationFinanceClient(t)
++	codigoAcademia := "HGR" + uuid.NewString()[:6]
++	academiaID := seedAcademiaParaCategoriaServico(t, client, codigoAcademia)
++	proj := projections.NewTurmasProjection(client)
++
++	// 1) POST /academia/turma — grupo do 4º ano médio com tema (com espaços nas pontas).
++	ctx, rec := ctxTurmaHandler(client, academiaID, http.MethodPost, "/academia/turma", "", map[string]any{
++		"codigo_turma": "G1", "nivel": "4_ano_medio", "turno": "manha", "tema_trabalho": "  Sistema de gestão escolar  ",
++	})
++	CriarTurma(ctx)
++	if rec.Code != http.StatusCreated {
++		t.Fatalf("criar grupo: %d %s", rec.Code, rec.Body.String())
++	}
++	var criada struct {
++		Message         string    `json:"message"`
++		ID              uuid.UUID `json:"id"`
++		CodigoTurma     string    `json:"codigo_turma"`
++		TipoAgrupamento string    `json:"tipo_agrupamento"`
++	}
++	_ = json.Unmarshal(rec.Body.Bytes(), &criada)
++	if criada.TipoAgrupamento != "grupo" || criada.Message != "grupo criado com sucesso" {
++		t.Fatalf("resposta de criação inesperada: %+v", criada)
++	}
++
++	// O tema (já sem espaços) tem de estar no evento gravado no ledger.
++	eventos, err := db.NewAggregateRepository(client).GetEventHistory(criada.ID)
++	if err != nil || len(eventos) != 1 {
++		t.Fatalf("esperado 1 evento no ledger: %d %v", len(eventos), err)
++	}
++	var payload struct{ TemaTrabalho *string }
++	_ = json.Unmarshal(eventos[0].Payload, &payload)
++	if payload.TemaTrabalho == nil || *payload.TemaTrabalho != "Sistema de gestão escolar" {
++		t.Fatalf("tema no evento TurmaCriada = %v", payload.TemaTrabalho)
++	}
++	aplicados := projetarNovosEventosDaTurma(t, client, proj, criada.ID, 0)
++
++	// 2) PUT /academia/turma/:codigo/dados — rota real de atualização (AtualizarDadosTurma).
++	ctx, rec = ctxTurmaHandler(client, academiaID, http.MethodPut, "/academia/turma/"+criada.CodigoTurma+"/dados", criada.CodigoTurma, map[string]any{"tema_trabalho": "Tema revisto"})
++	AtualizarDadosTurma(ctx)
++	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "grupo atualizado com sucesso") {
++		t.Fatalf("atualizar tema: %d %s", rec.Code, rec.Body.String())
++	}
++	aplicados = projetarNovosEventosDaTurma(t, client, proj, criada.ID, aplicados)
++	dto, _ := proj.GetByID(criada.ID)
++	if dto == nil || dto.TemaTrabalho == nil || *dto.TemaTrabalho != "Tema revisto" || dto.TipoAgrupamento != "grupo" {
++		t.Fatalf("projeção após atualizar tema: %+v", dto)
++	}
++
++	// 3) Atualizar só o turno (tema omitido) não pode apagar o tema.
++	ctx, rec = ctxTurmaHandler(client, academiaID, http.MethodPut, "/x", criada.CodigoTurma, map[string]any{"turno": "tarde"})
++	AtualizarDadosTurma(ctx)
++	if rec.Code != http.StatusOK {
++		t.Fatalf("atualizar turno: %d %s", rec.Code, rec.Body.String())
++	}
++	aplicados = projetarNovosEventosDaTurma(t, client, proj, criada.ID, aplicados)
++	dto, _ = proj.GetByID(criada.ID)
++	if dto == nil || dto.TemaTrabalho == nil || *dto.TemaTrabalho != "Tema revisto" || dto.Turno != "tarde" {
++		t.Fatalf("omitir tema_trabalho não pode removê-lo: %+v", dto)
++	}
++
++	// 4) tema_trabalho "" remove o tema.
++	ctx, rec = ctxTurmaHandler(client, academiaID, http.MethodPut, "/x", criada.CodigoTurma, map[string]any{"tema_trabalho": ""})
++	AtualizarDadosTurma(ctx)
++	if rec.Code != http.StatusOK {
++		t.Fatalf("remover tema: %d %s", rec.Code, rec.Body.String())
++	}
++	projetarNovosEventosDaTurma(t, client, proj, criada.ID, aplicados)
++	dto, _ = proj.GetByID(criada.ID)
++	if dto == nil || dto.TemaTrabalho != nil {
++		t.Fatalf("tema deveria ter sido removido: %+v", dto)
++	}
++
++	// 5) Tema fora do 4º ano médio é rejeitado com 400 e nada é gravado.
++	ctx, rec = ctxTurmaHandler(client, academiaID, http.MethodPost, "/academia/turma", "", map[string]any{
++		"codigo_turma": "T3A", "nivel": "3_ano_medio", "turno": "manha", "tema_trabalho": "Tema proibido",
++	})
++	CriarTurma(ctx)
++	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "tema_trabalho") {
++		t.Fatalf("tema numa turma do 3º ano deveria dar 400: %d %s", rec.Code, rec.Body.String())
++	}
++	if existente, _ := proj.GetByCodigoTurma("T3A", codigoAcademia); existente != nil {
++		t.Fatal("a turma rejeitada não pode existir na projeção")
++	}
++
++	// 6) Turma comum continua a dizer "turma".
++	ctx, rec = ctxTurmaHandler(client, academiaID, http.MethodPost, "/academia/turma", "", map[string]any{
++		"codigo_turma": "T3B", "nivel": "3_ano_medio", "turno": "manha",
++	})
++	CriarTurma(ctx)
++	var comum struct {
++		Message         string `json:"message"`
++		TipoAgrupamento string `json:"tipo_agrupamento"`
++	}
++	_ = json.Unmarshal(rec.Body.Bytes(), &comum)
++	if rec.Code != http.StatusCreated || comum.TipoAgrupamento != "turma" || comum.Message != "turma criada com sucesso" {
++		t.Fatalf("turma comum: %d %+v", rec.Code, comum)
++	}
++}
+diff --git a/internal/handlers/turmas_handler.go b/internal/handlers/turmas_handler.go
+index 965a9de..64afc9b 100644
+--- a/internal/handlers/turmas_handler.go
++++ b/internal/handlers/turmas_handler.go
+@@ -15,6 +15,21 @@ import (
+ 	"github.com/google/uuid"
+ )
+ 
++// artigoAgrupamento devolve "um grupo" no 4º ano médio e "uma turma" nos demais.
++func artigoAgrupamento(nivel string) string {
++	if aggregates.TipoAgrupamentoDoNivel(nivel) == "grupo" {
++		return "um grupo"
++	}
++	return "uma turma"
++}
++
++func mensagemAgrupamentoCriado(nivel string) string {
++	if aggregates.TipoAgrupamentoDoNivel(nivel) == "grupo" {
++		return "grupo criado com sucesso"
++	}
++	return "turma criada com sucesso"
++}
++
+ var errTurmaNaoEncontradaParaVinculo = errors.New("turma não encontrada ou não pertence a esta academia")
+ 
+ // CriarTurma cria uma nova turma para a academia autenticada.
+@@ -27,6 +42,8 @@ func CriarTurma(c *gin.Context) {
+ 		Nivel       string     `json:"nivel"        binding:"required"`
+ 		CursoID     *uuid.UUID `json:"curso_id"`
+ 		Turno       string     `json:"turno"        binding:"required"`
++		// TemaTrabalho é opcional e só vale para grupos do 4º ano médio.
++		TemaTrabalho *string `json:"tema_trabalho"`
+ 	}
+ 	if err := c.ShouldBindJSON(&req); err != nil {
+ 		utils.RespondWithValidationError(c, err)
+@@ -50,7 +67,7 @@ func CriarTurma(c *gin.Context) {
+ 	turmasProj := getTurmasProjection(c)
+ 	existing, _ := turmasProj.GetByCodigoTurma(req.CodigoTurma, academiaDTO.CodigoAcademia)
+ 	if existing != nil {
+-		utils.RespondWithValidationError(c, fmt.Errorf("já existe uma turma com este código nesta academia"))
++		utils.RespondWithValidationError(c, fmt.Errorf("já existe %s com este código nesta academia", artigoAgrupamento(req.Nivel)))
+ 		return
+ 	}
+ 
+@@ -61,6 +78,7 @@ func CriarTurma(c *gin.Context) {
+ 		req.Nivel,
+ 		req.CursoID,
+ 		req.Turno,
++		req.TemaTrabalho,
+ 		academiaID,
+ 	); err != nil {
+ 		utils.RespondWithValidationError(c, err)
+@@ -82,9 +100,10 @@ func CriarTurma(c *gin.Context) {
+ 	log.Printf("✅ [CriarTurma] %s criada na academia %s", req.CodigoTurma, academiaDTO.CodigoAcademia)
+ 
+ 	c.JSON(http.StatusCreated, gin.H{
+-		"message":      "turma criada com sucesso",
+-		"id":           turma.ID,
+-		"codigo_turma": req.CodigoTurma,
++		"message":          mensagemAgrupamentoCriado(req.Nivel),
++		"id":               turma.ID,
++		"codigo_turma":     req.CodigoTurma,
++		"tipo_agrupamento": aggregates.TipoAgrupamentoDoNivel(req.Nivel),
+ 	})
+ }
+ 
+@@ -732,6 +751,8 @@ func AtualizarTurma(c *gin.Context) {
+ 		Nivel   *string    `json:"nivel"`
+ 		CursoID *uuid.UUID `json:"curso_id"`
+ 		Turno   *string    `json:"turno"`
++		// TemaTrabalho: omitido = não altera; "" = remove o tema.
++		TemaTrabalho *string `json:"tema_trabalho"`
+ 	}
+ 	if err := c.ShouldBindJSON(&req); err != nil {
+ 		utils.RespondWithValidationError(c, err)
+@@ -827,7 +848,7 @@ func AtualizarTurma(c *gin.Context) {
+ 		}
+ 	}
+ 
+-	if err := turma.AtualizarDados(req.Nivel, req.CursoID, req.Turno, academiaID); err != nil {
++	if err := turma.AtualizarDados(req.Nivel, req.CursoID, req.Turno, req.TemaTrabalho, academiaID); err != nil {
+ 		utils.RespondWithValidationError(c, err)
+ 		return
+ 	}
+@@ -842,7 +863,11 @@ func AtualizarTurma(c *gin.Context) {
+ 		return
+ 	}
+ 
+-	c.JSON(http.StatusOK, gin.H{"message": "turma atualizada com sucesso"})
++	mensagem := "turma atualizada com sucesso"
++	if aggregates.TipoAgrupamentoDoNivel(turma.Nivel) == "grupo" {
++		mensagem = "grupo atualizado com sucesso"
++	}
++	c.JSON(http.StatusOK, gin.H{"message": mensagem})
+ }
+ 
+ // DeletarTurma remove logicamente uma turma da academia.
+diff --git a/internal/projections/turmas_projection.go b/internal/projections/turmas_projection.go
+index a655a6e..8164c6a 100644
+--- a/internal/projections/turmas_projection.go
++++ b/internal/projections/turmas_projection.go
+@@ -6,6 +6,8 @@ import (
+ 	"fmt"
+ 	"log"
+ 	"spuri/internal/db"
++	"spuri/internal/domain/aggregates"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/google/uuid"
+@@ -121,6 +123,7 @@ func (p *TurmasProjection) handleTurmaCriada(event db.Event) error {
+ 		Nivel          string     `json:"Nivel"`
+ 		CursoID        *uuid.UUID `json:"CursoID"`
+ 		Turno          string     `json:"Turno"`
++		TemaTrabalho   *string    `json:"TemaTrabalho"`
+ 		CreatedAt      time.Time  `json:"CreatedAt"`
+ 	}
+ 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+@@ -133,6 +136,11 @@ func (p *TurmasProjection) handleTurmaCriada(event db.Event) error {
+ 		cursoID = payload.CursoID.String()
+ 	}
+ 
++	var temaTrabalho interface{}
++	if payload.TemaTrabalho != nil && strings.TrimSpace(*payload.TemaTrabalho) != "" {
++		temaTrabalho = strings.TrimSpace(*payload.TemaTrabalho)
++	}
++
+ 	// FIX PROJ-TUR-02: usar created_at do payload para preservar timestamp real.
+ 	createdAt := payload.CreatedAt
+ 	if createdAt.IsZero() {
+@@ -142,8 +150,9 @@ func (p *TurmasProjection) handleTurmaCriada(event db.Event) error {
+ 	_, err := p.client.DB().Exec(`
+ 		INSERT INTO projection_turmas (
+ 			id, codigo_turma, codigo_academia, nivel, curso_id, turno,
+-			estudantes, historico_estudantes_ano_letivo, status, created_at, updated_at, version, last_event_id
+-		) VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, 'ativo', $8, CURRENT_TIMESTAMP, $9, $10)
++			estudantes, historico_estudantes_ano_letivo, status, created_at, updated_at, version, last_event_id,
++			tema_trabalho
++		) VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, 'ativo', $8, CURRENT_TIMESTAMP, $9, $10, $11)
+ 		ON CONFLICT (id) DO UPDATE SET
+ 			codigo_turma    = EXCLUDED.codigo_turma,
+ 			codigo_academia = EXCLUDED.codigo_academia,
+@@ -152,11 +161,13 @@ func (p *TurmasProjection) handleTurmaCriada(event db.Event) error {
+ 			turno           = EXCLUDED.turno,
+ 			created_at      = EXCLUDED.created_at,
+ 			version         = EXCLUDED.version,
+-			last_event_id   = EXCLUDED.last_event_id
++			last_event_id   = EXCLUDED.last_event_id,
++			tema_trabalho   = EXCLUDED.tema_trabalho
+ 	`,
+ 		event.AggregateID, payload.CodigoTurma, payload.CodigoAcademia, payload.Nivel,
+ 		cursoID, payload.Turno, string(estudantesJSON),
+ 		createdAt.UTC(), event.EventVersion, event.EventID,
++		temaTrabalho,
+ 	)
+ 	return err
+ }
+@@ -438,6 +449,8 @@ func (p *TurmasProjection) handleTurmaAtualizada(event db.Event) error {
+ 		Nivel   *string    `json:"Nivel"`
+ 		CursoID *uuid.UUID `json:"CursoID"`
+ 		Turno   *string    `json:"Turno"`
++		// TemaTrabalho: nil = sem alteração; "" = remover o tema.
++		TemaTrabalho *string `json:"TemaTrabalho"`
+ 	}
+ 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+ 		return fmt.Errorf("parse error TurmaDadosAtualizados: %w", err)
+@@ -475,6 +488,15 @@ func (p *TurmasProjection) handleTurmaAtualizada(event db.Event) error {
+ 		}
+ 	}
+ 
++	if payload.TemaTrabalho != nil {
++		if _, err := tx.Exec(
++			`UPDATE projection_turmas SET tema_trabalho = NULLIF(BTRIM($1), '') WHERE id = $2`,
++			*payload.TemaTrabalho, event.AggregateID,
++		); err != nil {
++			return fmt.Errorf("handleTurmaAtualizada: erro ao atualizar tema_trabalho: %w", err)
++		}
++	}
++
+ 	if _, err := tx.Exec(`
+ 		UPDATE projection_turmas
+ 		SET version = $1, updated_at = CURRENT_TIMESTAMP, last_event_id = $2
+@@ -522,13 +544,17 @@ type TurmaDTO struct {
+ 	CreatedAt                    time.Time           `json:"created_at"`
+ 	UpdatedAt                    time.Time           `json:"updated_at"`
+ 	Version                      int                 `json:"version"`
++	// TipoAgrupamento é "grupo" no 4º ano médio e "turma" nos demais níveis.
++	TipoAgrupamento string `json:"tipo_agrupamento"`
++	// TemaTrabalho só é preenchido em grupos do 4º ano médio.
++	TemaTrabalho *string `json:"tema_trabalho,omitempty"`
+ }
+ 
+ func (p *TurmasProjection) GetByID(id uuid.UUID) (*TurmaDTO, error) {
+ 	row := p.client.DB().QueryRow(`
+ 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
+ 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
+-		       created_at, updated_at, version
++		       created_at, updated_at, version, tema_trabalho
+ 		FROM projection_turmas WHERE id = $1
+ 	`, id)
+ 	return scanTurmaRow(row)
+@@ -538,7 +564,7 @@ func (p *TurmasProjection) GetByCodigoTurma(codigoTurma, codigoAcademia string)
+ 	row := p.client.DB().QueryRow(`
+ 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
+ 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
+-		       created_at, updated_at, version
++		       created_at, updated_at, version, tema_trabalho
+ 		FROM projection_turmas
+ 		WHERE codigo_turma = $1 AND codigo_academia = $2
+ 			AND deleted_at IS NULL
+@@ -551,7 +577,7 @@ func (p *TurmasProjection) GetByAcademia(codigoAcademia string) ([]TurmaDTO, err
+ 	rows, err := p.client.DB().Query(`
+ 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
+ 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
+-		       created_at, updated_at, version
++		       created_at, updated_at, version, tema_trabalho
+ 		FROM projection_turmas
+ 		WHERE codigo_academia = $1 AND deleted_at IS NULL
+ 		ORDER BY created_at DESC
+@@ -581,7 +607,7 @@ func (p *TurmasProjection) ListByCurso(cursoID uuid.UUID) ([]*TurmaDTO, error) {
+ 	rows, err := p.client.DB().Query(`
+ 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
+ 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
+-		       created_at, updated_at, version
++		       created_at, updated_at, version, tema_trabalho
+ 		FROM projection_turmas
+ 		WHERE curso_id = $1 AND deleted_at IS NULL
+ 		ORDER BY created_at DESC
+@@ -607,7 +633,7 @@ func (p *TurmasProjection) ListByEstudante(codigoEstudante string, codigoAcademi
+ 	baseQuery := `
+ 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
+ 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
+-		       created_at, updated_at, version
++		       created_at, updated_at, version, tema_trabalho
+ 		FROM projection_turmas
+ 		WHERE deleted_at IS NULL
+ 		  AND EXISTS (
+@@ -649,13 +675,14 @@ func scanTurmaRow(row *sql.Row) (*TurmaDTO, error) {
+ 	var historicoRaw []byte
+ 	var statusAlteradoPor sql.NullString
+ 	var statusAlteradoEm sql.NullTime
++	var temaTrabalho sql.NullString
+ 
+ 	err := row.Scan(
+ 		&dto.ID, &dto.CodigoTurma, &dto.CodigoAcademia,
+ 		&dto.Nivel, &cursoID, &dto.Turno,
+ 		&estudantesRaw, &historicoRaw, &dto.Status,
+ 		&statusAlteradoPor, &statusAlteradoEm,
+-		&dto.CreatedAt, &dto.UpdatedAt, &dto.Version,
++		&dto.CreatedAt, &dto.UpdatedAt, &dto.Version, &temaTrabalho,
+ 	)
+ 	if err == sql.ErrNoRows {
+ 		return nil, nil
+@@ -664,6 +691,11 @@ func scanTurmaRow(row *sql.Row) (*TurmaDTO, error) {
+ 		return nil, err
+ 	}
+ 
++	dto.TipoAgrupamento = aggregates.TipoAgrupamentoDoNivel(dto.Nivel)
++	if temaTrabalho.Valid {
++		tema := temaTrabalho.String
++		dto.TemaTrabalho = &tema
++	}
+ 	if cursoID.Valid {
+ 		uid, _ := uuid.Parse(cursoID.String)
+ 		dto.CursoID = &uid
+@@ -704,17 +736,23 @@ func scanTurmas(rows *sql.Rows) ([]TurmaDTO, error) {
+ 		var historicoRaw []byte
+ 		var statusAlteradoPor sql.NullString
+ 		var statusAlteradoEm sql.NullTime
++		var temaTrabalho sql.NullString
+ 
+ 		if err := rows.Scan(
+ 			&dto.ID, &dto.CodigoTurma, &dto.CodigoAcademia,
+ 			&dto.Nivel, &cursoID, &dto.Turno,
+ 			&estudantesRaw, &historicoRaw, &dto.Status,
+ 			&statusAlteradoPor, &statusAlteradoEm,
+-			&dto.CreatedAt, &dto.UpdatedAt, &dto.Version,
++			&dto.CreatedAt, &dto.UpdatedAt, &dto.Version, &temaTrabalho,
+ 		); err != nil {
+ 			continue
+ 		}
+ 
++		dto.TipoAgrupamento = aggregates.TipoAgrupamentoDoNivel(dto.Nivel)
++		if temaTrabalho.Valid {
++			tema := temaTrabalho.String
++			dto.TemaTrabalho = &tema
++		}
+ 		if cursoID.Valid {
+ 			uid, _ := uuid.Parse(cursoID.String)
+ 			dto.CursoID = &uid
+diff --git a/migrations/129_turmas_tema_trabalho.sql b/migrations/129_turmas_tema_trabalho.sql
+new file mode 100644
+index 0000000..5cb9eb2
+--- /dev/null
++++ b/migrations/129_turmas_tema_trabalho.sql
+@@ -0,0 +1,5 @@
++-- Tarefa 116: grupos do 4º ano médio.
++-- O 4º ano médio não tem turmas: os estudantes são separados em grupos, cada um
++-- com um trabalho de tema próprio. O agregado continua sendo Turma; o tema é
++-- opcional e só preenchido quando nivel = '4_ano_medio' (regra no agregado).
++ALTER TABLE projection_turmas ADD COLUMN IF NOT EXISTS tema_trabalho TEXT;
