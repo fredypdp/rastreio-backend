@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"spuri/internal/db"
+	"spuri/internal/domain/aggregates"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -121,6 +123,7 @@ func (p *TurmasProjection) handleTurmaCriada(event db.Event) error {
 		Nivel          string     `json:"Nivel"`
 		CursoID        *uuid.UUID `json:"CursoID"`
 		Turno          string     `json:"Turno"`
+		TemaTrabalho   *string    `json:"TemaTrabalho"`
 		CreatedAt      time.Time  `json:"CreatedAt"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
@@ -133,6 +136,11 @@ func (p *TurmasProjection) handleTurmaCriada(event db.Event) error {
 		cursoID = payload.CursoID.String()
 	}
 
+	var temaTrabalho interface{}
+	if payload.TemaTrabalho != nil && strings.TrimSpace(*payload.TemaTrabalho) != "" {
+		temaTrabalho = strings.TrimSpace(*payload.TemaTrabalho)
+	}
+
 	// FIX PROJ-TUR-02: usar created_at do payload para preservar timestamp real.
 	createdAt := payload.CreatedAt
 	if createdAt.IsZero() {
@@ -142,8 +150,9 @@ func (p *TurmasProjection) handleTurmaCriada(event db.Event) error {
 	_, err := p.client.DB().Exec(`
 		INSERT INTO projection_turmas (
 			id, codigo_turma, codigo_academia, nivel, curso_id, turno,
-			estudantes, historico_estudantes_ano_letivo, status, created_at, updated_at, version, last_event_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, 'ativo', $8, CURRENT_TIMESTAMP, $9, $10)
+			estudantes, historico_estudantes_ano_letivo, status, created_at, updated_at, version, last_event_id,
+			tema_trabalho
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, 'ativo', $8, CURRENT_TIMESTAMP, $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE SET
 			codigo_turma    = EXCLUDED.codigo_turma,
 			codigo_academia = EXCLUDED.codigo_academia,
@@ -152,11 +161,13 @@ func (p *TurmasProjection) handleTurmaCriada(event db.Event) error {
 			turno           = EXCLUDED.turno,
 			created_at      = EXCLUDED.created_at,
 			version         = EXCLUDED.version,
-			last_event_id   = EXCLUDED.last_event_id
+			last_event_id   = EXCLUDED.last_event_id,
+			tema_trabalho   = EXCLUDED.tema_trabalho
 	`,
 		event.AggregateID, payload.CodigoTurma, payload.CodigoAcademia, payload.Nivel,
 		cursoID, payload.Turno, string(estudantesJSON),
 		createdAt.UTC(), event.EventVersion, event.EventID,
+		temaTrabalho,
 	)
 	return err
 }
@@ -438,6 +449,8 @@ func (p *TurmasProjection) handleTurmaAtualizada(event db.Event) error {
 		Nivel   *string    `json:"Nivel"`
 		CursoID *uuid.UUID `json:"CursoID"`
 		Turno   *string    `json:"Turno"`
+		// TemaTrabalho: nil = sem alteração; "" = remover o tema.
+		TemaTrabalho *string `json:"TemaTrabalho"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return fmt.Errorf("parse error TurmaDadosAtualizados: %w", err)
@@ -472,6 +485,15 @@ func (p *TurmasProjection) handleTurmaAtualizada(event db.Event) error {
 			*payload.Turno, event.AggregateID,
 		); err != nil {
 			return fmt.Errorf("handleTurmaAtualizada: erro ao atualizar turno: %w", err)
+		}
+	}
+
+	if payload.TemaTrabalho != nil {
+		if _, err := tx.Exec(
+			`UPDATE projection_turmas SET tema_trabalho = NULLIF(BTRIM($1), '') WHERE id = $2`,
+			*payload.TemaTrabalho, event.AggregateID,
+		); err != nil {
+			return fmt.Errorf("handleTurmaAtualizada: erro ao atualizar tema_trabalho: %w", err)
 		}
 	}
 
@@ -522,13 +544,17 @@ type TurmaDTO struct {
 	CreatedAt                    time.Time           `json:"created_at"`
 	UpdatedAt                    time.Time           `json:"updated_at"`
 	Version                      int                 `json:"version"`
+	// TipoAgrupamento é "grupo" no 4º ano médio e "turma" nos demais níveis.
+	TipoAgrupamento string `json:"tipo_agrupamento"`
+	// TemaTrabalho só é preenchido em grupos do 4º ano médio.
+	TemaTrabalho *string `json:"tema_trabalho,omitempty"`
 }
 
 func (p *TurmasProjection) GetByID(id uuid.UUID) (*TurmaDTO, error) {
 	row := p.client.DB().QueryRow(`
 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
-		       created_at, updated_at, version
+		       created_at, updated_at, version, tema_trabalho
 		FROM projection_turmas WHERE id = $1
 	`, id)
 	return scanTurmaRow(row)
@@ -538,7 +564,7 @@ func (p *TurmasProjection) GetByCodigoTurma(codigoTurma, codigoAcademia string) 
 	row := p.client.DB().QueryRow(`
 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
-		       created_at, updated_at, version
+		       created_at, updated_at, version, tema_trabalho
 		FROM projection_turmas
 		WHERE codigo_turma = $1 AND codigo_academia = $2
 			AND deleted_at IS NULL
@@ -551,7 +577,7 @@ func (p *TurmasProjection) GetByAcademia(codigoAcademia string) ([]TurmaDTO, err
 	rows, err := p.client.DB().Query(`
 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
-		       created_at, updated_at, version
+		       created_at, updated_at, version, tema_trabalho
 		FROM projection_turmas
 		WHERE codigo_academia = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -581,7 +607,7 @@ func (p *TurmasProjection) ListByCurso(cursoID uuid.UUID) ([]*TurmaDTO, error) {
 	rows, err := p.client.DB().Query(`
 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
-		       created_at, updated_at, version
+		       created_at, updated_at, version, tema_trabalho
 		FROM projection_turmas
 		WHERE curso_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -607,7 +633,7 @@ func (p *TurmasProjection) ListByEstudante(codigoEstudante string, codigoAcademi
 	baseQuery := `
 		SELECT id, codigo_turma, codigo_academia, nivel, curso_id, turno,
 		       estudantes, historico_estudantes_ano_letivo, status, status_alterado_por, status_alterado_em,
-		       created_at, updated_at, version
+		       created_at, updated_at, version, tema_trabalho
 		FROM projection_turmas
 		WHERE deleted_at IS NULL
 		  AND EXISTS (
@@ -649,13 +675,14 @@ func scanTurmaRow(row *sql.Row) (*TurmaDTO, error) {
 	var historicoRaw []byte
 	var statusAlteradoPor sql.NullString
 	var statusAlteradoEm sql.NullTime
+	var temaTrabalho sql.NullString
 
 	err := row.Scan(
 		&dto.ID, &dto.CodigoTurma, &dto.CodigoAcademia,
 		&dto.Nivel, &cursoID, &dto.Turno,
 		&estudantesRaw, &historicoRaw, &dto.Status,
 		&statusAlteradoPor, &statusAlteradoEm,
-		&dto.CreatedAt, &dto.UpdatedAt, &dto.Version,
+		&dto.CreatedAt, &dto.UpdatedAt, &dto.Version, &temaTrabalho,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -664,6 +691,11 @@ func scanTurmaRow(row *sql.Row) (*TurmaDTO, error) {
 		return nil, err
 	}
 
+	dto.TipoAgrupamento = aggregates.TipoAgrupamentoDoNivel(dto.Nivel)
+	if temaTrabalho.Valid {
+		tema := temaTrabalho.String
+		dto.TemaTrabalho = &tema
+	}
 	if cursoID.Valid {
 		uid, _ := uuid.Parse(cursoID.String)
 		dto.CursoID = &uid
@@ -704,17 +736,23 @@ func scanTurmas(rows *sql.Rows) ([]TurmaDTO, error) {
 		var historicoRaw []byte
 		var statusAlteradoPor sql.NullString
 		var statusAlteradoEm sql.NullTime
+		var temaTrabalho sql.NullString
 
 		if err := rows.Scan(
 			&dto.ID, &dto.CodigoTurma, &dto.CodigoAcademia,
 			&dto.Nivel, &cursoID, &dto.Turno,
 			&estudantesRaw, &historicoRaw, &dto.Status,
 			&statusAlteradoPor, &statusAlteradoEm,
-			&dto.CreatedAt, &dto.UpdatedAt, &dto.Version,
+			&dto.CreatedAt, &dto.UpdatedAt, &dto.Version, &temaTrabalho,
 		); err != nil {
 			continue
 		}
 
+		dto.TipoAgrupamento = aggregates.TipoAgrupamentoDoNivel(dto.Nivel)
+		if temaTrabalho.Valid {
+			tema := temaTrabalho.String
+			dto.TemaTrabalho = &tema
+		}
 		if cursoID.Valid {
 			uid, _ := uuid.Parse(cursoID.String)
 			dto.CursoID = &uid

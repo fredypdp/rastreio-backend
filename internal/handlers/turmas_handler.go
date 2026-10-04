@@ -15,6 +15,21 @@ import (
 	"github.com/google/uuid"
 )
 
+// artigoAgrupamento devolve "um grupo" no 4º ano médio e "uma turma" nos demais.
+func artigoAgrupamento(nivel string) string {
+	if aggregates.TipoAgrupamentoDoNivel(nivel) == "grupo" {
+		return "um grupo"
+	}
+	return "uma turma"
+}
+
+func mensagemAgrupamentoCriado(nivel string) string {
+	if aggregates.TipoAgrupamentoDoNivel(nivel) == "grupo" {
+		return "grupo criado com sucesso"
+	}
+	return "turma criada com sucesso"
+}
+
 var errTurmaNaoEncontradaParaVinculo = errors.New("turma não encontrada ou não pertence a esta academia")
 
 // CriarTurma cria uma nova turma para a academia autenticada.
@@ -27,6 +42,8 @@ func CriarTurma(c *gin.Context) {
 		Nivel       string     `json:"nivel"        binding:"required"`
 		CursoID     *uuid.UUID `json:"curso_id"`
 		Turno       string     `json:"turno"        binding:"required"`
+		// TemaTrabalho é opcional e só vale para grupos do 4º ano médio.
+		TemaTrabalho *string `json:"tema_trabalho"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.RespondWithValidationError(c, err)
@@ -50,7 +67,7 @@ func CriarTurma(c *gin.Context) {
 	turmasProj := getTurmasProjection(c)
 	existing, _ := turmasProj.GetByCodigoTurma(req.CodigoTurma, academiaDTO.CodigoAcademia)
 	if existing != nil {
-		utils.RespondWithValidationError(c, fmt.Errorf("já existe uma turma com este código nesta academia"))
+		utils.RespondWithValidationError(c, fmt.Errorf("já existe %s com este código nesta academia", artigoAgrupamento(req.Nivel)))
 		return
 	}
 
@@ -61,6 +78,7 @@ func CriarTurma(c *gin.Context) {
 		req.Nivel,
 		req.CursoID,
 		req.Turno,
+		req.TemaTrabalho,
 		academiaID,
 	); err != nil {
 		utils.RespondWithValidationError(c, err)
@@ -82,9 +100,10 @@ func CriarTurma(c *gin.Context) {
 	log.Printf("✅ [CriarTurma] %s criada na academia %s", req.CodigoTurma, academiaDTO.CodigoAcademia)
 
 	c.JSON(http.StatusCreated, gin.H{
-		"message":      "turma criada com sucesso",
-		"id":           turma.ID,
-		"codigo_turma": req.CodigoTurma,
+		"message":          mensagemAgrupamentoCriado(req.Nivel),
+		"id":               turma.ID,
+		"codigo_turma":     req.CodigoTurma,
+		"tipo_agrupamento": aggregates.TipoAgrupamentoDoNivel(req.Nivel),
 	})
 }
 
@@ -732,6 +751,8 @@ func AtualizarTurma(c *gin.Context) {
 		Nivel   *string    `json:"nivel"`
 		CursoID *uuid.UUID `json:"curso_id"`
 		Turno   *string    `json:"turno"`
+		// TemaTrabalho: omitido = não altera; "" = remove o tema.
+		TemaTrabalho *string `json:"tema_trabalho"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.RespondWithValidationError(c, err)
@@ -827,7 +848,7 @@ func AtualizarTurma(c *gin.Context) {
 		}
 	}
 
-	if err := turma.AtualizarDados(req.Nivel, req.CursoID, req.Turno, academiaID); err != nil {
+	if err := turma.AtualizarDados(req.Nivel, req.CursoID, req.Turno, req.TemaTrabalho, academiaID); err != nil {
 		utils.RespondWithValidationError(c, err)
 		return
 	}
@@ -842,7 +863,11 @@ func AtualizarTurma(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "turma atualizada com sucesso"})
+	mensagem := "turma atualizada com sucesso"
+	if aggregates.TipoAgrupamentoDoNivel(turma.Nivel) == "grupo" {
+		mensagem = "grupo atualizado com sucesso"
+	}
+	c.JSON(http.StatusOK, gin.H{"message": mensagem})
 }
 
 // DeletarTurma remove logicamente uma turma da academia.

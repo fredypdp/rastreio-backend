@@ -18,8 +18,10 @@ type Turma struct {
 	CodigoAcademia string
 	Nivel          string
 	CursoID        *uuid.UUID
-	Turno          string   // "manha", "tarde", "noite"
-	Estudantes     []string // lista de codigo_estudante
+	Turno          string // "manha", "tarde", "noite"
+	// TemaTrabalho só existe nos grupos do 4º ano médio (NivelGruposTrabalho).
+	TemaTrabalho *string
+	Estudantes   []string // lista de codigo_estudante
 	// HistoricoAnosLetivos é reconstruído dos eventos de vínculo com ano letivo.
 	// Ele impede que a identidade acadêmica seja reescrita retroativamente.
 	HistoricoAnosLetivos map[string]struct{}
@@ -108,12 +110,48 @@ func NormalizarCodigoTurma(codigoTurma string) (string, error) {
 
 // ── Comandos ──────────────────────────────────────────────────────────────────
 
+// NivelGruposTrabalho é o único ano acadêmico em que os estudantes não são
+// organizados em turmas: são separados em grupos, cada um com um trabalho de
+// tema próprio. O agregado continua sendo Turma (mesmo stream, mesmas rotas);
+// apenas a apresentação muda para "grupo" e passa a existir tema_trabalho.
+const NivelGruposTrabalho = "4_ano_medio"
+
+const maxTemaTrabalho = 200
+
+// TipoAgrupamentoDoNivel devolve "grupo" para o 4º ano médio e "turma" nos demais.
+func TipoAgrupamentoDoNivel(nivel string) string {
+	if strings.TrimSpace(nivel) == NivelGruposTrabalho {
+		return "grupo"
+	}
+	return "turma"
+}
+
+// normalizarTemaTrabalho valida o tema contra o nível efetivo. Devolve nil quando
+// o tema vem vazio (sem tema) e erro quando o nível não é de grupos.
+func normalizarTemaTrabalho(nivel string, tema *string) (*string, error) {
+	if tema == nil {
+		return nil, nil
+	}
+	valor := strings.TrimSpace(*tema)
+	if valor == "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(nivel) != NivelGruposTrabalho {
+		return nil, fmt.Errorf("tema_trabalho só é permitido em grupos do 4º ano médio")
+	}
+	if len([]rune(valor)) > maxTemaTrabalho {
+		return nil, fmt.Errorf("tema_trabalho deve ter no máximo %d caracteres", maxTemaTrabalho)
+	}
+	return &valor, nil
+}
+
 func (t *Turma) Criar(
 	codigoTurma string,
 	codigoAcademia string,
 	nivel string,
 	cursoID *uuid.UUID,
 	turno string,
+	temaTrabalho *string,
 	criadoPor uuid.UUID,
 ) error {
 	codigoTurmaNormalizado, err := NormalizarCodigoTurma(codigoTurma)
@@ -129,6 +167,10 @@ func (t *Turma) Criar(
 	if turno != "manha" && turno != "tarde" && turno != "noite" {
 		return fmt.Errorf("turno deve ser 'manha', 'tarde' ou 'noite'")
 	}
+	temaNormalizado, err := normalizarTemaTrabalho(nivel, temaTrabalho)
+	if err != nil {
+		return err
+	}
 
 	event := &TurmaCriadaEvent{
 		BaseEvent:      BaseEvent{EventType: "TurmaCriada", AggregateID: t.ID},
@@ -137,6 +179,7 @@ func (t *Turma) Criar(
 		Nivel:          nivel,
 		CursoID:        cursoID,
 		Turno:          turno,
+		TemaTrabalho:   temaNormalizado,
 		CriadoPor:      criadoPor,
 		CreatedAt:      time.Now(),
 	}
@@ -216,18 +259,41 @@ func (t *Turma) RemoverEstudanteNoAnoLectivo(codigoEstudante, anoLectivo string,
 	return t.Apply(event)
 }
 
-func (t *Turma) AtualizarDados(nivel *string, cursoID *uuid.UUID, turno *string, atualizadoPor uuid.UUID) error {
+// AtualizarDados altera nivel, curso, turno e tema_trabalho. Em temaTrabalho,
+// nil significa "não alterar" e string vazia significa "remover o tema".
+// Se o nível passar a ser diferente de 4_ano_medio, o tema existente é removido.
+func (t *Turma) AtualizarDados(nivel *string, cursoID *uuid.UUID, turno *string, temaTrabalho *string, atualizadoPor uuid.UUID) error {
 	if turno != nil && *turno != "manha" && *turno != "tarde" && *turno != "noite" {
 		return fmt.Errorf("turno deve ser 'manha', 'tarde' ou 'noite'")
 	}
 	if t.temHistoricoLetivo() && (nivelAlterado(t.Nivel, nivel) || cursoAlterado(t.CursoID, cursoID)) {
 		return fmt.Errorf("não é possível alterar nivel ou curso_id de turma com histórico de anos letivos")
 	}
+	nivelEfetivo := t.Nivel
+	if nivel != nil && strings.TrimSpace(*nivel) != "" {
+		nivelEfetivo = strings.TrimSpace(*nivel)
+	}
+	var temaEvento *string
+	if temaTrabalho != nil {
+		normalizado, err := normalizarTemaTrabalho(nivelEfetivo, temaTrabalho)
+		if err != nil {
+			return err
+		}
+		vazio := ""
+		temaEvento = &vazio
+		if normalizado != nil {
+			temaEvento = normalizado
+		}
+	} else if t.TemaTrabalho != nil && nivelEfetivo != NivelGruposTrabalho {
+		vazio := ""
+		temaEvento = &vazio
+	}
 	event := &TurmaDadosAtualizadosEvent{
 		BaseEvent:     BaseEvent{EventType: "TurmaDadosAtualizados", AggregateID: t.ID},
 		Nivel:         nivel,
 		CursoID:       cursoID,
 		Turno:         turno,
+		TemaTrabalho:  temaEvento,
 		AtualizadoPor: atualizadoPor,
 	}
 	t.RaiseEvent(event)
@@ -293,6 +359,7 @@ func (t *Turma) applyTurmaCriada(event DomainEvent) error {
 	t.Nivel = ev.Nivel
 	t.CursoID = ev.CursoID
 	t.Turno = ev.Turno
+	t.TemaTrabalho = ev.TemaTrabalho
 	t.Status = "ativo"
 	t.CreatedAt = ev.CreatedAt
 	return nil
@@ -373,6 +440,13 @@ func (t *Turma) applyTurmaDadosAtualizados(event DomainEvent) error {
 	if ev.Turno != nil {
 		t.Turno = *ev.Turno
 	}
+	if ev.TemaTrabalho != nil {
+		if *ev.TemaTrabalho == "" {
+			t.TemaTrabalho = nil
+		} else {
+			t.TemaTrabalho = ev.TemaTrabalho
+		}
+	}
 	return nil
 }
 
@@ -399,6 +473,7 @@ type TurmaCriadaEvent struct {
 	Nivel          string
 	CursoID        *uuid.UUID
 	Turno          string
+	TemaTrabalho   *string
 	CriadoPor      uuid.UUID
 	CreatedAt      time.Time
 }
@@ -429,6 +504,7 @@ type TurmaDadosAtualizadosEvent struct {
 	Nivel         *string
 	CursoID       *uuid.UUID
 	Turno         *string
+	TemaTrabalho  *string
 	AtualizadoPor uuid.UUID
 }
 

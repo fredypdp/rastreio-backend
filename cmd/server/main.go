@@ -172,6 +172,7 @@ func initProjections() error {
 	// ── Tier 3 — dependem de estudantes e materias ───────────────────────
 	projManager.RegisterProjection("notas", projections.NewNotasProjection(dbClient))
 	projManager.RegisterProjection("faltas", projections.NewFaltasProjection(dbClient))
+	projManager.RegisterProjection("faltas_configuracao", projections.NewFaltasConfiguracaoProjection(dbClient))
 
 	// ── Tier 4 — avaliação final ──────────────────────────────────────────
 	projManager.RegisterProjection("avaliacao_final", projections.NewAvaliacaoFinalProjection(dbClient))
@@ -578,6 +579,8 @@ func setupRouter() *gin.Engine {
 		academia.POST("/estudante/:codigo/documentos", handlers.CompletarDocumentosEstudantePendente)
 		academia.POST("/notas-aluno", handlers.RegistrarNota)
 		academia.POST("/faltas-aluno", handlers.RegistrarFaltas)
+		academia.GET("/faltas/configuracao", handlers.GetConfiguracaoFaltas)
+		academia.PUT("/faltas/configuracao", handlers.DefinirConfiguracaoFaltas)
 		academia.PATCH("/notas-aluno/:id", handlers.CorrigirNota)
 		academia.PATCH("/faltas-aluno/:id", handlers.CorrigirFalta)
 		// Avaliação final é acionada automaticamente pelo registro de notas

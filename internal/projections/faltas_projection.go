@@ -337,3 +337,30 @@ func scanFaltas(rows *sql.Rows) ([]FaltaDTO, error) {
 	}
 	return faltas, rows.Err()
 }
+
+// SomarPorPeriodo devolve o total de faltas (soma de quantidade) do estudante em
+// uma matéria, agrupado por período, dentro de um ano letivo. Faltas sem período
+// (registros antigos) não entram na soma.
+func (p *FaltasProjection) SomarPorPeriodo(codigoEstudante, codigoAcademia, anoLectivo string, materiaID uuid.UUID) (map[string]int, error) {
+	rows, err := p.client.DB().Query(`
+		SELECT periodo, COALESCE(SUM(quantidade), 0)
+		FROM projection_faltas
+		WHERE codigo_estudante = $1 AND codigo_academia = $2 AND ano_lectivo = $3
+		  AND materia_disciplinar_id = $4 AND periodo IS NOT NULL
+		GROUP BY periodo
+	`, codigoEstudante, codigoAcademia, anoLectivo, materiaID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	totais := map[string]int{}
+	for rows.Next() {
+		var periodo string
+		var total int
+		if err := rows.Scan(&periodo, &total); err != nil {
+			return nil, err
+		}
+		totais[periodo] = total
+	}
+	return totais, rows.Err()
+}

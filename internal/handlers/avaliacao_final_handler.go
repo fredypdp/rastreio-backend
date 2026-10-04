@@ -796,6 +796,18 @@ func calcularResultadoMateriasAvaliacaoFinal(
 			return nil, 0, false, false, nil, fmt.Errorf("exame_recurso exige matéria reprovada na avaliação final anterior")
 		}
 	}
+	// Reprovação por faltas (Tarefa 117): só atua se a academia definiu o limite
+	// de faltas E ligou a reprovação por faltas.
+	zeroPorFaltasAtivo := false
+	limiteFaltas := 0
+	cfgFaltas, err := getFaltasConfigProjection(c).GetByAcademia(codigoAcademia)
+	if err != nil {
+		return nil, 0, false, false, nil, fmt.Errorf("erro ao carregar configuração de faltas: %w", err)
+	}
+	if cfgFaltas != nil && cfgFaltas.ReprovacaoPorFaltas && cfgFaltas.LimiteFaltasPorPeriodo != nil {
+		zeroPorFaltasAtivo = true
+		limiteFaltas = *cfgFaltas.LimiteFaltasPorPeriodo
+	}
 	resultados := make([]aggregates.ResultadoMateriaAvaliacaoFinal, 0, len(materias))
 	var soma float64
 	reprovadasPendenciaveis := []projections.MateriaDTO{}
@@ -816,6 +828,17 @@ func calcularResultadoMateriasAvaliacaoFinal(
 				notasFormula[overlay.Categoria] = map[string][]float64{}
 			}
 			notasFormula[overlay.Categoria][overlay.Periodo] = append(notasFormula[overlay.Categoria][overlay.Periodo], overlay.Nota)
+		}
+		var notasZeradasPorFaltas []aggregates.NotaZeradaPorFaltas
+		if zeroPorFaltasAtivo {
+			totaisFaltas, errFaltas := getFaltasProjection(c).SomarPorPeriodo(codigoEstudante, codigoAcademia, anoLectivo, materia.ID)
+			if errFaltas != nil {
+				return nil, 0, false, false, nil, fmt.Errorf("matéria %s: erro ao somar faltas: %w", materia.ID, errFaltas)
+			}
+			notasZeradasPorFaltas, errFaltas = aplicarZeroPorFaltas(formulaExecucao, notasFormula, categoriaZeroPorFaltas(tipoEnsino), totaisFaltas, limiteFaltas)
+			if errFaltas != nil {
+				return nil, 0, false, false, nil, fmt.Errorf("matéria %s: %w", materia.ID, errFaltas)
+			}
 		}
 		notasSubstituidasZero, err := substituirNotasAusentesPorZero(formulaExecucao, notasFormula)
 		if err != nil {
@@ -839,6 +862,7 @@ func calcularResultadoMateriasAvaliacaoFinal(
 			FormulaSnapshot:       formulaExecucao,
 			PendenciaPermitida:    materia.PendenciaPermitida,
 			NotasSubstituidasZero: notasSubstituidasZero,
+			NotasZeradasPorFaltas: notasZeradasPorFaltas,
 		})
 	}
 	aprovado := true

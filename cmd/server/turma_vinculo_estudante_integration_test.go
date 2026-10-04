@@ -85,7 +85,7 @@ func setupTurmaVinculoIntegration(t *testing.T) *turmaVinculoFixture {
 	}
 	makeTurma := func(cod string, acad *aggregates.Academia, inactive bool) *aggregates.Turma {
 		tr := aggregates.NewTurma()
-		if err := tr.Criar(cod, acad.CodigoAcademia, "1_ano_fundamental", nil, "manha", acad.ID); err != nil {
+		if err := tr.Criar(cod, acad.CodigoAcademia, "1_ano_fundamental", nil, "manha", nil, acad.ID); err != nil {
 			t.Fatalf("criar turma: %v", err)
 		}
 		if inactive {
@@ -371,7 +371,7 @@ func TestTurmaVinculo09FalhaPosCriacaoGeraTurmaAvisoSemAbortarCadastro(t *testin
 		t.Fatalf("rebuild academias: %v", err)
 	}
 	turma := aggregates.NewTurma()
-	if err := turma.Criar("9A", academiaSemAnoLetivo.CodigoAcademia, "1_ano_fundamental", nil, "manha", academiaSemAnoLetivo.ID); err != nil {
+	if err := turma.Criar("9A", academiaSemAnoLetivo.CodigoAcademia, "1_ano_fundamental", nil, "manha", nil, academiaSemAnoLetivo.ID); err != nil {
 		t.Fatalf("criar turma sem ano letivo: %v", err)
 	}
 	if err := fx.repository.SaveWithAudit(turma, db.AuditContext{UserID: academiaSemAnoLetivo.ID.String(), UserType: "academia", IP: "127.0.0.1"}); err != nil {

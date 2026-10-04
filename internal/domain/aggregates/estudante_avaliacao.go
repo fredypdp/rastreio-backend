@@ -44,6 +44,15 @@ type NotaReferenciaAvaliacaoFinal struct {
 	Periodo   string `json:"periodo,omitempty"`
 }
 
+// NotaZeradaPorFaltas registra que uma nota foi lida como 0 no cálculo porque o
+// estudante ultrapassou o limite de faltas da academia naquele período.
+type NotaZeradaPorFaltas struct {
+	Categoria    string `json:"categoria"`
+	Periodo      string `json:"periodo"`
+	TotalFaltas  int    `json:"total_faltas"`
+	LimiteFaltas int    `json:"limite_faltas"`
+}
+
 type ResultadoMateriaAvaliacaoFinal struct {
 	MateriaID             uuid.UUID                      `json:"materia_id"`
 	NotaFinal             float64                        `json:"nota_final"`
@@ -53,6 +62,8 @@ type ResultadoMateriaAvaliacaoFinal struct {
 	FormulaSnapshot       string                         `json:"formula_snapshot"`
 	PendenciaPermitida    bool                           `json:"pendencia_permitida"`
 	NotasSubstituidasZero []NotaReferenciaAvaliacaoFinal `json:"notas_substituidas_zero,omitempty"`
+	// NotasZeradasPorFaltas só aparece quando a academia ligou a reprovação por faltas.
+	NotasZeradasPorFaltas []NotaZeradaPorFaltas `json:"notas_zeradas_por_faltas,omitempty"`
 }
 
 type MateriaPendenteGerada struct {
