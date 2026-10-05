@@ -366,6 +366,8 @@ interface TurmaDTO {
   nivel: string               // ex: '3_ano_fundamental'
   curso_id?: string           // UUID
   turno: Turno
+  tipo_agrupamento: 'turma' | 'grupo' // derivado de nivel: 'grupo' quando nivel = '4_ano_medio', 'turma' nos demais; nunca é gravado
+  tema_trabalho?: string      // tema do trabalho do grupo; só existe em grupos do 4º ano médio (máx. 200 caracteres)
   estudantes: string[]        // lista de codigo_estudante (estudante só pode estar em uma turma por vez)
   historico_estudantes_ano_letivo: Record<string, string[]> // ano_letivo -> estudantes que já passaram na turma
   status: string              // 'ativo' | 'inativo' | 'deletado'
@@ -376,6 +378,8 @@ interface TurmaDTO {
   version: number
 }
 ```
+
+No `4_ano_medio` não existem turmas: os estudantes são separados em **grupos**, cada um com um trabalho de tema próprio (`tema_trabalho`). É o mesmo recurso e as mesmas rotas de turma (`/academia/turma…`); `codigo_turma` continua sendo o identificador do grupo.
 
 ---
 
@@ -5132,6 +5136,8 @@ Remove logicamente matérias em lote.
 
 Turmas organizam estudantes por `nivel`, `turno` e, quando aplicável, `curso_id`. O backend normaliza `codigo_turma`, valida compatibilidade de nível/curso e mantém histórico por ano letivo. Escritas exigem academia ativa; consultas são escopadas por academia ou por autorização do estudante.
 
+**Grupos do 4º ano médio.** No `nivel = 4_ano_medio` (ano da PAP, curso técnico) não existem turmas: os estudantes são separados em grupos, cada um com um trabalho de tema próprio. O backend reutiliza o mesmo recurso (mesmas rotas, mesmo `codigo_turma`, mesmas regras de vínculo e histórico). As respostas passam a trazer `tipo_agrupamento` (`grupo` ou `turma`), as mensagens dizem "grupo" nesse nível e o campo opcional `tema_trabalho` só é aceito nele.
+
 ### `GET /academia/turmas`
 
 Lista turmas da academia alvo.
@@ -5154,15 +5160,31 @@ Lista turmas da academia alvo.
       "nivel": "10_ano_medio",
       "curso_id": "uuid-do-curso",
       "turno": "manha",
-      "status": "ativa",
+      "status": "ativo",
+      "tipo_agrupamento": "turma",
       "estudantes": ["EST-2026-0001"],
       "historico_estudantes_ano_letivo": {
         "2025_2026": ["EST-2026-0001"]
       }
+    },
+    {
+      "id": "uuid-do-grupo",
+      "codigo_turma": "G1",
+      "codigo_academia": "ACAD001",
+      "nivel": "4_ano_medio",
+      "curso_id": "uuid-do-curso",
+      "turno": "manha",
+      "status": "ativo",
+      "tipo_agrupamento": "grupo",
+      "tema_trabalho": "Sistema de gestão escolar",
+      "estudantes": ["EST-2026-0002"],
+      "historico_estudantes_ano_letivo": {}
     }
   ]
 }
 ```
+
+`tipo_agrupamento` vem em todos os itens (`grupo` no `4_ano_medio`, `turma` nos demais). `tema_trabalho` só aparece em grupos do 4º ano médio que tenham tema. O mesmo vale para `GET /academia/turma/:codigo` e `GET /turmas-estudante/:codigo`.
 
 ### `GET /academia/turma/:codigo`
 
@@ -5229,6 +5251,19 @@ Cria uma turma na academia autenticada.
 - `curso_id` é obrigatório para médio e superior.
 - Turmas fundamentais não usam `curso_id`.
 - O código é normalizado e deve ser único dentro da academia.
+- `tema_trabalho` é opcional e só é aceito quando `nivel = 4_ano_medio` (grupo). Em outro nível, enviar texto retorna `400` com `tema_trabalho só é permitido em grupos do 4º ano médio`. Espaços nas pontas são removidos, texto em branco equivale a sem tema e o máximo é 200 caracteres.
+
+**Exemplo — grupo do 4º ano médio com tema do trabalho:**
+
+```json
+{
+  "codigo_turma": "G1",
+  "nivel": "4_ano_medio",
+  "curso_id": "uuid-do-curso-tecnico",
+  "turno": "manha",
+  "tema_trabalho": "Sistema de gestão escolar"
+}
+```
 
 **Response 201:**
 
@@ -5236,9 +5271,12 @@ Cria uma turma na academia autenticada.
 {
   "message": "turma criada com sucesso",
   "id": "uuid-da-turma",
-  "codigo_turma": "10A"
+  "codigo_turma": "10A",
+  "tipo_agrupamento": "turma"
 }
 ```
+
+No `4_ano_medio` a mensagem é `"grupo criado com sucesso"` e `tipo_agrupamento` é `"grupo"`.
 
 ### `PUT /academia/turma/:codigo/ativar`
 
@@ -5301,15 +5339,19 @@ Atualiza dados operacionais da turma.
 - Pelo menos um campo deve ser enviado.
 - Estudantes já vinculados precisam continuar compatíveis com o novo `nivel` e `curso_id`.
 - `curso_id` é obrigatório para médio/superior e não deve ser usado no fundamental.
+- `tema_trabalho` (opcional, só em grupos do 4º ano médio): omitido = não altera; string vazia = remove o tema; texto com mais de 200 caracteres, ou em turma de outro nível, retorna `400`. Se o `nivel` de um grupo mudar para outro que não seja `4_ano_medio`, o tema existente é removido automaticamente.
+
+Para alterar só o tema de um grupo: `{ "tema_trabalho": "Novo tema" }`. Para remover: `{ "tema_trabalho": "" }`.
 
 **Response 200:**
 
 ```json
 {
-  "message": "dados da turma atualizados com sucesso",
-  "codigo_turma": "10A"
+  "message": "turma atualizada com sucesso"
 }
 ```
+
+Quando o nível resultante é `4_ano_medio`, a mensagem é `"grupo atualizado com sucesso"`.
 
 ### `DELETE /academia/turma/:codigo`
 
@@ -5763,6 +5805,8 @@ Registra notas em lote por job assíncrono.
 
 Faltas são registros acadêmicos imutáveis vinculados a estudante, academia, ano letivo ativo, ano acadêmico inferido e matéria disciplinar. A correção é permitida exclusivamente por evento compensatório auditado, sem apagar o lançamento original. A academia autenticada registra faltas apenas para estudantes da própria instituição e matérias compatíveis. A data do lançamento é validada no intervalo do ano letivo ativo calculado a partir do tipo da academia e da matéria. Uma falta pode, opcionalmente, ser vinculada a um sumário/aula (ver seção 22) da mesma matéria, período e ano acadêmico — o vínculo grava um snapshot do título do sumário, que não muda se o sumário for renomeado depois.
 
+**Limite de faltas e reprovação por faltas.** Cada academia pode definir um limite de faltas por período (trimestre/semestre), válido para qualquer matéria, e, separadamente, ligar a reprovação por faltas. Com as duas definidas, ao ultrapassar o limite numa matéria e período, a avaliação final automática lê uma nota como `0`: no escolar, a nota do professor (`nota_professor`) do período; no superior, o exame final (`exame_final`) (ver seção 15). Só o limite, sem a reprovação por faltas, é apenas guardado e não altera nenhum cálculo. A configuração é lida e gravada por `GET`/`PUT /academia/faltas/configuracao`.
+
 ### `POST /academia/faltas-aluno`
 
 Registra faltas individuais.
@@ -5979,6 +6023,83 @@ Registra faltas em lote por job assíncrono.
 **Nota de contrato:** esta é uma mudança breaking; `POST /academia/faltas-aluno` e `POST /academia/faltas-aluno/async` rejeitam itens sem `periodo`.
 
 **Response 202:** job assíncrono com acompanhamento em `GET /jobs/:id` e `GET /jobs/stream`.
+
+### `GET /academia/faltas/configuracao`
+
+Consulta o limite de faltas e a reprovação por faltas da academia autenticada.
+
+**Proteção:** academia ativa.
+
+**Response 200 — academia que ainda não configurou nada (limite nulo, reprovação desligada, sem `atualizado_em`):**
+
+```json
+{
+  "data": {
+    "codigo_academia": "ACAD001",
+    "limite_faltas_por_periodo": null,
+    "reprovacao_por_faltas": false
+  }
+}
+```
+
+**Response 200 — configuração salva:**
+
+```json
+{
+  "data": {
+    "codigo_academia": "ACAD001",
+    "limite_faltas_por_periodo": 5,
+    "reprovacao_por_faltas": true,
+    "atualizado_em": "2026-10-04T17:48:38.473556Z"
+  }
+}
+```
+
+Cada academia tem uma única configuração; ela vale para todas as matérias e todos os períodos (trimestre/semestre).
+
+### `PUT /academia/faltas/configuracao`
+
+Substitui a configuração de faltas da academia autenticada. Cada chamada válida grava um novo evento no mesmo registro da academia.
+
+**Proteção:** academia ativa.
+
+**Request:**
+
+```json
+{
+  "limite_faltas_por_periodo": 5,
+  "reprovacao_por_faltas": true
+}
+```
+
+**Regras de validação:**
+
+- `limite_faltas_por_periodo` é um inteiro de `1` a `500`; `null` (ou omitido) significa sem limite.
+- `reprovacao_por_faltas` só pode ser `true` se houver limite; caso contrário, `400` com `reprovacao_por_faltas exige limite_faltas_por_periodo definido`.
+- Limite fora do intervalo retorna `400` com `limite_faltas_por_periodo deve estar entre 1 e 500`.
+
+**Regra de cálculo (quando as duas opções estão definidas):** numa matéria e período, o total de faltas do estudante no ano letivo é somado; se `total > limite` (igual ao limite não ultrapassa), a avaliação final automática lê como `0` a nota do período indicada abaixo. As outras notas não são afetadas.
+
+| Ensino | Nota lida como `0` |
+| --- | --- |
+| Escolar (fundamental e médio) | `nota_professor` do período excedido |
+| Superior | `exame_final` do período da matéria |
+
+Faltas de outra matéria, de outro ano letivo ou sem período não entram na soma. A regra só atua no momento em que a avaliação final é calculada. Uma avaliação já gravada para o mesmo estudante, ano letivo e tipo de regra nunca é recalculada: nem ao registar ou corrigir faltas, nem ao corrigir uma nota, nem ao mudar esta configuração.
+
+**Response 200** (devolve os valores gravados; a projeção é atualizada de forma assíncrona):
+
+```json
+{
+  "message": "configuração de faltas salva com sucesso",
+  "data": {
+    "codigo_academia": "ACAD001",
+    "limite_faltas_por_periodo": 5,
+    "reprovacao_por_faltas": true,
+    "atualizado_em": "2026-10-04T17:48:38.473556Z"
+  }
+}
+```
 
 ---
 
@@ -6198,7 +6319,7 @@ Pontos importantes:
 
 #### 15.1.10 Resultados por matéria, eventos, projeções e auditoria
 
-Cada avaliação final gravada deve ser explicada pelos itens de `resultados_materias`, não por média global única. Cada item contém, no mínimo, `materia_id`, `nota_final`, `aprovado`, `type`, `formula_snapshot`, `regra_avaliacao_final_id`, `pendencia_permitida` e, quando aplicável, `notas_substituidas_zero` com as referências calculadas como zero por ausência de lançamento no momento do gatilho. A projeção também mantém `nota_final` agregada como média dos itens calculados para compatibilidade/consulta resumida, mas a decisão funcional é por matéria.
+Cada avaliação final gravada deve ser explicada pelos itens de `resultados_materias`, não por média global única. Cada item contém, no mínimo, `materia_id`, `nota_final`, `aprovado`, `type`, `formula_snapshot`, `regra_avaliacao_final_id`, `pendencia_permitida` e, quando aplicável, `notas_substituidas_zero` com as referências calculadas como zero por ausência de lançamento no momento do gatilho e, quando a reprovação por faltas está ligada e o limite foi ultrapassado, `notas_zeradas_por_faltas` (lista de `categoria`, `periodo`, `total_faltas` e `limite_faltas`) com as notas lidas como zero por excesso de faltas. A projeção também mantém `nota_final` agregada como média dos itens calculados para compatibilidade/consulta resumida, mas a decisão funcional é por matéria.
 
 Eventos `AvaliacaoFinalEscolar` e `AvaliacaoFinalSuperior` preservam snapshots de regra, fórmula, notas calculadas, progressão e pendências geradas. Alterações posteriores de regra, matéria ou nota não reescrevem silenciosamente decisões já registradas; ajustes exigem fluxo operacional próprio/rebuild controlado.
 
@@ -6308,6 +6429,7 @@ Não existe rota pública/registrada para executar avaliação final manualmente
 - Se a cadeia aplicável não tiver exatamente uma raiz, o backend retorna erro para evitar ambiguidade.
 - O backend evita duplicidade por `codigo_estudante`, `codigo_academia`, `ano_lectivo`, `tipo_ensino`, `ano_academico_atual` e `type`.
 - Quando a categoria lançada é o gatilho da regra executada, notas exigidas pela fórmula e ausentes para a mesma matéria são substituídas por `0`, registradas em `resultados_materias.notas_substituidas_zero` e a avaliação não fica pendente indefinidamente.
+- **Reprovação por faltas:** quando a academia definiu o limite de faltas e ligou a reprovação por faltas (seção 14), antes de preencher lacunas com `0` o backend soma as faltas do estudante, no ano letivo, por matéria e período. Se o total de um período ultrapassar o limite (`total > limite`), a nota desse período é lida como `0` no cálculo: no escolar, a categoria `nota_professor`; no superior, a categoria `exame_final`. As demais categorias não são afetadas, e cada nota zerada é registrada em `resultados_materias.notas_zeradas_por_faltas`. A regra atua no momento do cálculo de cada avaliação; como uma avaliação já gravada para o mesmo estudante, ano letivo e tipo de regra nunca é recalculada, registar ou corrigir faltas depois, corrigir uma nota ou ligar a regra depois não altera o resultado já gravado.
 - O gatilho da raiz executa somente a raiz; regras descendentes aguardam o próprio gatilho aplicável (por exemplo, `exame_recurso` no escolar fixo) e só executam se a etapa anterior já registrou reprovação para a matéria.
 - Quando uma regra é executada, o backend calcula `nota_final`, define `aprovado = nota_final >= nota_minima_aprovacao`, calcula o próximo ano acadêmico e persiste o evento com snapshot da regra.
 - O registro de nota retorna o campo `avaliacoes_finais_automaticas` com os resultados automáticos disparados naquele request. Para fundamental aprovado com próximo ano global ainda não ofertado pela academia, o item inclui `motivo_progressao = "academia_sem_oferta_do_proximo_ano_academico_fundamental"` e `sem_oferta_do_proximo_ano_academico_na_academia = true`; o estudante permanece em andamento no próximo ano global e não recebe turma automática.

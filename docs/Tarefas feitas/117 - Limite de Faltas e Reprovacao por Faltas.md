@@ -26,12 +26,14 @@ Nenhuma outra nota é afetada (prova trimestral, exame de recurso, nota da PAP, 
 
 ## Quando a regra é aplicada
 
-A avaliação final automática é calculada **quando uma nota é lançada ou corrigida** (a nota "despertadora" da regra). **Registar ou corrigir faltas não dispara cálculo nenhum.** Logo, a regra de faltas só entra em ação nesse momento:
+A avaliação final automática é **tentada** quando uma nota é lançada ou corrigida (a nota "despertadora" da regra), mas **só é calculada se ainda não existir avaliação gravada** para aquele estudante, ano letivo e tipo de regra. **Registar ou corrigir faltas não dispara cálculo nenhum.** Depois de gravada, uma avaliação **nunca é recalculada**: nem por novas faltas, nem por corrigir uma nota, nem por mudar a configuração (o backend ignora a regra quando já existe resultado para aquele ano e tipo, e o agregado também bloqueia a duplicidade). Logo, a regra de faltas só entra em ação no momento em que a avaliação é calculada pela primeira vez:
 
 - *Funciona:* limite 5; o estudante tem 6 faltas em Matemática no 2º trimestre; depois a nota despertadora é lançada → o cálculo vê as 6 faltas e lê a nota do professor desse trimestre como 0.
-- *Não recalcula sozinho:* a avaliação já foi calculada e gravada; só depois lançam mais faltas (ou a academia liga a regra hoje) → o resultado já gravado **não muda**. Só muda se uma nota for lançada ou corrigida de novo e o cálculo correr outra vez.
+- *Não recalcula:* a avaliação já foi calculada e gravada; só depois lançam mais faltas, a academia liga a regra hoje ou uma nota é corrigida → o resultado já gravado **não muda**.
 
-Recalcular ao registar/corrigir faltas (ou um botão "recalcular") **não está** nesta tarefa.
+Cada etapa da cadeia de avaliação (por exemplo, final, com exame e com recurso) é calculada uma vez, e a regra de faltas atua em cada etapa quando ela é calculada.
+
+Recalcular avaliações já gravadas, ao registar/corrigir faltas ou por um botão "recalcular", **não está** nesta tarefa e seria uma decisão futura.
 
 ## Decisões de design
 
