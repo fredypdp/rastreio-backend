@@ -491,8 +491,8 @@ func (s *Service) validateConfiguracaoMensalidade(ctx context.Context, in *Mensa
 		in.MetodosPagamento[i] = method
 	}
 	if len(in.MetodosPagamento) > 0 {
-		if _, err := s.loadCredential(ctx, ContextoAcademia, in.CodigoAcademia); err != nil {
-			return errors.New("não é possível habilitar propina sem credenciais AppyPay da academia")
+		if err := s.validarMetodosDoProvedor(ctx, in.CodigoAcademia, "propina", in.MetodosPagamento); err != nil {
+			return err
 		}
 	}
 	var typ, nivelAcademia string

@@ -343,7 +343,8 @@ func TestTokenAceitaExpiresInComoStringOuNumero(t *testing.T) {
 		t.Run(c.nome, func(t *testing.T) {
 			s := NewService(nil)
 			s.SetHTTPClient(&http.Client{Transport: appyPayTokenTransport{expiresInJSON: c.expiresInJSON}})
-			token, err := s.token(context.Background(), credentialSecrets{ID: uuid.New(), ClientID: "client-x", ClientSecret: "secret-y"})
+			appyPay := s.provedores[ProvedorAppyPay].(*appyPayProvider)
+			token, err := appyPay.token(context.Background(), credencialProvedor{ID: uuid.New(), Provedor: ProvedorAppyPay, Valores: map[string]string{"client_id": "client-x", "client_secret": "secret-y"}})
 			if err != nil {
 				t.Fatalf("token() falhou com expires_in=%s: %v", c.expiresInJSON, err)
 			}
@@ -355,12 +356,25 @@ func TestTokenAceitaExpiresInComoStringOuNumero(t *testing.T) {
 }
 
 func TestCredentialMethodMatchesConfiguredIDWithoutCaseSensitivity(t *testing.T) {
-	credentials := credentialSecrets{GPO: "GPO_53c70da3-1c88", REF: "REF_42ef"}
-	if got, err := credentials.method("gpo_53C70DA3-1C88"); err != nil || got != credentials.GPO {
+	appyPay := novoProvedorAppyPay(nil).(*appyPayProvider)
+	credentials := credencialProvedor{Provedor: ProvedorAppyPay, Valores: map[string]string{"gpo_method": "GPO_53c70da3-1c88", "ref_method": "REF_42ef"}}
+	// O método configurado é reconhecido sem diferenciar maiúsculas/minúsculas
+	// e resolvido para o método canônico da plataforma.
+	if got, err := appyPay.ResolverMetodo(credentials, "gpo_53C70DA3-1C88"); err != nil || got != MetodoGPO {
 		t.Fatalf("método GPO configurado não foi reconhecido: %q, %v", got, err)
 	}
-	if got, err := credentials.method("ref"); err != nil || got != credentials.REF {
+	if got, err := appyPay.ResolverMetodo(credentials, "ref"); err != nil || got != MetodoREF {
 		t.Fatalf("atalho REF não foi reconhecido: %q, %v", got, err)
+	}
+	// O código enviado à AppyPay é o configurado pela conta.
+	if got := appyPay.codigoMetodo(credentials, MetodoGPO); got != "GPO_53c70da3-1c88" {
+		t.Fatalf("código GPO enviado à AppyPay = %q", got)
+	}
+	if got := appyPay.codigoMetodo(credentials, MetodoREF); got != "REF_42ef" {
+		t.Fatalf("código REF enviado à AppyPay = %q", got)
+	}
+	if _, err := appyPay.ResolverMetodo(credentials, "UMM"); err == nil {
+		t.Fatal("método não contratado deveria ser recusado")
 	}
 }
 
@@ -378,7 +392,7 @@ func TestQRCodeIdempotencyPayloadAndPersistedResult(t *testing.T) {
 	if _, err := qrCodeResultFromRow(row, ContextoAcademia, "ACA2"); err != ErrConflict {
 		t.Fatalf("QR de outra academia foi exposto: %v", err)
 	}
-	for _, event := range []string{"QRCodeAppyPaySolicitado", "QRCodeAppyPayGerado", "QRCodeAppyPayFalhou", "CobrancaAppyPayCancelada", "CobrancaAppyPayConflitoPosCancelamento"} {
+	for _, event := range []string{"QRCodeSolicitado", "QRCodeGerado", "QRCodeFalhou", "CobrancaCancelada", "CobrancaConflitoPosCancelamento", "ProvedorPagamentoDefinido", "WebhookProvedorRecebido", "QRCodeAppyPaySolicitado", "QRCodeAppyPayGerado", "QRCodeAppyPayFalhou", "CobrancaAppyPayCancelada", "CobrancaAppyPayConflitoPosCancelamento"} {
 		if err := db.ValidateEventType(event); err != nil {
 			t.Fatalf("evento QR não foi autorizado no ledger: %s: %v", event, err)
 		}

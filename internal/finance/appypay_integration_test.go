@@ -67,12 +67,9 @@ func integrationMerchant(prefix string) string {
 func configureIntegrationCredential(t *testing.T, service *Service, contexto, academia string) {
 	t.Helper()
 	_, _, err := service.ConfigureCredential(context.Background(), nil, CredentialInput{
-		ContextoTipo:     contexto,
-		CodigoAcademia:   academia,
-		ClientID:         "integration-client",
-		ClientSecret:     "integration-secret",
-		GPOPaymentMethod: "GPO_INTEGRATION",
-		REFPaymentMethod: "REF_INTEGRATION",
+		ContextoTipo:   contexto,
+		CodigoAcademia: academia,
+		Provedor:       ProvedorAppyPay, Credenciais: map[string]string{"client_id": "integration-client", "client_secret": "integration-secret", "gpo_method": "GPO_INTEGRATION", "ref_method": "REF_INTEGRATION"},
 	}, "integration-test", "sistema", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
@@ -123,11 +120,11 @@ func TestIntegrationAcceptWebhookIsIdempotent(t *testing.T) {
 	owner := WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: "INTWEBHOOK"}
 	payload := map[string]any{"id": eventID, "status": "Paid"}
 
-	accepted, _, err := service.AcceptWebhook(context.Background(), "GPO", eventID, owner, payload)
+	accepted, _, err := service.AcceptWebhook(context.Background(), ProvedorAppyPay, "GPO", eventID, owner, payload)
 	if err != nil || !accepted {
 		t.Fatalf("primeiro webhook = accepted %t, err %v", accepted, err)
 	}
-	accepted, _, err = service.AcceptWebhook(context.Background(), "GPO", eventID, owner, payload)
+	accepted, _, err = service.AcceptWebhook(context.Background(), ProvedorAppyPay, "GPO", eventID, owner, payload)
 	if err != nil || accepted {
 		t.Fatalf("webhook repetido = accepted %t, err %v", accepted, err)
 	}
@@ -136,7 +133,7 @@ func TestIntegrationAcceptWebhookIsIdempotent(t *testing.T) {
 	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM financeiro_webhooks_recebidos WHERE event_id=$1`, eventID).Scan(&received); err != nil {
 		t.Fatal(err)
 	}
-	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='WebhookAppyPayRecebido' AND payload->>'event_id'=$1`, eventID).Scan(&ledger); err != nil {
+	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='WebhookProvedorRecebido' AND payload->>'event_id'=$1`, eventID).Scan(&ledger); err != nil {
 		t.Fatal(err)
 	}
 	if received != 1 || ledger != 1 {
@@ -150,7 +147,7 @@ func TestIntegrationMatriculaPagamentoFixaValorImpedeDuplicidadeECancelaEmCascat
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
 	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
 	service := NewService(client)
-	service.httpClient = &http.Client{Transport: &appyPayMockTransport{status: "Pending"}}
+	service.SetHTTPClient(&http.Client{Transport: &appyPayMockTransport{status: "Pending"}})
 	academia := "MAT" + uuid.NewString()[:8]
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
 	codigo := seedMatriculaPendente(t, client, academia, 1250.50)
@@ -194,7 +191,7 @@ func TestIntegrationMatriculaWebhookTardioMantemCancelamentoERegistraConflito(t 
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
 	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
 	service := NewService(client)
-	service.httpClient = &http.Client{Transport: &appyPayMockTransport{status: "Pending"}}
+	service.SetHTTPClient(&http.Client{Transport: &appyPayMockTransport{status: "Pending"}})
 	academia := "MAT" + uuid.NewString()[:8]
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
 	codigo := seedMatriculaPendente(t, client, academia, 900)
@@ -205,7 +202,7 @@ func TestIntegrationMatriculaWebhookTardioMantemCancelamentoERegistraConflito(t 
 	if err = service.CancelarCobrancaMatriculaAberta(context.Background(), codigo, "solicitação cancelada", uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
-	accepted, _, err := service.AcceptWebhook(context.Background(), "REF", charge.Charge.ProviderChargeID, WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: academia}, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Success", "code": float64(100)}})
+	accepted, _, err := service.AcceptWebhook(context.Background(), ProvedorAppyPay, "REF", charge.Charge.ProviderChargeID, WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: academia}, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Success", "code": float64(100)}})
 	if err != nil || !accepted {
 		t.Fatalf("webhook tardio = accepted %t, err %v", accepted, err)
 	}
@@ -217,7 +214,7 @@ func TestIntegrationMatriculaWebhookTardioMantemCancelamentoERegistraConflito(t 
 		t.Fatalf("webhook tardio alterou cobrança: status=%q codigo=%q", status, codigoNoEvento)
 	}
 	var conflitos int
-	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND aggregate_id=$1 AND event_type='CobrancaAppyPayConflitoPosCancelamento' AND payload->>'codigo_solicitacao'=$2`, charge.Charge.ID, codigo).Scan(&conflitos); err != nil {
+	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND aggregate_id=$1 AND event_type='CobrancaConflitoPosCancelamento' AND payload->>'codigo_solicitacao'=$2`, charge.Charge.ID, codigo).Scan(&conflitos); err != nil {
 		t.Fatal(err)
 	}
 	if conflitos != 1 {
@@ -279,7 +276,7 @@ func TestIntegrationAcceptWebhookConfirmaSucessoQuandoConsultaAoVivoConcorda(t *
 		t.Fatal(err)
 	}
 	owner := WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: academia}
-	accepted, confirmed, err := service.AcceptWebhook(context.Background(), "REF", charge.Charge.ProviderChargeID, owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Success", "code": float64(100)}})
+	accepted, confirmed, err := service.AcceptWebhook(context.Background(), ProvedorAppyPay, "REF", charge.Charge.ProviderChargeID, owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Success", "code": float64(100)}})
 	if err != nil || !accepted || !confirmed {
 		t.Fatalf("accepted=%t confirmed=%t err=%v, queria accepted=true confirmed=true", accepted, confirmed, err)
 	}
@@ -313,7 +310,7 @@ func TestIntegrationAcceptWebhookNaoConfirmaSucessoQuandoConsultaAoVivoDiscorda(
 		t.Fatal(err)
 	}
 	owner := WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: academia}
-	accepted, confirmed, err := service.AcceptWebhook(context.Background(), "REF", charge.Charge.ProviderChargeID, owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Success", "code": float64(100)}})
+	accepted, confirmed, err := service.AcceptWebhook(context.Background(), ProvedorAppyPay, "REF", charge.Charge.ProviderChargeID, owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Success", "code": float64(100)}})
 	if err != nil || !accepted || confirmed {
 		t.Fatalf("accepted=%t confirmed=%t err=%v, queria accepted=true confirmed=false", accepted, confirmed, err)
 	}
@@ -347,7 +344,7 @@ func TestIntegrationAcceptWebhookConfirmaSucessoQuandoConsultaAoVivoFalha(t *tes
 		t.Fatal(err)
 	}
 	owner := WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: academia}
-	accepted, confirmed, err := service.AcceptWebhook(context.Background(), "REF", charge.Charge.ProviderChargeID, owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Success", "code": float64(100)}})
+	accepted, confirmed, err := service.AcceptWebhook(context.Background(), ProvedorAppyPay, "REF", charge.Charge.ProviderChargeID, owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Success", "code": float64(100)}})
 	if err != nil || !accepted || !confirmed {
 		t.Fatalf("accepted=%t confirmed=%t err=%v, queria accepted=true confirmed=true (fallback)", accepted, confirmed, err)
 	}
@@ -367,7 +364,7 @@ func TestIntegrationAcceptWebhookReflecteEstadoNaoSucesso(t *testing.T) {
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
 	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
 	service := NewService(client)
-	service.httpClient = &http.Client{Transport: &appyPayMockTransport{status: "Pending"}}
+	service.SetHTTPClient(&http.Client{Transport: &appyPayMockTransport{status: "Pending"}})
 	academia := "MAT" + uuid.NewString()[:8]
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
 	codigo := seedMatriculaPendente(t, client, academia, 900)
@@ -380,7 +377,7 @@ func TestIntegrationAcceptWebhookReflecteEstadoNaoSucesso(t *testing.T) {
 	}
 
 	owner := WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: academia}
-	accepted, _, err := service.AcceptWebhook(context.Background(), "REF", charge.Charge.ProviderChargeID, owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Failed", "code": float64(245), "message": "The payment has expired", "source": "REF"}})
+	accepted, _, err := service.AcceptWebhook(context.Background(), ProvedorAppyPay, "REF", charge.Charge.ProviderChargeID, owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Failed", "code": float64(245), "message": "The payment has expired", "source": "REF"}})
 	if err != nil || !accepted {
 		t.Fatalf("webhook Expired = accepted %t, err %v", accepted, err)
 	}
@@ -408,7 +405,7 @@ func TestIntegrationAcceptWebhookReflecteEstadoNaoSucesso(t *testing.T) {
 	// eventID diferente (aqui o id interno da cobrança, que loadCharge
 	// também reconhece) passa pela deduplicação de
 	// financeiro_webhooks_recebidos para realmente exercer a guarda.
-	accepted2, _, err := service.AcceptWebhook(context.Background(), "REF", charge.Charge.ID.String(), owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Failed"}})
+	accepted2, _, err := service.AcceptWebhook(context.Background(), ProvedorAppyPay, "REF", charge.Charge.ID.String(), owner, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Failed"}})
 	if err != nil || !accepted2 {
 		t.Fatalf("segundo webhook = accepted %t, err %v", accepted2, err)
 	}
@@ -602,12 +599,9 @@ func TestIntegrationWebhookSecretGeneratedOnceGlobalHeaderAndRotation(t *testing
 
 	academia := "INT" + uuid.NewString()[:8]
 	created, firstSecret, err := service.ConfigureCredential(ctx, nil, CredentialInput{
-		ContextoTipo:     ContextoAcademia,
-		CodigoAcademia:   academia,
-		ClientID:         "client-webhook",
-		ClientSecret:     "secret-webhook",
-		GPOPaymentMethod: "GPO_WEBHOOK",
-		REFPaymentMethod: "REF_WEBHOOK",
+		ContextoTipo:   ContextoAcademia,
+		CodigoAcademia: academia,
+		Provedor:       ProvedorAppyPay, Credenciais: map[string]string{"client_id": "client-webhook", "client_secret": "secret-webhook", "gpo_method": "GPO_WEBHOOK", "ref_method": "REF_WEBHOOK"},
 	}, "integration-test", "sistema", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
@@ -631,34 +625,31 @@ func TestIntegrationWebhookSecretGeneratedOnceGlobalHeaderAndRotation(t *testing
 
 	okHeaders := http.Header{}
 	okHeaders.Set(WebhookHeaderName, firstSecret)
-	owner, err := service.AuthenticateWebhook(ctx, okHeaders)
+	owner, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, okHeaders)
 	if err != nil || owner.CredentialID != created.ID {
 		t.Fatalf("segredo correto não autenticou: owner=%#v err=%v", owner, err)
 	}
 
 	wrongValueHeaders := http.Header{}
 	wrongValueHeaders.Set(WebhookHeaderName, "valor-errado")
-	if _, err = service.AuthenticateWebhook(ctx, wrongValueHeaders); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, wrongValueHeaders); err == nil {
 		t.Fatal("valor de segredo errado autenticou")
 	}
 
 	wrongHeaderNameHeaders := http.Header{}
 	wrongHeaderNameHeaders.Set("X-API-Key", firstSecret)
-	if _, err = service.AuthenticateWebhook(ctx, wrongHeaderNameHeaders); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, wrongHeaderNameHeaders); err == nil {
 		t.Fatal("cabeçalho fora do nome global autenticou")
 	}
 
-	if _, err = service.AuthenticateWebhook(ctx, http.Header{}); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{}); err == nil {
 		t.Fatal("requisição sem nenhum cabeçalho autenticou")
 	}
 
 	updated, secondSecret, err := service.ConfigureCredential(ctx, &created.ID, CredentialInput{
-		ContextoTipo:     ContextoAcademia,
-		CodigoAcademia:   academia,
-		ClientID:         "client-webhook-atualizado",
-		ClientSecret:     "secret-webhook-atualizado",
-		GPOPaymentMethod: "GPO_WEBHOOK",
-		REFPaymentMethod: "REF_WEBHOOK",
+		ContextoTipo:   ContextoAcademia,
+		CodigoAcademia: academia,
+		Provedor:       ProvedorAppyPay, Credenciais: map[string]string{"client_id": "client-webhook-atualizado", "client_secret": "secret-webhook-atualizado", "gpo_method": "GPO_WEBHOOK", "ref_method": "REF_WEBHOOK"},
 	}, "integration-test", "sistema", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
@@ -679,17 +670,17 @@ func TestIntegrationWebhookSecretGeneratedOnceGlobalHeaderAndRotation(t *testing
 	}
 	oldHeaders := http.Header{}
 	oldHeaders.Set(WebhookHeaderName, firstSecret)
-	if _, err = service.AuthenticateWebhook(ctx, oldHeaders); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, oldHeaders); err == nil {
 		t.Fatal("segredo antigo continuou autenticando após rotação")
 	}
 	newHeaders := http.Header{}
 	newHeaders.Set(WebhookHeaderName, rotated)
-	if owner, err = service.AuthenticateWebhook(ctx, newHeaders); err != nil || owner.CredentialID != created.ID {
+	if owner, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, newHeaders); err != nil || owner.CredentialID != created.ID {
 		t.Fatalf("segredo novo pós-rotação não autenticou: owner=%#v err=%v", owner, err)
 	}
 
 	var rotationEvents int
-	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_id=$1 AND event_type='SegredoWebhookAppyPayRotacionado'`, created.ID).Scan(&rotationEvents); err != nil {
+	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_id=$1 AND event_type='SegredoWebhookProvedorRotacionado'`, created.ID).Scan(&rotationEvents); err != nil {
 		t.Fatal(err)
 	}
 	if rotationEvents != 1 {
@@ -705,7 +696,7 @@ func TestIntegrationCancelChargeAndLateSuccessConflict(t *testing.T) {
 	ctx := context.Background()
 	mock := &appyPayMockTransport{status: "Pending"}
 	service := NewService(client)
-	service.httpClient = &http.Client{Transport: mock}
+	service.SetHTTPClient(&http.Client{Transport: mock})
 	configureIntegrationCredential(t, service, ContextoSpuri, "")
 	configureIntegrationCredential(t, service, ContextoAcademia, "CANCELACA1")
 	configureIntegrationCredential(t, service, ContextoAcademia, "CANCELACA2")
@@ -748,7 +739,7 @@ func TestIntegrationCancelChargeAndLateSuccessConflict(t *testing.T) {
 		t.Fatalf("cancelamento de cobrança paga = %#v, %v", result, err)
 	}
 	var canceledEvents int
-	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_id=$1 AND event_type='CobrancaAppyPayCancelada'`, paid.ID).Scan(&canceledEvents); err != nil {
+	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_id=$1 AND event_type='CobrancaCancelada'`, paid.ID).Scan(&canceledEvents); err != nil {
 		t.Fatal(err)
 	}
 	if canceledEvents != 0 {
@@ -761,7 +752,7 @@ func TestIntegrationCancelChargeAndLateSuccessConflict(t *testing.T) {
 		t.Fatalf("sucesso tardio alterou cobrança cancelada: %#v, %v", conflict, err)
 	}
 	var conflicts int
-	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_id=$1 AND event_type='CobrancaAppyPayConflitoPosCancelamento'`, spuri.ID).Scan(&conflicts); err != nil {
+	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_id=$1 AND event_type='CobrancaConflitoPosCancelamento'`, spuri.ID).Scan(&conflicts); err != nil {
 		t.Fatal(err)
 	}
 	if conflicts != 1 {
@@ -798,7 +789,7 @@ func TestIntegrationConsultChargeRefleteCanceladoGPOPorCodigo(t *testing.T) {
 	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
 	service := NewService(client)
 	mock := &appyPayMockTransport{status: "Pending"}
-	service.httpClient = &http.Client{Transport: mock}
+	service.SetHTTPClient(&http.Client{Transport: mock})
 	academia := "GPO" + uuid.NewString()[:8]
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
 

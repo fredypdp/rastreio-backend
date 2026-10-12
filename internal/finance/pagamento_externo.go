@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -117,27 +115,25 @@ func (s *Service) CobrancaEstaPaga(ctx context.Context, identifier string) (bool
 	return isSuccessfulChargeStatus(row.Status), nil
 }
 
-// statusAoVivoSeDisponivel consulta o provedor. Devolve verificada=false (sem
-// erro) apenas quando o escopo não tem credencial AppyPay — não há provedor
-// com que o pagamento possa conflitar. Qualquer outra falha bloqueia, porque
-// sem consulta não se sabe se o pagador já pagou.
+// statusAoVivoSeDisponivel consulta o provedor QUE EMITIU a cobrança (mecanismo
+// retroativo: mesmo que o contexto já tenha trocado de provedor). Devolve
+// verificada=false (sem erro) apenas quando não há provedor com que o
+// pagamento possa conflitar — cobrança sem provedor real (registrada fora da
+// plataforma) ou provedor sem credenciais neste contexto. Qualquer outra
+// falha bloqueia, porque sem consulta não se sabe se o pagador já pagou.
 func (s *Service) statusAoVivoSeDisponivel(ctx context.Context, row chargeRow) (status string, verificada bool, err error) {
-	cred, err := s.loadCredential(ctx, row.Contexto, row.Academia)
+	prov, cred, err := s.provedorDaCobranca(ctx, row)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrProvedorDesconhecido) {
 			return "", false, nil
 		}
 		return "", false, err
 	}
-	path := "/charges/" + url.PathEscape(row.ProviderID)
-	if row.ProviderID == "" {
-		path = "/charges?merchantTransactionId=" + url.QueryEscape(row.Merchant)
-	}
-	response, err := s.callJSON(ctx, cred, http.MethodGet, path, nil, false)
+	resp, err := prov.ConsultarCobranca(ctx, cred, referenciaCobranca{IDProvedor: row.ProviderID, IDComerciante: row.Merchant})
 	if err != nil {
-		return "", false, fmt.Errorf("%w: não foi possível confirmar com a AppyPay se a cobrança já foi paga", ErrUpstream)
+		return "", false, fmt.Errorf("%w: não foi possível confirmar com o provedor %s se a cobrança já foi paga", ErrUpstream, prov.Nome())
 	}
-	status = normalizeChargeStatus(extractProviderOutcome(response).Status)
+	status = normalizeChargeStatus(resp.Outcome.Status)
 	return status, status != "", nil
 }
 
@@ -155,7 +151,7 @@ func (s *Service) reconciliarPagamentoDescoberto(ctx context.Context, chargeID u
 
 // RegistrarPagamentoExternoCobranca marca uma cobrança real da academia, ainda
 // aguardando pagamento, como paga fora da plataforma. Antes de gravar consulta
-// o provedor: se a AppyPay já reporta Success, o pagamento aconteceu dentro do
+// o provedor: se ele já reporta Success, o pagamento aconteceu dentro do
 // ecossistema — reconcilia e devolve ErrPagamentoExistente.
 func (s *Service) RegistrarPagamentoExternoCobranca(ctx context.Context, academia, identifier string, in PagamentoExternoInput, actorID, actorType, ip string) (PagamentoExternoResultado, error) {
 	if err := normalizarCamposExternos(&in.Observacao, &in.ReferenciaExterna); err != nil {
@@ -285,7 +281,8 @@ func (s *Service) RegistrarPagamentoExternoMensalidades(ctx context.Context, aca
 		CodigoEstudante:       in.CodigoEstudante,
 		Mensalidades:          meses,
 	}
-	payload := chargePayload(id, request, "", "Success", nil)
+	// Registro feito fora da plataforma: não há PSP por trás desta cobrança.
+	payload := comProvedor(chargePayload(id, request, "", "Success", nil), ProvedorExterno)
 	payload["status_anterior"] = EstadoPendente
 	marcarPagamentoExterno(payload, in.Observacao, in.ReferenciaExterna, actorID)
 	if err := s.record(ctx, id, aggregates.CobrancaPagamentoExternoRegistrado, payload, actorID, actorType, ip); err != nil {

@@ -243,7 +243,7 @@ func efetivarVinculoServicoExtraPago(c *gin.Context, id string) error {
 	if e = s.VincularAposPagamento(); e != nil {
 		return e
 	}
-	return getRepository(c).SaveWithAudit(s, db.AuditContext{UserID: "appypay:servico_extra", UserType: "sistema", IP: c.ClientIP()})
+	return getRepository(c).SaveWithAudit(s, db.AuditContext{UserID: "pagamento:servico_extra", UserType: "sistema", IP: c.ClientIP()})
 }
 func IniciarPagamentoTaxaInscricaoServicoExtra(c *gin.Context) {
 	var in finance.TaxaInscricaoServicoExtraPagamentoInput

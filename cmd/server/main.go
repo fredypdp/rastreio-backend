@@ -89,8 +89,8 @@ func initDB() error {
 	if err := finance.ValidateEncryptionConfig(); err != nil {
 		return fmt.Errorf("configuração de criptografia financeira inválida: %w", err)
 	}
-	if err := finance.ValidateAppyPayResourceConfig(); err != nil {
-		return fmt.Errorf("configuração AppyPay inválida: %w", err)
+	if err := finance.ValidarConfiguracaoProvedores(); err != nil {
+		return fmt.Errorf("configuração de provedor de pagamento inválida: %w", err)
 	}
 	if err := services.ValidateComunicacaoEncryptionConfig(); err != nil {
 		return fmt.Errorf("configuração de criptografia de comunicação inválida: %w", err)
@@ -298,8 +298,14 @@ func setupRouter() *gin.Engine {
 	router.POST("/solicitacao-matricula/:codigo/pagamento-matricula", middleware.RateLimitMiddleware(middleware.NewRateLimiter(rate.Every(time.Minute/20), 5, time.Minute)), handlers.IniciarPagamentoMatricula)
 	// Webhooks são públicos por necessidade do gateway, mas autenticados pelo
 	// próprio módulo antes de qualquer evento ser aceite.
-	router.POST("/webhooks/appypay/gpo", handlers.ReceberWebhookAppyPay("GPO"))
-	router.POST("/webhooks/appypay/ref", handlers.ReceberWebhookAppyPay("REF"))
+	// As rotas de cada provedor vêm do próprio provedor (RotasWebhook), no
+	// formato /webhooks/<slug>/<caminho>. Para a AppyPay continuam exatamente
+	// as URLs já configuradas no painel deles (/webhooks/appypay/gpo e /ref).
+	for _, p := range handlers.FinanceiroService.Provedores() {
+		for _, rota := range handlers.FinanceiroService.RotasWebhookDoProvedor(p.ID) {
+			router.POST("/webhooks/"+p.Slug+"/"+rota.Caminho, handlers.ReceberWebhook(p.ID, rota.Metodo))
+		}
+	}
 
 	emailGroup := router.Group("/email")
 	emailGroup.Use(middleware.EmailRateLimit())
@@ -420,18 +426,39 @@ func setupRouter() *gin.Engine {
 		financeiro := protected.Group("/financeiro")
 		financeiro.Use(middleware.RequireAcademiaOuAdmin())
 		{
+			// Provedores de pagamento (PSP): catálogo, provedor ativo do
+			// contexto e credenciais por provedor.
+			financeiro.GET("/provedores", handlers.ListarProvedores)
+			financeiro.GET("/provedor", handlers.ConsultarProvedorContexto)
+			financeiro.PUT("/provedor", handlers.DefinirProvedorContexto)
+			financeiro.POST("/credenciais", handlers.ConfigurarCredencial)
+			financeiro.PUT("/credenciais/:id", handlers.AtualizarCredencial)
+			financeiro.GET("/credenciais", handlers.ListarCredenciais)
+			financeiro.DELETE("/credenciais", handlers.RemoverCredencial)
+			financeiro.GET("/credenciais/:id/webhook-secret", handlers.ConsultarSegredoWebhook)
+			financeiro.POST("/credenciais/:id/webhook-secret/rotacionar", handlers.RotacionarSegredoWebhook)
+			// Cobranças (independentes de provedor: o provedor de cada cobrança
+			// é o que a emitiu).
+			financeiro.POST("/cobrancas", handlers.CriarCobranca)
+			financeiro.POST("/qr-codes", handlers.GerarQRCode)
+			financeiro.GET("/cobrancas/:id", handlers.ConsultarCobranca)
+			financeiro.POST("/cobrancas/:id/cancelar", handlers.CancelarCobranca)
+			financeiro.POST("/cobrancas/:id/pago-externamente", handlers.RegistrarPagamentoExternoCobranca)
+			financeiro.GET("/cobrancas", handlers.ListarCobrancas)
+			// DEPRECADAS (Tarefa 119): aliases das rotas anteriores, mantidos
+			// para o frontend antigo durante o deploy. As rotas de credenciais
+			// falam apenas com a AppyPay e usam o formato antigo.
 			financeiro.POST("/appypay/credenciais", handlers.ConfigurarCredencialAppyPay)
 			financeiro.PUT("/appypay/credenciais/:id", handlers.AtualizarCredencialAppyPay)
 			financeiro.GET("/appypay/credenciais", handlers.ListarCredenciaisAppyPay)
 			financeiro.DELETE("/appypay/credenciais", handlers.RemoverCredencialAppyPay)
-			financeiro.GET("/appypay/credenciais/:id/webhook-secret", handlers.ConsultarSegredoWebhookAppyPay)
-			financeiro.POST("/appypay/credenciais/:id/webhook-secret/rotacionar", handlers.RotacionarSegredoWebhookAppyPay)
-			financeiro.POST("/appypay/cobrancas", handlers.CriarCobrancaAppyPay)
-			financeiro.POST("/appypay/qr-codes", handlers.GerarQRCodeAppyPay)
-			financeiro.GET("/appypay/cobrancas/:id", handlers.ConsultarCobrancaAppyPay)
-			financeiro.POST("/appypay/cobrancas/:id/cancelar", handlers.CancelarCobrancaAppyPay)
+			financeiro.GET("/appypay/credenciais/:id/webhook-secret", handlers.ConsultarSegredoWebhook)
+			financeiro.POST("/appypay/credenciais/:id/webhook-secret/rotacionar", handlers.RotacionarSegredoWebhook)
+			financeiro.POST("/appypay/cobrancas", handlers.CriarCobranca)
+			financeiro.POST("/appypay/qr-codes", handlers.GerarQRCode)
+			financeiro.GET("/appypay/cobrancas/:id", handlers.ConsultarCobranca)
+			financeiro.POST("/appypay/cobrancas/:id/cancelar", handlers.CancelarCobranca)
 			financeiro.POST("/appypay/cobrancas/:id/pago-externamente", handlers.RegistrarPagamentoExternoCobranca)
-			financeiro.GET("/cobrancas", handlers.ListarCobrancasAppyPay)
 			financeiro.POST("/servicos-extras/obrigacao/anular", handlers.AnularObrigacaoServicoExtra)
 			financeiro.POST("/servicos-extras/obrigacao/reativar", handlers.ReativarObrigacaoServicoExtra)
 			financeiro.POST("/mensalidades/configuracoes", handlers.ConfigurarMensalidade)

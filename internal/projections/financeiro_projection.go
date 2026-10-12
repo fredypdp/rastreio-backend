@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"spuri/internal/db"
+	"spuri/internal/domain/aggregates"
 )
 
 func (p *FinanceiroProjection) upsertMensalidadeCobrancas(chargeID uuid.UUID, academia string, payload map[string]any) error {
@@ -45,6 +46,20 @@ func (p *FinanceiroProjection) upsertMensalidadeCobrancas(chargeID uuid.UUID, ac
 	return nil
 }
 
+// provedorPadraoLegado e o provedor assumido para eventos gravados antes da
+// Tarefa 119, quando a AppyPay era o único provedor e o payload não trazia o
+// campo "provedor".
+const provedorPadraoLegado = "APPYPAY"
+
+// provedorDoPayload le o provedor de pagamento de um payload de evento
+// financeiro, assumindo AppyPay para eventos anteriores ao campo existir.
+func provedorDoPayload(v map[string]any) string {
+	if p, _ := v["provedor"].(string); p != "" {
+		return p
+	}
+	return provedorPadraoLegado
+}
+
 // FinanceiroProjection is the sole writer of financial read models. Its event
 // payloads are deliberately secret-free, allowing deterministic replay.
 type FinanceiroProjection struct{ client *db.Client }
@@ -68,7 +83,10 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
 	if err := json.Unmarshal(e.Payload, &v); err != nil {
 		return err
 	}
-	switch e.EventType {
+	// Os nomes AppyPay legados (imutáveis no ledger) são traduzidos para o nome
+	// neutro; assim o replay de eventos antigos e a leitura de eventos novos
+	// passam pelo mesmo caminho.
+	switch aggregates.EventoFinanceiroCanonico(e.EventType) {
 	case "MatriculaConfigurada":
 		var in struct {
 			CodigoAcademia   string   `json:"codigo_academia"`
@@ -230,26 +248,54 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
 			}
 		}
 		return tx.Commit()
-	case "CredenciaisAppyPayConfiguradas":
+	case aggregates.CredenciaisProvedorConfiguradas:
 		contexto, _ := v["contexto_tipo"].(string)
 		academia, _ := v["codigo_academia"].(string)
 		ambiente, _ := v["ambiente"].(string)
-		_, err := p.client.DB().Exec(`INSERT INTO financeiro_credenciais_appypay (id,contexto_tipo,codigo_academia,ambiente,payload,updated_at) VALUES ($1,$2,NULLIF($3,''),$4,$5,CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET contexto_tipo=EXCLUDED.contexto_tipo,codigo_academia=EXCLUDED.codigo_academia,ambiente=EXCLUDED.ambiente,payload=EXCLUDED.payload,updated_at=CURRENT_TIMESTAMP`, e.AggregateID, contexto, academia, ambiente, e.Payload)
+		provedor := provedorDoPayload(v)
+		if _, err := p.client.DB().Exec(`INSERT INTO financeiro_credenciais_provedor (id,contexto_tipo,codigo_academia,ambiente,provedor,payload,updated_at) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET contexto_tipo=EXCLUDED.contexto_tipo,codigo_academia=EXCLUDED.codigo_academia,ambiente=EXCLUDED.ambiente,provedor=EXCLUDED.provedor,payload=EXCLUDED.payload,updated_at=CURRENT_TIMESTAMP`, e.AggregateID, contexto, academia, ambiente, provedor, e.Payload); err != nil {
+			return err
+		}
+		// Primeiras credenciais de um contexto sem provedor definido tornam
+		// esse provedor o ativo. Regra aplicada na projeção (e não gravada
+		// como evento) para que o replay do ledger antigo, anterior à
+		// seleção explícita de provedor, produza o mesmo estado.
+		_, err := p.client.DB().Exec(`INSERT INTO financeiro_provedores_pagamento (contexto_tipo,codigo_academia,provedor,definido_em,updated_at) VALUES ($1,NULLIF($2,''),$3,$4,CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING`, contexto, academia, provedor, e.OccurredAt)
 		return err
-	case "CredenciaisAppyPayRemovidas":
+	case aggregates.CredenciaisProvedorRemovidas:
 		// Remove apenas a linha da PROJEÇÃO (estado de leitura atual). O
 		// evento em si permanece para sempre no ledger, imutável. O cofre
-		// de segredos (financeiro_segredos_appypay) NÃO é tocado aqui:
+		// de segredos (financeiro_segredos_provedor) NÃO é tocado aqui:
 		// ele vive fora do replay do ledger e é limpo diretamente pelo
 		// Service, no mesmo comando que grava este evento (ver
-		// Service.RemoveCredential em appypay.go), exatamente como
-		// ConfigureCredential grava segredos fora da projeção.
-		_, err := p.client.DB().Exec(`DELETE FROM financeiro_credenciais_appypay WHERE id=$1`, e.AggregateID)
+		// Service.RemoveCredential em finance/credenciais.go), exatamente
+		// como ConfigureCredential grava segredos fora da projeção.
+		var contexto, provedor string
+		var academia sql.NullString
+		err := p.client.DB().QueryRow(`DELETE FROM financeiro_credenciais_provedor WHERE id=$1 RETURNING contexto_tipo,codigo_academia,provedor`, e.AggregateID).Scan(&contexto, &academia, &provedor)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// Um provedor sem credenciais não pode continuar ativo.
+		_, err = p.client.DB().Exec(`DELETE FROM financeiro_provedores_pagamento WHERE contexto_tipo=$1 AND COALESCE(codigo_academia,'')=$2 AND provedor=$3`, contexto, academia.String, provedor)
 		return err
-	case "SegredoWebhookAppyPayRotacionado":
-		_, err := p.client.DB().Exec(`UPDATE financeiro_credenciais_appypay SET updated_at=CURRENT_TIMESTAMP WHERE id=$1`, e.AggregateID)
+	case aggregates.SegredoWebhookProvedorRotacionado:
+		_, err := p.client.DB().Exec(`UPDATE financeiro_credenciais_provedor SET updated_at=CURRENT_TIMESTAMP WHERE id=$1`, e.AggregateID)
 		return err
-	case "CobrancaAppyPaySolicitada", "CobrancaAppyPayCriada", "CobrancaAppyPayFalhou", "CobrancaAppyPayConsultada", "CobrancaAppyPayCancelada", "CobrancaAppyPayConflitoPosCancelamento", "CobrancaPagamentoExternoRegistrado", "QRCodeAppyPaySolicitado", "QRCodeAppyPayGerado", "QRCodeAppyPayFalhou":
+	case aggregates.ProvedorPagamentoDefinido:
+		contexto, _ := v["contexto_tipo"].(string)
+		academia, _ := v["codigo_academia"].(string)
+		provedor, _ := v["provedor"].(string)
+		definidoPor, _ := v["definido_por"].(string)
+		if provedor == "" || (contexto != "spuri" && contexto != "academia") {
+			return fmt.Errorf("evento de provedor de pagamento inválido")
+		}
+		_, err := p.client.DB().Exec(`INSERT INTO financeiro_provedores_pagamento (contexto_tipo,codigo_academia,provedor,definido_por,definido_em,updated_at) VALUES ($1,NULLIF($2,''),$3,NULLIF($4,''),$5,CURRENT_TIMESTAMP) ON CONFLICT (contexto_tipo, COALESCE(codigo_academia,'')) DO UPDATE SET provedor=EXCLUDED.provedor,definido_por=EXCLUDED.definido_por,definido_em=EXCLUDED.definido_em,updated_at=CURRENT_TIMESTAMP`, contexto, academia, provedor, definidoPor, e.OccurredAt)
+		return err
+	case aggregates.CobrancaSolicitada, aggregates.CobrancaCriada, aggregates.CobrancaFalhou, aggregates.CobrancaConsultada, aggregates.CobrancaCancelada, aggregates.CobrancaConflitoPosCancelamento, "CobrancaPagamentoExternoRegistrado", aggregates.QRCodeSolicitado, aggregates.QRCodeGerado, aggregates.QRCodeFalhou:
 		merchant, _ := v["merchant_transaction_id"].(string)
 		provider, _ := v["provider_charge_id"].(string)
 		contexto, _ := v["contexto_tipo"].(string)
@@ -257,18 +303,21 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
 		if merchant == "" {
 			return fmt.Errorf("evento financeiro sem merchant_transaction_id")
 		}
-		_, err := p.client.DB().Exec(`INSERT INTO financeiro_cobrancas (id,provider_charge_id,merchant_transaction_id,contexto_tipo,codigo_academia,payload,updated_at) VALUES ($1,NULLIF($2,''),$3,$4,NULLIF($5,''),$6,CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET provider_charge_id=COALESCE(EXCLUDED.provider_charge_id,financeiro_cobrancas.provider_charge_id),payload=EXCLUDED.payload,updated_at=CURRENT_TIMESTAMP`, e.AggregateID, provider, merchant, contexto, academia, e.Payload)
+		// O provedor é gravado na criação e nunca muda: é ele que garante que
+		// a cobrança continue sendo consultada/cancelada/confirmada pelo
+		// provedor que a emitiu mesmo depois de o contexto trocar de provedor.
+		_, err := p.client.DB().Exec(`INSERT INTO financeiro_cobrancas (id,provider_charge_id,merchant_transaction_id,contexto_tipo,codigo_academia,provedor,payload,updated_at) VALUES ($1,NULLIF($2,''),$3,$4,NULLIF($5,''),$6,$7,CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET provider_charge_id=COALESCE(EXCLUDED.provider_charge_id,financeiro_cobrancas.provider_charge_id),payload=EXCLUDED.payload,updated_at=CURRENT_TIMESTAMP`, e.AggregateID, provider, merchant, contexto, academia, provedorDoPayload(v), e.Payload)
 		if err != nil {
 			return err
 		}
 		return p.upsertMensalidadeCobrancas(e.AggregateID, academia, v)
-	case "WebhookAppyPayRecebido":
+	case aggregates.WebhookProvedorRecebido:
 		id, _ := v["event_id"].(string)
 		metodo, _ := v["metodo"].(string)
-		if id == "" || (metodo != "GPO" && metodo != "REF") {
+		if id == "" || metodo == "" {
 			return fmt.Errorf("webhook financeiro inválido")
 		}
-		_, err := p.client.DB().Exec(`INSERT INTO financeiro_webhooks_recebidos (event_id,metodo,received_at) VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING`, id, metodo, e.OccurredAt)
+		_, err := p.client.DB().Exec(`INSERT INTO financeiro_webhooks_recebidos (provedor,event_id,metodo,received_at) VALUES ($1,$2,$3,$4) ON CONFLICT (provedor, event_id) DO NOTHING`, provedorDoPayload(v), id, metodo, e.OccurredAt)
 		return err
 	default:
 		return fmt.Errorf("evento financeiro desconhecido: %s", e.EventType)
@@ -277,7 +326,7 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
 
 func (p *FinanceiroProjection) Rebuild() error {
 	// Secrets are operational material and intentionally survive a ledger replay.
-	if _, err := p.client.DB().Exec(`DELETE FROM financeiro_mensalidade_obrigacoes_eventos; DELETE FROM financeiro_mensalidade_inicio_cobranca; DELETE FROM financeiro_mensalidade_inicio_cobranca_remocoes; DELETE FROM financeiro_mensalidade_configuracoes; DELETE FROM financeiro_mensalidade_configuracoes_remocoes; DELETE FROM financeiro_mensalidade_cobrancas; DELETE FROM financeiro_matricula_configuracoes; DELETE FROM financeiro_matricula_configuracoes_remocoes; DELETE FROM financeiro_webhooks_recebidos; DELETE FROM financeiro_cobrancas; DELETE FROM financeiro_credenciais_appypay;`); err != nil {
+	if _, err := p.client.DB().Exec(`DELETE FROM financeiro_mensalidade_obrigacoes_eventos; DELETE FROM financeiro_mensalidade_inicio_cobranca; DELETE FROM financeiro_mensalidade_inicio_cobranca_remocoes; DELETE FROM financeiro_mensalidade_configuracoes; DELETE FROM financeiro_mensalidade_configuracoes_remocoes; DELETE FROM financeiro_mensalidade_cobrancas; DELETE FROM financeiro_matricula_configuracoes; DELETE FROM financeiro_matricula_configuracoes_remocoes; DELETE FROM financeiro_webhooks_recebidos; DELETE FROM financeiro_cobrancas; DELETE FROM financeiro_credenciais_provedor; DELETE FROM financeiro_provedores_pagamento;`); err != nil {
 		return err
 	}
 	rows, err := p.client.DB().Query(`SELECT id,event_id,aggregate_id,aggregate_type,event_type,event_version,payload,metadata,occurred_at,recorded_at,ledger_hash,previous_hash FROM spuri_ledger WHERE aggregate_type='Financeiro' ORDER BY id`)

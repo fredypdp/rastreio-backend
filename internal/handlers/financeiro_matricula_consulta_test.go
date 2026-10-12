@@ -67,8 +67,7 @@ func TestIntegrationConsultarCobrancaAppyPayNaoEfetivaMatriculaAposSuccess(t *te
 	service.SetHTTPClient(&http.Client{Transport: transport})
 	if _, _, err := service.ConfigureCredential(context.Background(), nil, finance.CredentialInput{
 		ContextoTipo: finance.ContextoAcademia, CodigoAcademia: academia,
-		ClientID: "integration-client", ClientSecret: "integration-secret",
-		GPOPaymentMethod: "GPO_INTEGRATION", REFPaymentMethod: "REF_INTEGRATION",
+		Provedor: finance.ProvedorAppyPay, Credenciais: map[string]string{"client_id": "integration-client", "client_secret": "integration-secret", "gpo_method": "GPO_INTEGRATION", "ref_method": "REF_INTEGRATION"},
 	}, "integration-test", "sistema", "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +99,7 @@ func TestIntegrationConsultarCobrancaAppyPayNaoEfetivaMatriculaAposSuccess(t *te
 	ctx.Set("user_type", "academia")
 	ctx.Set("codigo_academia", academia)
 
-	ConsultarCobrancaAppyPay(ctx)
+	ConsultarCobranca(ctx)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("ConsultarCobrancaAppyPay retornou %d: %s", recorder.Code, recorder.Body.String())
 	}

@@ -96,8 +96,7 @@ func TestIntegrationRemoveMensalidadeConfiguracaoFluxoDeComando(t *testing.T) {
 
 	if _, _, err := service.ConfigureCredential(context.Background(), nil, CredentialInput{
 		ContextoTipo: ContextoAcademia, CodigoAcademia: academia,
-		ClientID: "client-" + uuid.NewString(), ClientSecret: "secret-" + uuid.NewString(),
-		GPOPaymentMethod: "GPO_QR_TEST", REFPaymentMethod: "REF_TEST",
+		Provedor: ProvedorAppyPay, Credenciais: map[string]string{"client_id": "client-" + uuid.NewString(), "client_secret": "secret-" + uuid.NewString(), "gpo_method": "GPO_QR_TEST", "ref_method": "REF_TEST"},
 	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatalf("ConfigureCredential não deveria falhar: %v", err)
 	}

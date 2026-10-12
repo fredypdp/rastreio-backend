@@ -12,26 +12,83 @@ import (
 type Financeiro struct{ *BaseAggregate }
 type EventoFinanceiro struct{ BaseEvent }
 
-// Event names owned by the Financeiro ledger aggregate. CobrancaAppyPayCancelada
-// is a local Spuri cancellation; CobrancaAppyPayConflitoPosCancelamento records
-// a provider Success observed after that definitive local cancellation.
+// Event names owned by the Financeiro ledger aggregate.
+//
+// Os eventos de provedor de pagamento (PSP) são neutros: o provedor que
+// originou o evento vai no payload ("provedor"), nunca no nome. Os nomes
+// antigos, prefixados com AppyPay, continuam existindo no ledger (que é
+// imutável) e são aceitos pela projeção através de EventoFinanceiroCanonico.
+//
+// CobrancaCancelada é um cancelamento local do Spuri;
+// CobrancaConflitoPosCancelamento registra um Success do provedor observado
+// depois desse cancelamento local definitivo.
 const (
-	CobrancaAppyPayCancelada               = "CobrancaAppyPayCancelada"
-	CobrancaAppyPayConflitoPosCancelamento = "CobrancaAppyPayConflitoPosCancelamento"
-	MensalidadeConfigurada                 = "MensalidadeConfigurada"
-	MensalidadeConfiguracaoRemovida        = "MensalidadeConfiguracaoRemovida"
-	MesInicioCobrancaDefinido              = "MesInicioCobrancaDefinido"
-	MesInicioCobrancaRemovido              = "MesInicioCobrancaRemovido"
-	ObrigacaoMensalidadeAnulada            = "ObrigacaoMensalidadeAnulada"
-	ObrigacaoMensalidadeReativada          = "ObrigacaoMensalidadeReativada"
-	MensalidadePaga                        = "MensalidadePaga"
-	ObrigacaoServicoExtraAnulada           = "ObrigacaoServicoExtraAnulada"
-	ObrigacaoServicoExtraReativada         = "ObrigacaoServicoExtraReativada"
-	ServicoExtraLancamentoPago             = "ServicoExtraLancamentoPago"
-	MatriculaConfigurada                   = "MatriculaConfigurada"
-	MatriculaConfiguracaoRemovida          = "MatriculaConfiguracaoRemovida"
-	CredenciaisAppyPayRemovidas            = "CredenciaisAppyPayRemovidas"
+	CredenciaisProvedorConfiguradas   = "CredenciaisProvedorConfiguradas"
+	CredenciaisProvedorRemovidas      = "CredenciaisProvedorRemovidas"
+	SegredoWebhookProvedorRotacionado = "SegredoWebhookProvedorRotacionado"
+	ProvedorPagamentoDefinido         = "ProvedorPagamentoDefinido"
+	CobrancaSolicitada                = "CobrancaSolicitada"
+	CobrancaCriada                    = "CobrancaCriada"
+	CobrancaFalhou                    = "CobrancaFalhou"
+	CobrancaConsultada                = "CobrancaConsultada"
+	CobrancaCancelada                 = "CobrancaCancelada"
+	CobrancaConflitoPosCancelamento   = "CobrancaConflitoPosCancelamento"
+	QRCodeSolicitado                  = "QRCodeSolicitado"
+	QRCodeGerado                      = "QRCodeGerado"
+	QRCodeFalhou                      = "QRCodeFalhou"
+	WebhookProvedorRecebido           = "WebhookProvedorRecebido"
+	MensalidadeConfigurada            = "MensalidadeConfigurada"
+	MensalidadeConfiguracaoRemovida   = "MensalidadeConfiguracaoRemovida"
+	MesInicioCobrancaDefinido         = "MesInicioCobrancaDefinido"
+	MesInicioCobrancaRemovido         = "MesInicioCobrancaRemovido"
+	ObrigacaoMensalidadeAnulada       = "ObrigacaoMensalidadeAnulada"
+	ObrigacaoMensalidadeReativada     = "ObrigacaoMensalidadeReativada"
+	MensalidadePaga                   = "MensalidadePaga"
+	ObrigacaoServicoExtraAnulada      = "ObrigacaoServicoExtraAnulada"
+	ObrigacaoServicoExtraReativada    = "ObrigacaoServicoExtraReativada"
+	ServicoExtraLancamentoPago        = "ServicoExtraLancamentoPago"
+	MatriculaConfigurada              = "MatriculaConfigurada"
+	MatriculaConfiguracaoRemovida     = "MatriculaConfiguracaoRemovida"
 )
+
+// eventosFinanceirosLegados mapeia os nomes de evento gravados antes da
+// Tarefa 119 (prefixados com AppyPay) para o nome neutro equivalente. Eventos
+// com estes nomes existem para sempre no ledger e continuam sendo
+// reprocessados pela projeção; nenhum código novo os grava.
+var eventosFinanceirosLegados = map[string]string{
+	"CredenciaisAppyPayConfiguradas":         CredenciaisProvedorConfiguradas,
+	"CredenciaisAppyPayRemovidas":            CredenciaisProvedorRemovidas,
+	"SegredoWebhookAppyPayRotacionado":       SegredoWebhookProvedorRotacionado,
+	"CobrancaAppyPaySolicitada":              CobrancaSolicitada,
+	"CobrancaAppyPayCriada":                  CobrancaCriada,
+	"CobrancaAppyPayFalhou":                  CobrancaFalhou,
+	"CobrancaAppyPayConsultada":              CobrancaConsultada,
+	"CobrancaAppyPayCancelada":               CobrancaCancelada,
+	"CobrancaAppyPayConflitoPosCancelamento": CobrancaConflitoPosCancelamento,
+	"QRCodeAppyPaySolicitado":                QRCodeSolicitado,
+	"QRCodeAppyPayGerado":                    QRCodeGerado,
+	"QRCodeAppyPayFalhou":                    QRCodeFalhou,
+	"WebhookAppyPayRecebido":                 WebhookProvedorRecebido,
+}
+
+// EventoFinanceiroCanonico devolve o nome neutro de um evento financeiro,
+// traduzindo os nomes legados com prefixo AppyPay. Nomes que já são neutros
+// (ou desconhecidos) voltam inalterados.
+func EventoFinanceiroCanonico(eventType string) string {
+	if canonical, ok := eventosFinanceirosLegados[eventType]; ok {
+		return canonical
+	}
+	return eventType
+}
+
+// EventosFinanceirosLegados devolve os nomes legados (para allowlists e testes).
+func EventosFinanceirosLegados() []string {
+	out := make([]string, 0, len(eventosFinanceirosLegados))
+	for legacy := range eventosFinanceirosLegados {
+		out = append(out, legacy)
+	}
+	return out
+}
 
 // CobrancaPagamentoExternoRegistrado marca uma cobrança como paga FORA da
 // plataforma (decisão manual da academia). O payload leva status "Success" e

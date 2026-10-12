@@ -371,7 +371,7 @@ func TestIntegrationReativarBloqueadoAposPagamentoTardioDoProvedor(t *testing.T)
 	if _, err := f.service.ConsultCharge(ctx, ContextoAcademia, f.academia, id.String(), uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatalf("ConsultCharge falhou: %v", err)
 	}
-	if n := ledgerCount(t, f.client, id, "CobrancaAppyPayConflitoPosCancelamento"); n != 1 {
+	if n := ledgerCount(t, f.client, id, "CobrancaConflitoPosCancelamento"); n != 1 {
 		t.Fatalf("esperava 1 conflito pós-cancelamento, obteve %d", n)
 	}
 	err := f.service.ReativarObrigacoesMensalidade(ctx, in, uuid.NewString(), "academia", "127.0.0.1")
@@ -410,7 +410,7 @@ func seedCobrancaServicoExtra(t *testing.T, f *extFixture, inscricao string, ano
 		"merchant_transaction_id": merchantExterno(id), "payment_method": "GPO", "provider_charge_id": "",
 		"status": EstadoCobrancaAguardandoPagamento,
 	}
-	if err := f.service.record(context.Background(), id, "CobrancaAppyPaySolicitada", payload, "teste", "sistema", "127.0.0.1"); err != nil {
+	if err := f.service.record(context.Background(), id, "CobrancaSolicitada", payload, "teste", "sistema", "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -490,7 +490,7 @@ func TestIntegrationWebhookNaoRebaixaCobrancaPagaExternamente(t *testing.T) {
 	}
 	owner := WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: f.academia}
 	payload := map[string]any{"id": row.ProviderID, "responseStatus": map[string]any{"successful": true, "status": "Success", "source": "GPO"}}
-	if _, _, err = f.service.AcceptWebhook(ctx, "GPO", row.ProviderID, owner, payload); err != nil {
+	if _, _, err = f.service.AcceptWebhook(ctx, ProvedorAppyPay, "GPO", row.ProviderID, owner, payload); err != nil {
 		t.Fatalf("AcceptWebhook falhou: %v", err)
 	}
 	p := f.cobranca(t, id)

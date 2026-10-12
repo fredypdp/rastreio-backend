@@ -194,7 +194,7 @@ func TestIntegrationFinanceRejectsAcademyChargeOutsideScope(t *testing.T) {
 	ctx.Set("user_type", "academia")
 	ctx.Set("codigo_academia", "ACA2")
 
-	ConsultarCobrancaAppyPay(ctx)
+	ConsultarCobranca(ctx)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("academia externa recebeu status %d, quer 404: %s", recorder.Code, recorder.Body.String())
 	}
@@ -248,7 +248,7 @@ func TestIntegrationFinanceRejectsNonFPPAdmins(t *testing.T) {
 			ctx.Set("user_id", adminID)
 			ctx.Set("user_type", "admin")
 
-			CriarCobrancaAppyPay(ctx)
+			CriarCobranca(ctx)
 			if recorder.Code != http.StatusForbidden {
 				t.Fatalf("admin %s recebeu status %d, quer 403: %s", role, recorder.Code, recorder.Body.String())
 			}
@@ -282,7 +282,7 @@ func TestIntegrationFinanceFPPAdminCannotCancelAcademyCharge(t *testing.T) {
 	ctx.Set("user_id", adminID)
 	ctx.Set("user_type", "admin")
 
-	CancelarCobrancaAppyPay(ctx)
+	CancelarCobranca(ctx)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("admin FPP recebeu status %d, quer 404: %s", recorder.Code, recorder.Body.String())
 	}
@@ -302,12 +302,9 @@ func TestIntegrationReceberWebhookAppyPayEfetivaVinculoMatricula(t *testing.T) {
 	service := finance.NewService(client)
 	service.SetHTTPClient(&http.Client{Transport: handlerAppyPayMockTransport{}})
 	_, webhookSecret, err := service.ConfigureCredential(context.Background(), nil, finance.CredentialInput{
-		ContextoTipo:     finance.ContextoAcademia,
-		CodigoAcademia:   academia,
-		ClientID:         "integration-client",
-		ClientSecret:     "integration-secret",
-		GPOPaymentMethod: "GPO_INTEGRATION",
-		REFPaymentMethod: "REF_INTEGRATION",
+		ContextoTipo:   finance.ContextoAcademia,
+		CodigoAcademia: academia,
+		Provedor:       finance.ProvedorAppyPay, Credenciais: map[string]string{"client_id": "integration-client", "client_secret": "integration-secret", "gpo_method": "GPO_INTEGRATION", "ref_method": "REF_INTEGRATION"},
 	}, "integration-test", "sistema", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +323,7 @@ func TestIntegrationReceberWebhookAppyPayEfetivaVinculoMatricula(t *testing.T) {
 		c.Set("dbClient", client)
 		c.Set("repository", repository)
 	})
-	router.POST("/financeiro/appypay/webhooks/ref", ReceberWebhookAppyPay("REF"))
+	router.POST("/financeiro/appypay/webhooks/ref", ReceberWebhook(finance.ProvedorAppyPay, "REF"))
 
 	eventID := charge.Charge.ProviderChargeID
 	// Formato real de um webhook da AppyPay (ver seção "Merchant Webhooks" de

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -72,7 +73,7 @@ func authorizeFinanceScope(c *gin.Context, context *string, academy *string, wri
 }
 
 // credentialScopeAuthorized resolve o contexto/academia dono de uma
-// credencial AppyPay pelo seu id e reaplica authorizeFinanceScope — o mesmo
+// credencial de provedor pelo seu id e reaplica authorizeFinanceScope — o mesmo
 // mecanismo que já garante que uma academia só mexe nas próprias credenciais
 // e que um admin precisa da permissão "fpp" para consultar (e nunca pode
 // escrever no contexto de uma academia). Usado pelas rotas de consulta e
@@ -86,7 +87,7 @@ func credentialScopeAuthorized(c *gin.Context, id uuid.UUID, write bool) bool {
 		return false
 	}
 	if !authorizeFinanceScope(c, &contexto, &academia, write) {
-		utils.RespondWithForbiddenError(c, "sem permissão para esta credencial AppyPay")
+		utils.RespondWithForbiddenError(c, "sem permissão para esta credencial")
 		return false
 	}
 	return true
@@ -102,165 +103,15 @@ func financeError(c *gin.Context, err error) {
 		utils.RespondWithConflictError(c, "operação financeira equivalente em processamento")
 	case errors.Is(err, finance.ErrUpstream):
 		utils.RespondWithServiceUnavailable(c, err)
+	case errors.Is(err, finance.ErrCredenciaisEmUso):
+		// Mecanismo retroativo: o provedor ainda tem cobranças pendentes.
+		utils.RespondWithConflictError(c, err.Error())
 	default:
 		utils.RespondWithValidationError(c, err)
 	}
 }
 
-// CredencialAppyPayCriada é a resposta exclusiva de POST .../credenciais: é a
-// única vez que o segredo de webhook aparece "de graça" numa resposta, fora
-// do GET .../webhook-secret dedicado — porque é a única oportunidade em que o
-// usuário ainda não tem como consultá-lo de outra forma.
-type CredencialAppyPayCriada struct {
-	finance.CredentialView
-	WebhookSecret string `json:"webhook_secret,omitempty"`
-}
-
-func ConfigurarCredencialAppyPay(c *gin.Context) {
-	var in finance.CredentialInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		utils.RespondWithValidationError(c, errors.New("payload inválido"))
-		return
-	}
-	if !authorizeFinanceScope(c, &in.ContextoTipo, &in.CodigoAcademia, true) {
-		utils.RespondWithForbiddenError(c, "sem permissão para configurar estas credenciais")
-		return
-	}
-	id, t, _, ok := financeActor(c)
-	if !ok {
-		utils.RespondWithUnauthorizedError(c)
-		return
-	}
-	out, webhookSecret, err := FinanceiroService.ConfigureCredential(c.Request.Context(), nil, in, id.String(), t, c.ClientIP())
-	if err != nil {
-		financeError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, CredencialAppyPayCriada{CredentialView: out, WebhookSecret: webhookSecret})
-}
-
-// RemoverCredencialAppyPay remove as credenciais AppyPay configuradas para
-// o contexto do ator autenticado (academia própria, ou "spuri" para um
-// admin com permissão "fpp"). A partir deste comando, qualquer tentativa
-// de gerar cobrança nesse contexto volta a ser bloqueada por ausência de
-// credenciais, exatamente como antes de nunca terem sido configuradas.
-func RemoverCredencialAppyPay(c *gin.Context) {
-	var in struct {
-		ContextoTipo   string `json:"contexto_tipo"`
-		CodigoAcademia string `json:"codigo_academia"`
-	}
-	if err := c.ShouldBindJSON(&in); err != nil {
-		utils.RespondWithValidationError(c, errors.New("payload inválido"))
-		return
-	}
-	if !authorizeFinanceScope(c, &in.ContextoTipo, &in.CodigoAcademia, true) {
-		utils.RespondWithForbiddenError(c, "sem permissão para remover estas credenciais")
-		return
-	}
-	id, t, _, ok := financeActor(c)
-	if !ok {
-		utils.RespondWithUnauthorizedError(c)
-		return
-	}
-	if err := FinanceiroService.RemoveCredential(c.Request.Context(), in.ContextoTipo, in.CodigoAcademia, id.String(), t, c.ClientIP()); err != nil {
-		financeError(c, err)
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
-func AtualizarCredencialAppyPay(c *gin.Context) {
-	idParam, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		utils.RespondWithValidationError(c, errors.New("id inválido"))
-		return
-	}
-	var in finance.CredentialInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		utils.RespondWithValidationError(c, errors.New("payload inválido"))
-		return
-	}
-	if !authorizeFinanceScope(c, &in.ContextoTipo, &in.CodigoAcademia, true) {
-		utils.RespondWithForbiddenError(c, "sem permissão para configurar estas credenciais")
-		return
-	}
-	id, t, _, ok := financeActor(c)
-	if !ok {
-		utils.RespondWithUnauthorizedError(c)
-		return
-	}
-	// O segundo retorno (segredo em texto plano) só vem preenchido quando a
-	// credencial ainda não tinha nenhum segredo de webhook — não deveria
-	// acontecer numa atualização de credencial já existente; se acontecer, o
-	// usuário ainda pode recuperá-lo em seguida via GET .../webhook-secret.
-	out, _, err := FinanceiroService.ConfigureCredential(c.Request.Context(), &idParam, in, id.String(), t, c.ClientIP())
-	if err != nil {
-		financeError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, out)
-}
-func ListarCredenciaisAppyPay(c *gin.Context) {
-	contexto := c.Query("contexto_tipo")
-	academia := c.Query("codigo_academia")
-	if !authorizeFinanceScope(c, &contexto, &academia, false) {
-		utils.RespondWithForbiddenError(c, "sem permissão para consultar credenciais financeiras")
-		return
-	}
-	out, err := FinanceiroService.ListCredentials(c.Request.Context(), contexto, academia)
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, out)
-}
-
-// ConsultarSegredoWebhookAppyPay devolve o segredo de webhook atual em texto
-// plano. Só o dono do contexto (a própria academia, ou admin com permissão
-// "fpp") pode consultar.
-func ConsultarSegredoWebhookAppyPay(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		utils.RespondWithValidationError(c, errors.New("id inválido"))
-		return
-	}
-	if !credentialScopeAuthorized(c, id, false) {
-		return
-	}
-	secret, err := FinanceiroService.WebhookSecret(c.Request.Context(), id)
-	if err != nil {
-		financeError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"webhook_secret": secret, "webhook_header_name": finance.WebhookHeaderName})
-}
-
-// RotacionarSegredoWebhookAppyPay gera um novo segredo de webhook,
-// invalidando o anterior imediatamente. Mesma autorização de
-// ConsultarSegredoWebhookAppyPay.
-func RotacionarSegredoWebhookAppyPay(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		utils.RespondWithValidationError(c, errors.New("id inválido"))
-		return
-	}
-	if !credentialScopeAuthorized(c, id, true) {
-		return
-	}
-	actorID, actorType, _, ok := financeActor(c)
-	if !ok {
-		utils.RespondWithUnauthorizedError(c)
-		return
-	}
-	secret, err := FinanceiroService.RotateWebhookSecret(c.Request.Context(), id, actorID.String(), actorType, c.ClientIP())
-	if err != nil {
-		financeError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"webhook_secret": secret, "webhook_header_name": finance.WebhookHeaderName})
-}
-
-func CriarCobrancaAppyPay(c *gin.Context) {
+func CriarCobranca(c *gin.Context) {
 	var in finance.ChargeRequest
 	if err := c.ShouldBindJSON(&in); err != nil {
 		utils.RespondWithValidationError(c, errors.New("payload inválido"))
@@ -286,7 +137,7 @@ func CriarCobrancaAppyPay(c *gin.Context) {
 	}
 	c.JSON(http.StatusCreated, out)
 }
-func GerarQRCodeAppyPay(c *gin.Context) {
+func GerarQRCode(c *gin.Context) {
 	var in finance.QRCodeRequest
 	if err := c.ShouldBindJSON(&in); err != nil {
 		utils.RespondWithValidationError(c, errors.New("payload inválido"))
@@ -311,7 +162,7 @@ func GerarQRCodeAppyPay(c *gin.Context) {
 	}
 	c.JSON(http.StatusCreated, out)
 }
-func ConsultarCobrancaAppyPay(c *gin.Context) {
+func ConsultarCobranca(c *gin.Context) {
 	contexto := c.Query("contexto_tipo")
 	academia := c.Query("codigo_academia")
 	if !authorizeFinanceScope(c, &contexto, &academia, false) {
@@ -333,7 +184,7 @@ func ConsultarCobrancaAppyPay(c *gin.Context) {
 	// próprio ConsultCharge), a efetivação do vínculo de matrícula
 	// (criação do estudante e transição da solicitação) não faz parte do
 	// pacote financeiro e precisa ser acionada aqui, exatamente como já é
-	// feito em ReceberWebhookAppyPay e na criação síncrona da cobrança em
+	// feito em ReceberWebhook e na criação síncrona da cobrança em
 	// IniciarPagamentoMatricula. Sem isto, uma cobrança de matrícula que só
 	// é confirmada pela AppyPay quando alguém consulta o status (fluxo
 	// normal para GPO/REF, que nunca retornam "success" na criação) nunca
@@ -360,11 +211,11 @@ func ConsultarCobrancaAppyPay(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// ListarCobrancasAppyPay lista cobranças (mensalidade, matrícula ou avulsa)
+// ListarCobrancas lista cobranças (mensalidade, matrícula ou avulsa)
 // do contexto autorizado, com filtros opcionais por estado e origem e
 // paginação — resolve o Problema 1 documentado em
 // docs/Lista de Tarefas/Problemas de Backend - Modulo de Pagamentos.md.
-// Mesma autorização de ConsultarCobrancaAppyPay/ListarCredenciaisAppyPay:
+// Mesma autorização de ConsultarCobranca/ListarCredenciais:
 // uma academia só vê as próprias cobranças; um admin precisa da permissão
 // "fpp" e pode consultar qualquer contexto/academia via query string.
 
@@ -398,7 +249,7 @@ func parseOptionalMesQuery(c *gin.Context, param string) (*int, error) {
 	return &mes, nil
 }
 
-func ListarCobrancasAppyPay(c *gin.Context) {
+func ListarCobrancas(c *gin.Context) {
 	contexto := c.Query("contexto_tipo")
 	academia := c.Query("codigo_academia")
 	if !authorizeFinanceScope(c, &contexto, &academia, false) {
@@ -463,7 +314,7 @@ func ListarCobrancasAppyPay(c *gin.Context) {
 
 // ConsultarCobrancasEstudante lista TODAS as cobranças (mensalidade,
 // matrícula ou avulsa) já associadas a um estudante, em qualquer estado —
-// diferente de ListarCobrancasAppyPay (academia/admin, dentro do próprio
+// diferente de ListarCobrancas (academia/admin, dentro do próprio
 // contexto), esta rota é acessível ao próprio estudante para consultar o seu
 // histórico completo de pagamentos, exatamente como ConsultarMensalidadesEstudante
 // já faz para as obrigações de mensalidade (mesmo desenho de autorização em
@@ -527,7 +378,7 @@ func ConsultarCobrancasEstudante(c *gin.Context) {
 	// pendências sem cobrança são sempre calculadas aqui (sem exigir nenhum
 	// filtro extra de escopo): esta consulta já está inerentemente
 	// delimitada a UM estudante, então não há o mesmo risco de varredura
-	// sem limite que existe em ListarCobrancasAppyPay. Ver
+	// sem limite que existe em ListarCobrancas. Ver
 	// finance.PendenciasSemCobrancaEstudante.
 	//
 	// Mesmo assim, um filtro de estado/tipo que exclua explicitamente
@@ -559,10 +410,10 @@ func ConsultarCobrancasEstudante(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"pagamentos": res.Pagamentos, "total": len(res.Pagamentos), "total_geral": res.Total, "limit": limit, "offset": offset})
 }
 
-// CancelarCobrancaAppyPay intentionally does not use authorizeFinanceScope:
+// CancelarCobranca intentionally does not use authorizeFinanceScope:
 // FPP admins may cancel only Spuri's own charges, never a charge belonging to
 // an academy. The service repeats this ownership check before recording.
-func CancelarCobrancaAppyPay(c *gin.Context) {
+func CancelarCobranca(c *gin.Context) {
 	var in struct {
 		Motivo string `json:"motivo"`
 	}
@@ -605,24 +456,34 @@ func CancelarCobrancaAppyPay(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, out)
 }
-func ReceberWebhookAppyPay(metodo string) gin.HandlerFunc {
+
+// ReceberWebhook devolve o handler público de notificações de um provedor
+// para um método (rota /webhooks/<slug>/<método>). Quem autentica a
+// notificação, lê o corpo e define a resposta HTTP é o próprio provedor; o
+// restante (idempotência, ledger, efeitos de negócio) é comum a todos.
+func ReceberWebhook(provedorID, metodo string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		owner, err := FinanceiroService.AuthenticateWebhook(c.Request.Context(), c.Request.Header)
+		prov, err := FinanceiroService.ProvedorPorID(provedorID)
+		if err != nil {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		owner, err := FinanceiroService.AuthenticateWebhook(c.Request.Context(), prov.ID(), c.Request.Header)
 		if err != nil {
 			c.Status(http.StatusUnauthorized)
 			return
 		}
-		var payload map[string]any
-		if err := c.ShouldBindJSON(&payload); err != nil {
+		corpo, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+		if err != nil {
 			c.Status(http.StatusBadRequest)
 			return
 		}
-		eventID := webhookID(payload)
-		if eventID == "" {
+		eventID, payload, err := prov.InterpretarWebhook(c.ContentType(), corpo)
+		if err != nil || eventID == "" {
 			c.Status(http.StatusBadRequest)
 			return
 		}
-		_, confirmedSuccess, err := FinanceiroService.AcceptWebhook(c.Request.Context(), metodo, eventID, owner, payload)
+		_, confirmedSuccess, err := FinanceiroService.AcceptWebhook(c.Request.Context(), prov.ID(), metodo, eventID, owner, payload)
 		if err != nil {
 			c.Status(http.StatusInternalServerError)
 			return
@@ -642,18 +503,15 @@ func ReceberWebhookAppyPay(metodo string) gin.HandlerFunc {
 						return
 					}
 				case "mensalidade", "preco_unico":
-					_ = FinanceiroService.ConfirmarLancamentoServicoExtraPago(c.Request.Context(), codigo, tipo, ano, mes, "appypay:servico_extra", "sistema", c.ClientIP())
+					_ = FinanceiroService.ConfirmarLancamentoServicoExtraPago(c.Request.Context(), codigo, tipo, ano, mes, "pagamento:servico_extra", "sistema", c.ClientIP())
 				}
 			}
 		}
-		c.Status(http.StatusOK)
-	}
-}
-func webhookID(payload map[string]any) string {
-	for _, k := range []string{"id", "merchantTransactionId", "merchant_transaction_id"} {
-		if v, ok := payload[k].(string); ok && strings.TrimSpace(v) != "" {
-			return v
+		status, contentType, resposta := prov.RespostaWebhook(true)
+		if resposta == "" {
+			c.Status(status)
+			return
 		}
+		c.Data(status, contentType, []byte(resposta))
 	}
-	return ""
 }

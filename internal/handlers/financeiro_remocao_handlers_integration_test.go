@@ -73,8 +73,7 @@ func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testin
 	// teste precisa validar.
 	if _, _, err := FinanceiroService.ConfigureCredential(ctx.Request.Context(), nil, finance.CredentialInput{
 		ContextoTipo: finance.ContextoAcademia, CodigoAcademia: academiaDona,
-		ClientID: "client-" + uuid.NewString(), ClientSecret: "secret-" + uuid.NewString(),
-		GPOPaymentMethod: "GPO_QR_TEST", REFPaymentMethod: "REF_TEST",
+		Provedor: finance.ProvedorAppyPay, Credenciais: map[string]string{"client_id": "client-" + uuid.NewString(), "client_secret": "secret-" + uuid.NewString(), "gpo_method": "GPO_QR_TEST", "ref_method": "REF_TEST"},
 	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatalf("ConfigureCredential falhou: %v", err)
 	}
@@ -111,8 +110,7 @@ func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testin
 	// 2) Configuração de mensalidade.
 	if _, _, err := FinanceiroService.ConfigureCredential(ctx.Request.Context(), nil, finance.CredentialInput{
 		ContextoTipo: finance.ContextoAcademia, CodigoAcademia: academiaDona,
-		ClientID: "client2-" + uuid.NewString(), ClientSecret: "secret2-" + uuid.NewString(),
-		GPOPaymentMethod: "GPO_QR_TEST", REFPaymentMethod: "REF_TEST",
+		Provedor: finance.ProvedorAppyPay, Credenciais: map[string]string{"client_id": "client2-" + uuid.NewString(), "client_secret": "secret2-" + uuid.NewString(), "gpo_method": "GPO_QR_TEST", "ref_method": "REF_TEST"},
 	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatalf("ConfigureCredential (2) falhou: %v", err)
 	}

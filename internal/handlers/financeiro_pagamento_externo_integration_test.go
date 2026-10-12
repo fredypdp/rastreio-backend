@@ -55,7 +55,7 @@ func newPagamentoExternoHandlerRouter(client *db.Client, userType, academia stri
 		c.Set("codigo_academia", academia)
 	})
 	router.POST("/financeiro/appypay/cobrancas/:id/pago-externamente", RegistrarPagamentoExternoCobranca)
-	router.POST("/financeiro/appypay/cobrancas/:id/cancelar", CancelarCobrancaAppyPay)
+	router.POST("/financeiro/appypay/cobrancas/:id/cancelar", CancelarCobranca)
 	router.POST("/financeiro/mensalidades/obrigacoes/pago-externamente", RegistrarPagamentoExternoMensalidades)
 	return router
 }
@@ -78,8 +78,7 @@ func newMatriculaPendenteFixture(t *testing.T) *pagamentoExternoHandlerFixture {
 	service := finance.NewService(client)
 	service.SetHTTPClient(&http.Client{Transport: handlerStatusTransport{status: &status}})
 	if _, _, err := service.ConfigureCredential(context.Background(), nil, finance.CredentialInput{
-		ContextoTipo: finance.ContextoAcademia, CodigoAcademia: academia, ClientID: "integration-client", ClientSecret: "integration-secret",
-		GPOPaymentMethod: "GPO_INTEGRATION", REFPaymentMethod: "REF_INTEGRATION",
+		ContextoTipo: finance.ContextoAcademia, CodigoAcademia: academia, Provedor: finance.ProvedorAppyPay, Credenciais: map[string]string{"client_id": "integration-client", "client_secret": "integration-secret", "gpo_method": "GPO_INTEGRATION", "ref_method": "REF_INTEGRATION"},
 	}, "integration-test", "sistema", "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}

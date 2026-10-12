@@ -232,13 +232,13 @@ func CriarServicoExtra(c *gin.Context) {
 		return
 	}
 	if r.Pago || r.TemTaxaInscricao {
-		has, e := FinanceiroService.HasCredential(c.Request.Context(), finance.ContextoAcademia, codigo)
+		has, e := FinanceiroService.PossuiProvedorConfigurado(c.Request.Context(), finance.ContextoAcademia, codigo)
 		if e != nil {
 			utils.RespondWithInternalError(c, e)
 			return
 		}
 		if !has {
-			utils.RespondWithValidationError(c, fmt.Errorf("não é possível criar um serviço pago ou com taxa de inscrição sem credenciais AppyPay configuradas para a academia"))
+			utils.RespondWithValidationError(c, fmt.Errorf("não é possível criar um serviço pago ou com taxa de inscrição sem um provedor de pagamento configurado (com credenciais) para a academia"))
 			return
 		}
 	}
@@ -302,13 +302,13 @@ func AtualizarServicoExtra(c *gin.Context) {
 		taxa = r.TemTaxaInscricao
 	}
 	if pago || taxa {
-		has, e := FinanceiroService.HasCredential(c.Request.Context(), finance.ContextoAcademia, s.CodigoAcademia)
+		has, e := FinanceiroService.PossuiProvedorConfigurado(c.Request.Context(), finance.ContextoAcademia, s.CodigoAcademia)
 		if e != nil {
 			utils.RespondWithInternalError(c, e)
 			return
 		}
 		if !has {
-			utils.RespondWithValidationError(c, fmt.Errorf("não é possível configurar cobrança sem credenciais AppyPay"))
+			utils.RespondWithValidationError(c, fmt.Errorf("não é possível configurar cobrança sem um provedor de pagamento configurado (com credenciais)"))
 			return
 		}
 	}

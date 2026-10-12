@@ -1,4 +1,5 @@
-// Package finance is the only package allowed to call AppyPay's HTTP API.
+// Package finance is the only package allowed to call a payment provider's
+// HTTP API (AppyPay today; see provedor.go for the provider contract).
 //
 // Monetary contract: every monetary value in this package and in payment
 // phases 2, 3 and 4 is float64. This deliberately mirrors AppyPay's
@@ -20,15 +21,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
-	"math/big"
 	"net/http"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,16 +40,15 @@ const (
 	ContextoAcademia = "academia"
 	AmbienteTeste    = "test"
 	AmbienteProducao = "prod"
-	asyncAccept      = "application/vnd.appypay.asyncapi+json"
 )
 
 var (
-	// ErrNotFound is returned when an AppyPay resource does not exist in the
+	// ErrNotFound is returned when a financial resource does not exist in the
 	// authorised financial context.
 	ErrNotFound = errors.New("recurso financeiro não encontrado")
-	// ErrUpstream means AppyPay could not be reached or returned an invalid
-	// response. It is deliberately distinct from request validation errors.
-	ErrUpstream = errors.New("serviço AppyPay indisponível")
+	// ErrUpstream means the payment provider could not be reached or returned an
+	// invalid response. It is deliberately distinct from request validation errors.
+	ErrUpstream = errors.New("serviço do provedor de pagamento indisponível")
 	// ErrConflict denotes an idempotency key that is currently being processed.
 	ErrConflict = errors.New("operação financeira equivalente em processamento")
 )
@@ -69,63 +64,13 @@ func roundAmount(v float64) float64 { return math.Round(v*100) / 100 }
 // tolerance, avoiding direct floating-point equality for money.
 func amountsEqual(a, b float64) bool { return math.Abs(a-b) <= amountTolerance }
 
-type Endpoints struct{ TokenURL, APIBaseURL string }
-
 func AmbienteAtual() string {
 	if strings.EqualFold(os.Getenv("ENV"), "production") {
 		return AmbienteProducao
 	}
 	return AmbienteTeste
 }
-func EndpointsAtuais() Endpoints {
-	if AmbienteAtual() == AmbienteProducao {
-		return Endpoints{"https://login.microsoftonline.com/auth.appypay.co.ao/oauth2/token", "https://gwy-api.appypay.co.ao/v2.0"}
-	}
-	return Endpoints{"https://login.microsoftonline.com/appypaydev.onmicrosoft.com/oauth2/token", "https://gwy-api-tst.appypay.co.ao/v2.0"}
-}
 
-// appyPayResource retorna o "resource" (UUID) exigido pela AppyPay no pedido
-// de token OAuth2 client_credentials. Ao contrário de client_id/client_secret,
-// este valor identifica a própria API da AppyPay (audience do token), não o
-// merchant que está a autenticar — por isso é o mesmo para todas as
-// academias e para o Spuri no mesmo ambiente, e vem de variável de ambiente
-// em vez de ser configurado por credencial.
-func appyPayResource() (string, error) {
-	v := strings.TrimSpace(os.Getenv("APPYPAY_RESOURCE"))
-	if v == "" {
-		return "", errors.New("APPYPAY_RESOURCE não configurada")
-	}
-	return v, nil
-}
-
-// ValidateAppyPayResourceConfig valida no arranque do servidor que
-// APPYPAY_RESOURCE está definida, antes de qualquer tentativa de gerar um
-// token AppyPay.
-func ValidateAppyPayResourceConfig() error {
-	_, err := appyPayResource()
-	return err
-}
-
-type CredentialInput struct {
-	ContextoTipo     string `json:"contexto_tipo"`
-	CodigoAcademia   string `json:"codigo_academia,omitempty"`
-	Ambiente         string `json:"ambiente"`
-	ClientID         string `json:"client_id"`
-	ClientSecret     string `json:"client_secret"`
-	GPOPaymentMethod string `json:"gpo_payment_method"`
-	REFPaymentMethod string `json:"ref_payment_method"`
-}
-type CredentialView struct {
-	ID                   uuid.UUID `json:"id"`
-	ContextoTipo         string    `json:"contexto_tipo"`
-	CodigoAcademia       string    `json:"codigo_academia,omitempty"`
-	Ambiente             string    `json:"ambiente"`
-	ClientIDMask         string    `json:"client_id_mask"`
-	GPOPaymentMethodMask string    `json:"gpo_payment_method_mask"`
-	REFPaymentMethodMask string    `json:"ref_payment_method_mask"`
-	WebhookHeaderName    string    `json:"webhook_header_name,omitempty"`
-	UpdatedAt            time.Time `json:"updated_at"`
-}
 type ChargeRequest struct {
 	ContextoTipo          string         `json:"contexto_tipo"`
 	CodigoAcademia        string         `json:"codigo_academia,omitempty"`
@@ -147,6 +92,7 @@ type ChargeRequest struct {
 	MesReferencia              *int                    `json:"mes_referencia,omitempty"`
 	AnoReferencia              *int                    `json:"ano_referencia,omitempty"`
 }
+
 type QRCodeRequest struct {
 	ContextoTipo          string   `json:"contexto_tipo"`
 	CodigoAcademia        string   `json:"codigo_academia,omitempty"`
@@ -168,11 +114,14 @@ type QRCodeRequest struct {
 	MesReferencia              *int                    `json:"mes_referencia,omitempty"`
 	AnoReferencia              *int                    `json:"ano_referencia,omitempty"`
 }
+
 type ChargeResult struct {
-	ID                    uuid.UUID `json:"id"`
-	ProviderChargeID      string    `json:"provider_charge_id,omitempty"`
-	MerchantTransactionID string    `json:"merchant_transaction_id"`
-	Status                string    `json:"status"`
+	ID uuid.UUID `json:"id"`
+	// Provedor identifica o PSP que emitiu a cobrança (ex.: APPYPAY).
+	Provedor              string `json:"provedor,omitempty"`
+	ProviderChargeID      string `json:"provider_charge_id,omitempty"`
+	MerchantTransactionID string `json:"merchant_transaction_id"`
+	Status                string `json:"status"`
 	// CodigoProvedor/MensagemProvedor/FonteProvedor/CategoriaMotivo expõem o
 	// motivo real devolvido pela AppyPay (responseStatus.code/message/source
 	// de POST/webhook, ou o do último transactionEvent de GET /charges) toda
@@ -184,6 +133,7 @@ type ChargeResult struct {
 	CategoriaMotivo  string         `json:"categoria_motivo,omitempty"`
 	Response         map[string]any `json:"response,omitempty"`
 }
+
 type QRCodeResult struct {
 	ChargeResult
 	QRCodeArr string `json:"qrCodeArr,omitempty"`
@@ -196,11 +146,14 @@ type QRCodeResult struct {
 // identificador da cobrança. Ver Problema 1 em
 // docs/Lista de Tarefas/Problemas de Backend - Modulo de Pagamentos.md.
 type CobrancaResumo struct {
-	ID                    uuid.UUID `json:"id"`
-	ProviderChargeID      string    `json:"provider_charge_id,omitempty"`
-	MerchantTransactionID string    `json:"merchant_transaction_id"`
-	ContextoTipo          string    `json:"contexto_tipo"`
-	CodigoAcademia        string    `json:"codigo_academia,omitempty"`
+	ID uuid.UUID `json:"id"`
+	// Provedor é o PSP que emitiu a cobrança (APPYPAY, …; EXTERNO para
+	// pagamentos registrados fora da plataforma).
+	Provedor              string `json:"provedor,omitempty"`
+	ProviderChargeID      string `json:"provider_charge_id,omitempty"`
+	MerchantTransactionID string `json:"merchant_transaction_id"`
+	ContextoTipo          string `json:"contexto_tipo"`
+	CodigoAcademia        string `json:"codigo_academia,omitempty"`
 	// Origem é derivada do payload da cobrança, nunca persistida
 	// separadamente: "matricula" quando há codigo_solicitacao,
 	// "mensalidade" quando há codigo_estudante (e não há
@@ -272,17 +225,13 @@ type CobrancaListResult struct {
 	Total     int              `json:"total"`
 }
 
-type tokenEntry struct {
-	value     string
-	expiresAt time.Time
-}
 type Service struct {
 	client     *db.Client
 	repository *db.AggregateRepository
 	projection *projections.FinanceiroProjection
-	httpClient *http.Client
-	mu         sync.Mutex
-	tokens     map[uuid.UUID]tokenEntry
+	// provedores são os provedores de pagamento implementados, por ID. O
+	// núcleo nunca fala com um PSP diretamente: sempre através de Provedor.
+	provedores map[string]Provedor
 }
 
 func NewService(client *db.Client) *Service {
@@ -292,198 +241,16 @@ func NewService(client *db.Client) *Service {
 		repo = db.NewAggregateRepository(client)
 		projection = projections.NewFinanceiroProjection(client)
 	}
-	return &Service{client: client, repository: repo, projection: projection, httpClient: &http.Client{Timeout: 20 * time.Second}, tokens: map[uuid.UUID]tokenEntry{}}
+	return &Service{client: client, repository: repo, projection: projection, provedores: novosProvedores(nil)}
 }
 
-// SetHTTPClient overrides the AppyPay HTTP client. It is intended for tests and
-// controlled integrations that need a custom RoundTripper.
+// SetHTTPClient overrides the HTTP client used by every payment provider. It
+// is intended for tests and controlled integrations that need a custom
+// RoundTripper.
 func (s *Service) SetHTTPClient(client *http.Client) {
 	if client != nil {
-		s.httpClient = client
+		s.provedores = novosProvedores(client)
 	}
-}
-
-func mask(v string) string {
-	if len(v) <= 4 {
-		return "****"
-	}
-	return "****" + v[len(v)-4:]
-}
-
-// WebhookHeaderName é o único cabeçalho HTTP em que a AppyPay pode enviar o
-// segredo de webhook. É fixo para toda a plataforma (todas as academias e o
-// Spuri, em qualquer ambiente) — a AppyPay só oferece um único par nome/valor
-// de cabeçalho no painel deles, então não há necessidade de variar por
-// credencial. Prefixado com o nome do produto, seguindo a convenção comum de
-// cabeçalhos customizados (ex.: X-GitHub-*, X-Stripe-*). Se o nome precisar
-// mudar no futuro, basta trocar esta constante — nenhum outro código depende
-// do valor literal.
-const WebhookHeaderName = "X-Spuri-Webhook-Secret"
-
-const (
-	webhookSecretLength   = 15
-	webhookSecretAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-)
-
-// generateWebhookSecret gera um segredo alfanumérico de 15 caracteres usando
-// crypto/rand (seguro criptograficamente) com math/big para evitar víes de
-// módulo sobre o alfabeto.
-func generateWebhookSecret() (string, error) {
-	out := make([]byte, webhookSecretLength)
-	for i := range out {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(webhookSecretAlphabet))))
-		if err != nil {
-			return "", fmt.Errorf("erro ao gerar segredo de webhook: %w", err)
-		}
-		out[i] = webhookSecretAlphabet[n.Int64()]
-	}
-	return string(out), nil
-}
-
-// hasWebhookSecret verifica, sem decifrar nada, se uma credencial já possui
-// um segredo de webhook gravado no cofre — usado por ConfigureCredential
-// para decidir se deve gerar um segredo novo (apenas na primeira vez que uma
-// credencial recebe um).
-func (s *Service) hasWebhookSecret(ctx context.Context, id uuid.UUID) (bool, error) {
-	var exists bool
-	err := s.client.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM financeiro_segredos_appypay WHERE credential_id=$1 AND secret_type='webhook_secret')`, id).Scan(&exists)
-	return exists, err
-}
-
-func validContext(c, academy string) error {
-	if c == ContextoSpuri && academy == "" {
-		return nil
-	}
-	if c == ContextoAcademia && strings.TrimSpace(academy) != "" {
-		return nil
-	}
-	return errors.New("contexto financeiro inválido")
-}
-func (s *Service) ConfigureCredential(ctx context.Context, id *uuid.UUID, in CredentialInput, userID, userType, ip string) (CredentialView, string, error) {
-	if s.client == nil {
-		return CredentialView{}, "", errors.New("serviço financeiro não inicializado")
-	}
-	in.ContextoTipo = strings.ToLower(strings.TrimSpace(in.ContextoTipo))
-	in.Ambiente = strings.ToLower(strings.TrimSpace(in.Ambiente))
-	if err := validContext(in.ContextoTipo, in.CodigoAcademia); err != nil {
-		return CredentialView{}, "", err
-	}
-	if in.Ambiente == "" {
-		in.Ambiente = AmbienteAtual()
-	}
-	if in.Ambiente != AmbienteAtual() {
-		return CredentialView{}, "", errors.New("credenciais devem pertencer ao ambiente ativo")
-	}
-	if strings.TrimSpace(userID) == "" || strings.TrimSpace(in.ClientID) == "" || strings.TrimSpace(in.ClientSecret) == "" || !strings.HasPrefix(in.GPOPaymentMethod, "GPO_") || !strings.HasPrefix(in.REFPaymentMethod, "REF_") {
-		return CredentialView{}, "", errors.New("credenciais AppyPay incompletas ou inválidas")
-	}
-	credentialID := uuid.New()
-	if id != nil {
-		credentialID = *id
-		if err := s.credentialBelongsToScope(ctx, credentialID, in.ContextoTipo, in.CodigoAcademia, in.Ambiente); err != nil {
-			return CredentialView{}, "", err
-		}
-	} else if found, err := s.findCredentialID(ctx, in.ContextoTipo, in.CodigoAcademia, in.Ambiente); err == nil {
-		credentialID = found
-	}
-	// O segredo de webhook só é gerado na primeira vez que esta credencial
-	// recebe um — atualizações subsequentes nunca o tocam.
-	hadSecret, err := s.hasWebhookSecret(ctx, credentialID)
-	if err != nil {
-		return CredentialView{}, "", err
-	}
-	secretsToSave := map[string]string{"client_id": in.ClientID, "client_secret": in.ClientSecret, "gpo_method": in.GPOPaymentMethod, "ref_method": in.REFPaymentMethod}
-	var newWebhookSecret string
-	if !hadSecret {
-		newWebhookSecret, err = generateWebhookSecret()
-		if err != nil {
-			return CredentialView{}, "", err
-		}
-		secretsToSave["webhook_secret"] = newWebhookSecret
-	}
-	view := CredentialView{ID: credentialID, ContextoTipo: in.ContextoTipo, CodigoAcademia: in.CodigoAcademia, Ambiente: in.Ambiente, ClientIDMask: mask(in.ClientID), GPOPaymentMethodMask: mask(in.GPOPaymentMethod), REFPaymentMethodMask: mask(in.REFPaymentMethod), WebhookHeaderName: WebhookHeaderName, UpdatedAt: time.Now().UTC()}
-	payload := map[string]any{"credential_id": credentialID.String(), "contexto_tipo": view.ContextoTipo, "codigo_academia": view.CodigoAcademia, "ambiente": view.Ambiente, "client_id_mask": view.ClientIDMask, "gpo_payment_method_mask": view.GPOPaymentMethodMask, "ref_payment_method_mask": view.REFPaymentMethodMask, "updated_at": view.UpdatedAt}
-	if err := s.record(ctx, credentialID, "CredenciaisAppyPayConfiguradas", payload, userID, userType, ip); err != nil {
-		return CredentialView{}, "", err
-	}
-	if err := s.saveSecrets(ctx, credentialID, secretsToSave); err != nil {
-		return CredentialView{}, "", err
-	}
-	return view, newWebhookSecret, nil
-}
-
-func (s *Service) ListCredentials(ctx context.Context, contexto, academia string) ([]CredentialView, error) {
-	q := `SELECT id,contexto_tipo,COALESCE(codigo_academia,''),ambiente,payload,updated_at FROM financeiro_credenciais_appypay`
-	args := []any{}
-	where := []string{}
-	if contexto != "" {
-		where = append(where, "contexto_tipo=$1")
-		args = append(args, contexto)
-	}
-	if academia != "" {
-		where = append(where, fmt.Sprintf("codigo_academia=$%d", len(args)+1))
-		args = append(args, academia)
-	}
-	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
-	}
-	q += " ORDER BY updated_at DESC"
-	rows, err := s.client.DB().QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []CredentialView{}
-	for rows.Next() {
-		var v CredentialView
-		var raw []byte
-		if err := rows.Scan(&v.ID, &v.ContextoTipo, &v.CodigoAcademia, &v.Ambiente, &raw, &v.UpdatedAt); err != nil {
-			return nil, err
-		}
-		_ = json.Unmarshal(raw, &v)
-		v.WebhookHeaderName = WebhookHeaderName
-		out = append(out, v)
-	}
-	return out, rows.Err()
-}
-
-// RemoveCredential remove as credenciais AppyPay configuradas para um
-// contexto (academia ou spuri) no ambiente ativo. A remoção é registrada
-// como um novo evento imutável no ledger (CredenciaisAppyPayRemovidas) — o
-// evento CredenciaisAppyPayConfiguradas original nunca é apagado ou
-// reescrito, apenas deixa de ser o fato mais recente. A partir deste
-// comando, loadCredential volta a falhar com ErrNotFound para este
-// contexto, bloqueando qualquer nova cobrança (mensalidade, matrícula ou
-// cobrança avulsa) exatamente como bloquearia se a credencial nunca
-// tivesse existido. O cofre de segredos (financeiro_segredos_appypay) é
-// limpo neste mesmo comando, já que essa tabela vive fora do replay do
-// ledger (não é reconstruída a partir de eventos).
-func (s *Service) RemoveCredential(ctx context.Context, contextoTipo, codigoAcademia, userID, userType, ip string) error {
-	if s.client == nil {
-		return errors.New("serviço financeiro não inicializado")
-	}
-	contextoTipo = strings.ToLower(strings.TrimSpace(contextoTipo))
-	if err := validContext(contextoTipo, codigoAcademia); err != nil {
-		return err
-	}
-	ambiente := AmbienteAtual()
-	credentialID, err := s.findCredentialID(ctx, contextoTipo, codigoAcademia, ambiente)
-	if err != nil {
-		return fmt.Errorf("%w: credenciais AppyPay não configuradas para este contexto", ErrNotFound)
-	}
-	payload := map[string]any{
-		"credential_id":   credentialID.String(),
-		"contexto_tipo":   contextoTipo,
-		"codigo_academia": codigoAcademia,
-		"ambiente":        ambiente,
-	}
-	if err := s.record(ctx, credentialID, "CredenciaisAppyPayRemovidas", payload, userID, userType, ip); err != nil {
-		return err
-	}
-	if _, err := s.client.DB().ExecContext(ctx, `DELETE FROM financeiro_segredos_appypay WHERE credential_id=$1`, credentialID); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (s *Service) CreateCharge(ctx context.Context, in ChargeRequest, actorID, actorType, ip string) (ChargeResult, error) {
@@ -491,13 +258,17 @@ func (s *Service) CreateCharge(ctx context.Context, in ChargeRequest, actorID, a
 		return ChargeResult{}, err
 	}
 	in.Amount = roundAmount(in.Amount)
-	credential, err := s.loadCredential(ctx, in.ContextoTipo, in.CodigoAcademia)
+	// Cobranças NOVAS sempre seguem o provedor ativo do contexto.
+	prov, credential, err := s.loadCredentialAtiva(ctx, in.ContextoTipo, in.CodigoAcademia)
 	if err != nil {
 		return ChargeResult{}, err
 	}
-	method, err := credential.method(in.PaymentMethod)
+	method, err := prov.ResolverMetodo(credential, in.PaymentMethod)
 	if err != nil {
 		return ChargeResult{}, err
+	}
+	if !suportaMetodo(prov, method) {
+		return ChargeResult{}, fmt.Errorf("%w: %s não é suportado pelo %s", ErrMetodoIndisponivel, method, prov.Nome())
 	}
 	if in.MerchantTransactionID == "" {
 		in.MerchantTransactionID = merchantID()
@@ -520,79 +291,44 @@ func (s *Service) CreateCharge(ctx context.Context, in ChargeRequest, actorID, a
 		}
 		return ChargeResult{}, err
 	}
-	payload := chargePayload(id, in, "", EstadoCobrancaAguardandoPagamento, nil)
-	if err = s.record(ctx, id, "CobrancaAppyPaySolicitada", payload, actorID, actorType, ip); err != nil {
+	payload := comProvedor(chargePayload(id, in, "", EstadoCobrancaAguardandoPagamento, nil), prov.ID())
+	if err = s.record(ctx, id, aggregates.CobrancaSolicitada, payload, actorID, actorType, ip); err != nil {
 		_ = s.releaseChargeReservation(ctx, in.MerchantTransactionID, id)
 		return ChargeResult{}, err
 	}
-	providerBody := map[string]any{"amount": in.Amount, "currency": in.Currency, "description": in.Description, "merchantTransactionId": in.MerchantTransactionID, "paymentMethod": method}
-	// paymentInfo/options/notify só entram no corpo quando têm conteúdo real.
-	// providerBody é um map[string]any bruto (não uma struct com `omitempty`),
-	// então json.Marshal sempre serializa toda chave presente no map — mesmo
-	// que o valor seja um map[string]any{} vazio (vira "{}", não é omitido).
-	// Isto importa sobretudo para REF com referência gerada pelo gateway, onde
-	// a documentação da AppyPay mostra o corpo sem a chave "paymentInfo": um
-	// objeto vazio ali pode ser lido pela AppyPay como "o merchant tentou
-	// enviar uma referência própria, mas sem os campos exigidos", em vez de
-	// "nenhuma referência própria, gerar automaticamente". Ver
-	// docs/Debbugs/Auditoria de conformidade AppyPay (autenticação e geração de cobrança).md.
-	if len(in.PaymentInfo) > 0 {
-		providerBody["paymentInfo"] = in.PaymentInfo
-	}
-	if len(in.Options) > 0 {
-		providerBody["options"] = in.Options
-	}
-	if len(in.Notify) > 0 {
-		providerBody["notify"] = in.Notify
-	}
-	response, err := s.callJSON(ctx, credential, http.MethodPost, "/charges", providerBody, in.Async)
+	resp, err := prov.CriarCobranca(ctx, credential, pedidoCobranca{Valor: in.Amount, Moeda: in.Currency, Descricao: in.Description, IDComerciante: in.MerchantTransactionID, Metodo: method, Info: in.PaymentInfo, Opcoes: in.Options, Notificar: in.Notify, Async: in.Async})
 	if err != nil {
-		_ = s.record(ctx, id, "CobrancaAppyPayFalhou", chargePayload(id, in, "", "Failed", map[string]any{"error": "provider_request_failed"}), actorID, actorType, ip)
-		return ChargeResult{ID: id, MerchantTransactionID: in.MerchantTransactionID, Status: "Failed"}, err
+		_ = s.record(ctx, id, aggregates.CobrancaFalhou, comProvedor(chargePayload(id, in, "", "Failed", map[string]any{"error": "provider_request_failed"}), prov.ID()), actorID, actorType, ip)
+		return ChargeResult{ID: id, Provedor: prov.ID(), MerchantTransactionID: in.MerchantTransactionID, Status: "Failed"}, err
 	}
-	providerID := responseID(response)
-	outcome := extractProviderOutcome(response)
+	response, providerID, outcome := resp.Bruta, resp.ID, resp.Outcome
 	status := normalizeChargeStatus(outcome.Status)
 	if status == "" {
-		// A AppyPay respondeu 2xx sem nenhum campo de status reconhecível no
+		// O provedor respondeu 2xx sem nenhum campo de status reconhecível no
 		// corpo — a cobrança foi aceita mas ainda não temos nenhuma
 		// informação sobre sua resolução, exatamente o significado de
 		// aguardando pagamento.
 		status = EstadoCobrancaAguardandoPagamento
 	}
-	if strings.HasPrefix(method, "REF") && isSuccessfulChargeStatus(status) {
-		// docs/Parceiros e integrações/AppyPay Documentação.md ("Supported
-		// Payment Methods" > "Validations and Limitations") documenta REF
-		// como o único método de pagamento com "Webhook: Always required" —
-		// ao contrário de GPO/UMM/eTPA ("Required for async request"), REF
-		// NUNCA se confirma de forma síncrona: o cliente paga a referência
-		// depois, num multibanco/balcão, fora desta chamada. A confirmação
-		// só pode legitimamente chegar depois, por webhook ou consulta
-		// (AcceptWebhook/consultCharge — nenhum dos dois é tocado por este
-		// bloco).
-		//
-		// O código 100 ("Thank you! The payment has been successfully
-		// registered") aparece na tabela de códigos da AppyPay com "Applies
-		// To" incluindo REF, ao lado de UMM/GPO/FTBAI — métodos onde 100
-		// pode sim significar pagamento realmente concluído na hora. Não há
-		// nada na documentação garantindo que a AppyPay nunca devolve um
-		// código dessa família na resposta síncrona de CRIAÇÃO de uma
-		// referência (só que ela não deveria, dado que o pagamento em si só
-		// acontece depois, fora da API). Por isso, e pela mesma razão que
-		// motivou a correção do código 103 em CreateGPOQRCode: nunca confiar
-		// numa classificação "Success" vinda da chamada de criação para REF,
-		// custe o que custar — o pior cenário de aceitar por engano é
-		// idêntico ao do QR code (matrícula/mensalidade efetivada sem
-		// pagamento real), e o custo de bloquear é zero, porque REF genuíno
-		// sempre confirma depois mesmo assim.
+	if method == MetodoREF && isSuccessfulChargeStatus(status) {
+		// Uma referência de pagamento (REF) NUNCA se confirma de forma
+		// síncrona: o cliente paga a referência depois, num multibanco/balcão,
+		// fora desta chamada. A confirmação só pode legitimamente chegar
+		// depois, por webhook ou consulta (AcceptWebhook/consultCharge —
+		// nenhum dos dois é tocado por este bloco). Nunca confiar numa
+		// classificação "Success" vinda da chamada de criação para REF: o
+		// pior cenário de aceitar por engano é uma matrícula/mensalidade
+		// efetivada sem pagamento real, e o custo de bloquear é zero, porque
+		// um REF genuíno sempre confirma depois mesmo assim. Regra da
+		// plataforma, válida para qualquer provedor.
 		status = EstadoCobrancaAguardandoPagamento
 	}
-	created := chargePayload(id, in, providerID, status, response)
+	created := comProvedor(chargePayload(id, in, providerID, status, response), prov.ID())
 	applyProviderOutcome(created, outcome)
-	if err = s.record(ctx, id, "CobrancaAppyPayCriada", created, actorID, actorType, ip); err != nil {
+	if err = s.record(ctx, id, aggregates.CobrancaCriada, created, actorID, actorType, ip); err != nil {
 		return ChargeResult{}, err
 	}
-	result := ChargeResult{ID: id, ProviderChargeID: providerID, MerchantTransactionID: in.MerchantTransactionID, Status: status, Response: response}
+	result := ChargeResult{ID: id, Provedor: prov.ID(), ProviderChargeID: providerID, MerchantTransactionID: in.MerchantTransactionID, Status: status, Response: response}
 	if outcome.HasCode {
 		code := outcome.Code
 		result.CodigoProvedor = &code
@@ -603,6 +339,7 @@ func (s *Service) CreateCharge(ctx context.Context, in ChargeRequest, actorID, a
 	}
 	return result, nil
 }
+
 func (s *Service) CreateGPOQRCode(ctx context.Context, in QRCodeRequest, actorID, actorType, ip string) (QRCodeResult, error) {
 	if err := validateQRCode(&in); err != nil {
 		return QRCodeResult{}, err
@@ -628,9 +365,12 @@ func (s *Service) CreateGPOQRCode(ctx context.Context, in QRCodeRequest, actorID
 	if typ == "MULTIPLE" && (in.MinAmount == nil || in.MaxTransactions == nil || in.StartDate == "" || in.EndDate == "") {
 		return QRCodeResult{}, errors.New("QR MULTIPLE exige minAmount, maxTransactions, startDate e endDate")
 	}
-	cred, err := s.loadCredential(ctx, in.ContextoTipo, in.CodigoAcademia)
+	prov, cred, err := s.loadCredentialAtiva(ctx, in.ContextoTipo, in.CodigoAcademia)
 	if err != nil {
 		return QRCodeResult{}, err
+	}
+	if !suportaMetodo(prov, MetodoGPOQR) {
+		return QRCodeResult{}, fmt.Errorf("%w: %s não é suportado pelo %s", ErrMetodoIndisponivel, MetodoGPOQR, prov.Nome())
 	}
 	id := uuid.New()
 	reserved, err := s.reserveCharge(ctx, in.MerchantTransactionID, id)
@@ -647,75 +387,42 @@ func (s *Service) CreateGPOQRCode(ctx context.Context, in QRCodeRequest, actorID
 		}
 		return QRCodeResult{}, err
 	}
-	body := map[string]any{"amount": in.Amount, "currency": in.Currency, "description": in.Description, "merchantTransactionId": in.MerchantTransactionID, "paymentMethod": cred.GPO, "qrCodeType": typ}
-	if typ == "MULTIPLE" {
-		body["minAmount"] = *in.MinAmount
-		body["maxTransactions"] = *in.MaxTransactions
-		body["startDate"] = in.StartDate
-		body["endDate"] = in.EndDate
-	}
-	if err = s.record(ctx, id, "QRCodeAppyPaySolicitado", qrCodePayload(id, in, typ, "", EstadoCobrancaAguardandoPagamento, nil), actorID, actorType, ip); err != nil {
+	if err = s.record(ctx, id, aggregates.QRCodeSolicitado, comProvedor(qrCodePayload(id, in, typ, "", EstadoCobrancaAguardandoPagamento, nil), prov.ID()), actorID, actorType, ip); err != nil {
 		_ = s.releaseChargeReservation(ctx, in.MerchantTransactionID, id)
 		return QRCodeResult{}, err
 	}
-	response, err := s.callJSON(ctx, cred, http.MethodPost, "/qr-codes", body, false)
+	resp, err := prov.CriarQRCode(ctx, cred, pedidoQRCode{Valor: in.Amount, Moeda: in.Currency, Descricao: in.Description, IDComerciante: in.MerchantTransactionID, Tipo: typ, ValorMinimo: in.MinAmount, MaxTransacoes: in.MaxTransactions, Inicio: in.StartDate, Fim: in.EndDate})
 	if err != nil {
-		_ = s.record(ctx, id, "QRCodeAppyPayFalhou", qrCodePayload(id, in, typ, "", "Failed", map[string]any{"error": "provider_request_failed"}), actorID, actorType, ip)
+		_ = s.record(ctx, id, aggregates.QRCodeFalhou, comProvedor(qrCodePayload(id, in, typ, "", "Failed", map[string]any{"error": "provider_request_failed"}), prov.ID()), actorID, actorType, ip)
 		return QRCodeResult{}, err
 	}
-	providerID := responseID(response)
-	outcome := extractProviderOutcome(response)
+	response, providerID, outcome := resp.Bruta, resp.ID, resp.Outcome
 	status := normalizeChargeStatus(outcome.Status)
 	if status == "" {
 		// Mesmo raciocínio de CreateCharge: 2xx sem status reconhecível =
-		// aceito, ainda sem resolução conhecida.
+		// aceito, ainda sem resolução conhecida. (A regra "criar o QR não é
+		// pagamento recebido" é aplicada pelo próprio provedor ao traduzir a
+		// resposta — ver CriarQRCode do provedor.)
 		status = EstadoCobrancaAguardandoPagamento
 	}
-	if outcome.HasCode && outcome.Code == 103 {
-		// O código 103 na documentação da AppyPay ("Post a GPO QR Code",
-		// resposta de exemplo) significa exclusivamente "QR code criado com
-		// sucesso" — o próprio campo literal "status" da resposta real é
-		// "Active" (QR pronto para ser escaneado), nunca "pago". Só existe
-		// nesta chamada de CRIAÇÃO; uma vez o cliente realmente pagar
-		// escaneando o QR, a confirmação chega depois por webhook ou
-		// consulta (consultCharge/AcceptWebhook), com um código diferente
-		// (100/1100) — aí sim tratado como sucesso real de pagamento pela
-		// mesma appyPayCodeOutcomes.
-		//
-		// appyPayCodeOutcomes mapeia 103 para "Success" porque é esse o
-		// bracket que a própria documentação da AppyPay usa para o código —
-		// mas ali "Success" quer dizer "a operação de API pedida (criar o
-		// QR) teve sucesso", não "o pagamento foi recebido". Antes desta
-		// correção, normalizeChargeStatus(outcome.Status) devolvia
-		// "Success" tal e qual, isSuccessfulChargeStatus via true, e
-		// CreateGPOQRCode chamava confirmMensalidadeCharge e o chamador
-		// (IniciarPagamentoMatricula/IniciarPagamentoMensalidades) efetivava
-		// a matrícula ou dava a mensalidade como paga — tudo isso só por
-		// gerar o QR code, antes de qualquer pagamento real acontecer.
-		//
-		// Código/mensagem/fonte do provedor continuam preservados abaixo
-		// (via applyProviderOutcome) para auditoria; só o status usado nas
-		// decisões de pagamento é que nunca pode ser "Success" aqui.
-		status = EstadoCobrancaAguardandoPagamento
-	}
-	payload := qrCodePayload(id, in, typ, providerID, status, response)
+	payload := comProvedor(qrCodePayload(id, in, typ, providerID, status, response), prov.ID())
 	applyProviderOutcome(payload, outcome)
-	if err = s.record(ctx, id, "QRCodeAppyPayGerado", payload, actorID, actorType, ip); err != nil {
+	if err = s.record(ctx, id, aggregates.QRCodeGerado, payload, actorID, actorType, ip); err != nil {
 		return QRCodeResult{}, err
 	}
-	qr, _ := response["qrCodeArr"].(string)
-	chargeResult := ChargeResult{ID: id, ProviderChargeID: providerID, MerchantTransactionID: in.MerchantTransactionID, Status: status, Response: response}
+	chargeResult := ChargeResult{ID: id, Provedor: prov.ID(), ProviderChargeID: providerID, MerchantTransactionID: in.MerchantTransactionID, Status: status, Response: response}
 	if outcome.HasCode {
 		code := outcome.Code
 		chargeResult.CodigoProvedor = &code
 	}
 	chargeResult.MensagemProvedor, chargeResult.FonteProvedor, chargeResult.CategoriaMotivo = outcome.Message, outcome.Source, outcome.Categoria
-	result := QRCodeResult{ChargeResult: chargeResult, QRCodeArr: qr}
+	result := QRCodeResult{ChargeResult: chargeResult, QRCodeArr: resp.QRCode}
 	if isSuccessfulChargeStatus(status) {
 		_ = s.confirmMensalidadeCharge(ctx, id, actorID, actorType, ip)
 	}
 	return result, nil
 }
+
 func (s *Service) ConsultCharge(ctx context.Context, contexto, academia, identifier, actorID, actorType, ip string) (ChargeResult, error) {
 	if identifier == "" {
 		return ChargeResult{}, errors.New("id da cobrança é obrigatório")
@@ -777,7 +484,7 @@ func (s *Service) CancelCharge(ctx context.Context, contexto, academia, identifi
 	if motivo = strings.TrimSpace(motivo); motivo != "" {
 		payload["motivo"] = motivo
 	}
-	if err = s.record(ctx, row.ID, "CobrancaAppyPayCancelada", payload, actorID, actorType, ip); err != nil {
+	if err = s.record(ctx, row.ID, aggregates.CobrancaCancelada, payload, actorID, actorType, ip); err != nil {
 		return ChargeResult{}, err
 	}
 	return ChargeResult{ID: row.ID, ProviderChargeID: current.ProviderChargeID, MerchantTransactionID: row.Merchant, Status: "cancelada", Response: current.Response}, nil
@@ -962,6 +669,7 @@ func scanCobrancaResumo(rows *sql.Rows) (CobrancaResumo, error) {
 	}
 	rawStatus, _ := payload["status"].(string)
 	dto.Status = normalizeChargeStatus(rawStatus)
+	dto.Provedor = provedorDoPayloadCobranca(payload)
 	if codigo, ok := payload["codigo_provedor"].(float64); ok {
 		c := int(codigo)
 		dto.CodigoProvedor = &c
@@ -1191,22 +899,20 @@ func (s *Service) consultCharge(ctx context.Context, row chargeRow, actorID, act
 	if externo, _ := row.Payload["pagamento_externo"].(bool); externo && isSuccessfulChargeStatus(row.Status) {
 		return ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}, nil
 	}
-	cred, err := s.loadCredential(ctx, row.Contexto, row.Academia)
+	// Retroativo: a consulta segue o provedor gravado na cobrança, não o
+	// provedor ativo do contexto.
+	prov, cred, err := s.provedorDaCobranca(ctx, row)
 	if err != nil {
 		return ChargeResult{}, err
 	}
-	path := "/charges/" + url.PathEscape(row.ProviderID)
-	if row.ProviderID == "" {
-		path = "/charges?merchantTransactionId=" + url.QueryEscape(row.Merchant)
-	}
-	response, err := s.callJSON(ctx, cred, http.MethodGet, path, nil, false)
+	resp, err := prov.ConsultarCobranca(ctx, cred, referenciaCobranca{IDProvedor: row.ProviderID, IDComerciante: row.Merchant})
 	if err != nil {
 		return ChargeResult{}, err
 	}
-	outcome := extractProviderOutcome(response)
+	response, outcome := resp.Bruta, resp.Outcome
 	status := normalizeChargeStatus(outcome.Status)
 	if status == "" {
-		// AppyPay não devolveu nenhum campo de status reconhecível desta vez
+		// O provedor não devolveu nenhum campo de status reconhecível desta vez
 		// — mantém o status anterior (row.Status já vem normalizado por
 		// loadCharge) em vez de assumir um novo estado.
 		status = row.Status
@@ -1216,12 +922,13 @@ func (s *Service) consultCharge(ctx context.Context, row chargeRow, actorID, act
 	for key, value := range row.Payload {
 		payload[key] = value
 	}
-	payload["provider_charge_id"] = first(responseID(response), row.ProviderID)
+	payload["provider_charge_id"] = first(resp.ID, row.ProviderID)
 	payload["status"] = status
 	payload["response"] = sanitize(response)
+	comProvedor(payload, row.Provedor)
 	applyProviderOutcome(payload, outcome)
-	providerID := first(responseID(response), row.ProviderID)
-	result := ChargeResult{ID: row.ID, ProviderChargeID: providerID, MerchantTransactionID: row.Merchant, Status: status, Response: response}
+	providerID := first(resp.ID, row.ProviderID)
+	result := ChargeResult{ID: row.ID, Provedor: row.Provedor, ProviderChargeID: providerID, MerchantTransactionID: row.Merchant, Status: status, Response: response}
 	if outcome.HasCode {
 		code := outcome.Code
 		result.CodigoProvedor = &code
@@ -1233,242 +940,18 @@ func (s *Service) consultCharge(ctx context.Context, row chargeRow, actorID, act
 		// accepting a payment that raced with local cancellation.
 		payload["status"] = "cancelada"
 		payload["provider_status"] = status
-		if err = s.record(ctx, row.ID, "CobrancaAppyPayConflitoPosCancelamento", payload, actorID, actorType, ip); err != nil {
+		if err = s.record(ctx, row.ID, aggregates.CobrancaConflitoPosCancelamento, payload, actorID, actorType, ip); err != nil {
 			return ChargeResult{}, err
 		}
 		result.Status = "cancelada"
 		return result, nil
 	}
 	if status != row.Status || providerID != row.ProviderID || !sameJSON(payload["response"], previousResponse) {
-		if err = s.record(ctx, row.ID, "CobrancaAppyPayConsultada", payload, actorID, actorType, ip); err != nil {
+		if err = s.record(ctx, row.ID, aggregates.CobrancaConsultada, payload, actorID, actorType, ip); err != nil {
 			return ChargeResult{}, err
 		}
 	}
 	return result, nil
-}
-
-type credentialSecrets struct {
-	ID                               uuid.UUID
-	ClientID, ClientSecret, GPO, REF string
-}
-
-func (c credentialSecrets) method(requested string) (string, error) {
-	requested = strings.TrimSpace(requested)
-	if strings.EqualFold(requested, "GPO") || strings.EqualFold(requested, c.GPO) {
-		return c.GPO, nil
-	}
-	if strings.EqualFold(requested, "REF") || strings.EqualFold(requested, c.REF) {
-		return c.REF, nil
-	}
-	return "", errors.New("paymentMethod não contratado para esta conta")
-}
-func (s *Service) loadCredential(ctx context.Context, contexto, academia string) (credentialSecrets, error) {
-	if err := validContext(contexto, academia); err != nil {
-		return credentialSecrets{}, err
-	}
-	var id uuid.UUID
-	err := s.client.DB().QueryRowContext(ctx, `SELECT id FROM financeiro_credenciais_appypay WHERE contexto_tipo=$1 AND codigo_academia IS NOT DISTINCT FROM NULLIF($2,'') AND ambiente=$3`, contexto, academia, AmbienteAtual()).Scan(&id)
-	if err != nil {
-		return credentialSecrets{}, fmt.Errorf("%w: credenciais AppyPay não configuradas para este contexto", ErrNotFound)
-	}
-	values, err := s.loadSecrets(ctx, id)
-	if err != nil {
-		return credentialSecrets{}, err
-	}
-	return credentialSecrets{ID: id, ClientID: values["client_id"], ClientSecret: values["client_secret"], GPO: values["gpo_method"], REF: values["ref_method"]}, nil
-}
-func (s *Service) HasCredential(ctx context.Context, contexto, academia string) (bool, error) {
-	_, err := s.loadCredential(ctx, contexto, academia)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-func (s *Service) findCredentialID(ctx context.Context, contexto, academia, ambiente string) (uuid.UUID, error) {
-	var id uuid.UUID
-	err := s.client.DB().QueryRowContext(ctx, `SELECT id FROM financeiro_credenciais_appypay WHERE contexto_tipo=$1 AND codigo_academia IS NOT DISTINCT FROM NULLIF($2,'') AND ambiente=$3`, contexto, academia, ambiente).Scan(&id)
-	return id, err
-}
-
-func (s *Service) credentialBelongsToScope(ctx context.Context, id uuid.UUID, contexto, academia, ambiente string) error {
-	var found uuid.UUID
-	err := s.client.DB().QueryRowContext(ctx, `SELECT id FROM financeiro_credenciais_appypay WHERE id=$1 AND contexto_tipo=$2 AND codigo_academia IS NOT DISTINCT FROM NULLIF($3,'') AND ambiente=$4`, id, contexto, academia, ambiente).Scan(&found)
-	if err != nil {
-		return fmt.Errorf("%w: credencial AppyPay não encontrada no contexto", ErrNotFound)
-	}
-	return nil
-}
-
-// CredentialScope resolve o contexto (spuri/academia) e a academia dona de
-// uma credencial pelo seu id — usado pelos handlers de segredo de webhook
-// para reaplicar a mesma autorização (authorizeFinanceScope) das demais
-// rotas de credenciais.
-func (s *Service) CredentialScope(ctx context.Context, id uuid.UUID) (string, string, error) {
-	var contexto, academia string
-	if err := s.client.DB().QueryRowContext(ctx, `SELECT contexto_tipo, COALESCE(codigo_academia,'') FROM financeiro_credenciais_appypay WHERE id=$1`, id).Scan(&contexto, &academia); err != nil {
-		return "", "", fmt.Errorf("%w: credencial AppyPay não encontrada", ErrNotFound)
-	}
-	return contexto, academia, nil
-}
-
-// WebhookSecret devolve o segredo de webhook atual em texto plano.
-func (s *Service) WebhookSecret(ctx context.Context, id uuid.UUID) (string, error) {
-	secrets, err := s.loadSecrets(ctx, id)
-	if err != nil {
-		return "", err
-	}
-	secret := secrets["webhook_secret"]
-	if secret == "" {
-		return "", fmt.Errorf("%w: credencial sem segredo de webhook", ErrNotFound)
-	}
-	return secret, nil
-}
-
-// RotateWebhookSecret gera um novo segredo de webhook, substitui o anterior
-// no cofre e grava um evento de auditoria no ledger. A rotação é imediata:
-// o segredo anterior deixa de autenticar assim que esta função retorna sem
-// erro.
-func (s *Service) RotateWebhookSecret(ctx context.Context, id uuid.UUID, userID, userType, ip string) (string, error) {
-	secret, err := generateWebhookSecret()
-	if err != nil {
-		return "", err
-	}
-	if err := s.record(ctx, id, "SegredoWebhookAppyPayRotacionado", map[string]any{"credential_id": id.String()}, userID, userType, ip); err != nil {
-		return "", err
-	}
-	if err := s.saveSecrets(ctx, id, map[string]string{"webhook_secret": secret}); err != nil {
-		return "", err
-	}
-	return secret, nil
-}
-
-func (s *Service) callJSON(ctx context.Context, cred credentialSecrets, method, path string, body any, async bool) (map[string]any, error) {
-	token, err := s.token(ctx, cred)
-	if err != nil {
-		return nil, err
-	}
-	var data io.Reader
-	if body != nil {
-		raw, e := json.Marshal(body)
-		if e != nil {
-			return nil, e
-		}
-		data = bytes.NewReader(raw)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, EndpointsAtuais().APIBaseURL+path, data)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	if async {
-		req.Header.Set("Accept", asyncAccept)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	res, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUpstream, err)
-	}
-	defer res.Body.Close()
-	limited := io.LimitReader(res.Body, 2<<20)
-	raw, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, fmt.Errorf("%w: não foi possível ler a resposta AppyPay: %v", ErrUpstream, err)
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("%w: AppyPay respondeu HTTP %d", ErrUpstream, res.StatusCode)
-	}
-	out := map[string]any{}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("%w: resposta AppyPay inválida: %v", ErrUpstream, err)
-		}
-	}
-	return out, nil
-}
-func (s *Service) token(ctx context.Context, cred credentialSecrets) (string, error) {
-	s.mu.Lock()
-	cached, ok := s.tokens[cred.ID]
-	s.mu.Unlock()
-	if ok && time.Until(cached.expiresAt) > time.Minute {
-		return cached.value, nil
-	}
-	resource, err := appyPayResource()
-	if err != nil {
-		return "", err
-	}
-	form := url.Values{"grant_type": {"client_credentials"}, "client_id": {cred.ClientID}, "client_secret": {cred.ClientSecret}, "resource": {resource}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, EndpointsAtuais().TokenURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	res, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrUpstream, err)
-	}
-	defer res.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if err != nil {
-		return "", fmt.Errorf("%w: não foi possível ler a resposta de token: %v", ErrUpstream, err)
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return "", fmt.Errorf("%w: token AppyPay recusado: HTTP %d", ErrUpstream, res.StatusCode)
-	}
-	var out struct {
-		AccessToken string          `json:"access_token"`
-		ExpiresIn   flexibleSeconds `json:"expires_in"`
-	}
-	if err = json.Unmarshal(raw, &out); err != nil || out.AccessToken == "" {
-		return "", fmt.Errorf("%w: resposta de token AppyPay inválida", ErrUpstream)
-	}
-	if out.ExpiresIn <= 0 {
-		out.ExpiresIn = 3600
-	}
-	s.mu.Lock()
-	s.tokens[cred.ID] = tokenEntry{out.AccessToken, time.Now().Add(time.Duration(out.ExpiresIn) * time.Second)}
-	s.mu.Unlock()
-	return out.AccessToken, nil
-}
-
-// flexibleSeconds decodifica um campo de segundos (usado aqui para
-// expires_in) que a AppyPay pode enviar como número JSON puro OU como
-// string JSON contendo um número. O endpoint real de token da AppyPay
-// (login.microsoftonline.com/{tenant}/oauth2/token, o endpoint "v1" do
-// Azure AD, não o "v2.0") devolve expires_in como STRING
-// (ex.: "expires_in": "3599") — documentado no exemplo de resposta da
-// secção "Get a token" e comportamento conhecido do próprio Azure AD v1
-// (distinto do endpoint v2.0, que usa número). Antes desta correção o
-// campo era declarado como int puro: json.Unmarshal de uma string JSON
-// para um campo int retorna erro, e token() tratava qualquer erro de
-// unmarshal como falha de autenticação total — mesmo com access_token
-// presente e válido no mesmo payload. Ver
-// docs/Debbugs/Auditoria de conformidade AppyPay — autenticação e geração
-// de cobrança (produção).md.
-type flexibleSeconds int
-
-func (f *flexibleSeconds) UnmarshalJSON(b []byte) error {
-	var asInt int
-	if err := json.Unmarshal(b, &asInt); err == nil {
-		*f = flexibleSeconds(asInt)
-		return nil
-	}
-	var asString string
-	if err := json.Unmarshal(b, &asString); err != nil {
-		return err
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(asString))
-	if err != nil {
-		return err
-	}
-	*f = flexibleSeconds(n)
-	return nil
 }
 
 func (s *Service) record(ctx context.Context, id uuid.UUID, event string, payload map[string]any, userID, userType, ip string) error {
@@ -1482,93 +965,6 @@ func (s *Service) record(ctx context.Context, id uuid.UUID, event string, payloa
 		return err
 	}
 	return s.projection.ApplyLatestForAggregate(id)
-}
-func (s *Service) saveSecrets(ctx context.Context, id uuid.UUID, plain map[string]string) error {
-	for typ, value := range plain {
-		if value == "" {
-			continue
-		}
-		ciphertext, err := encrypt(value)
-		if err != nil {
-			return err
-		}
-		if _, err = s.client.DB().ExecContext(ctx, `INSERT INTO financeiro_segredos_appypay (credential_id,secret_type,ciphertext) VALUES ($1,$2,$3) ON CONFLICT (credential_id,secret_type) DO UPDATE SET ciphertext=EXCLUDED.ciphertext,created_at=CURRENT_TIMESTAMP`, id, typ, ciphertext); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-func (s *Service) loadSecrets(ctx context.Context, id uuid.UUID) (map[string]string, error) {
-	rows, err := s.client.DB().QueryContext(ctx, `SELECT secret_type,ciphertext FROM financeiro_segredos_appypay WHERE credential_id=$1`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var typ, ciphertext string
-		if err := rows.Scan(&typ, &ciphertext); err != nil {
-			return nil, err
-		}
-		v, e := decrypt(ciphertext)
-		if e != nil {
-			return nil, e
-		}
-		out[typ] = v
-	}
-	for _, required := range []string{"client_id", "client_secret", "gpo_method", "ref_method"} {
-		if out[required] == "" {
-			return nil, errors.New("cofre de credenciais AppyPay incompleto")
-		}
-	}
-	return out, rows.Err()
-}
-
-// AuthenticateWebhook aceita apenas o método suportado pela AppyPay: um único
-// cabeçalho HTTP fixo para toda a plataforma (WebhookHeaderName) cujo valor é
-// comparado, em tempo constante, ao webhook_secret gerado pelo servidor para
-// cada credencial. A AppyPay confirmou por e-mail que o painel de
-// configuração de webhooks só oferece um par nome/valor de cabeçalho HTTP —
-// nunca query parameter, nunca corpo do POST, e nunca campos separados de
-// utilizador/senha para Basic Auth. It never reveals which configured
-// account matched.
-type WebhookOwner struct {
-	CredentialID                 uuid.UUID
-	ContextoTipo, CodigoAcademia string
-}
-
-func (s *Service) AuthenticateWebhook(ctx context.Context, headers http.Header) (WebhookOwner, error) {
-	candidate := headers.Get(WebhookHeaderName)
-	if candidate == "" {
-		return WebhookOwner{}, errors.New("webhook não autenticado")
-	}
-	rows, err := s.client.DB().QueryContext(ctx, `SELECT id,payload FROM financeiro_credenciais_appypay`)
-	if err != nil {
-		return WebhookOwner{}, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id uuid.UUID
-		var raw []byte
-		if err := rows.Scan(&id, &raw); err != nil {
-			return WebhookOwner{}, err
-		}
-		var meta struct {
-			ContextoTipo   string `json:"contexto_tipo"`
-			CodigoAcademia string `json:"codigo_academia"`
-		}
-		if json.Unmarshal(raw, &meta) != nil {
-			continue
-		}
-		secrets, err := s.loadSecrets(ctx, id)
-		if err != nil {
-			continue
-		}
-		if secrets["webhook_secret"] != "" && constantTimeEqual(candidate, secrets["webhook_secret"]) {
-			return WebhookOwner{CredentialID: id, ContextoTipo: meta.ContextoTipo, CodigoAcademia: meta.CodigoAcademia}, nil
-		}
-	}
-	return WebhookOwner{}, errors.New("webhook não autenticado")
 }
 
 // liveChargeStatus faz uma consulta ao vivo (GET /charges/{id}) e devolve o
@@ -1591,31 +987,38 @@ func (s *Service) AuthenticateWebhook(ctx context.Context, headers http.Header) 
 // AppyPay já reportou como bem-sucedido no webhook (o mesmo raciocínio do
 // Bug 1 já corrigido, em que o webhook nunca efetivava a matrícula).
 func (s *Service) liveChargeStatus(ctx context.Context, charge chargeRow) (status string, ok bool) {
-	cred, err := s.loadCredential(ctx, charge.Contexto, charge.Academia)
+	prov, cred, err := s.provedorDaCobranca(ctx, charge)
 	if err != nil {
 		return "", false
 	}
-	path := "/charges/" + url.PathEscape(charge.ProviderID)
-	if charge.ProviderID == "" {
-		path = "/charges?merchantTransactionId=" + url.QueryEscape(charge.Merchant)
-	}
-	response, err := s.callJSON(ctx, cred, http.MethodGet, path, nil, false)
+	resp, err := prov.ConsultarCobranca(ctx, cred, referenciaCobranca{IDProvedor: charge.ProviderID, IDComerciante: charge.Merchant})
 	if err != nil {
 		return "", false
 	}
-	status = normalizeChargeStatus(extractProviderOutcome(response).Status)
+	status = normalizeChargeStatus(resp.Outcome.Status)
 	return status, status != ""
 }
 
 // AcceptWebhook reserves its event id first in the dedicated idempotency index.
 // If ledger persistence fails the reservation is removed, so a delivery retry is
 // still processed. No charge side-effect is executed here.
-func (s *Service) AcceptWebhook(ctx context.Context, metodo, eventID string, owner WebhookOwner, payload map[string]any) (accepted bool, confirmedSuccess bool, err error) {
+func (s *Service) AcceptWebhook(ctx context.Context, provedor, metodo, eventID string, owner WebhookOwner, payload map[string]any) (accepted bool, confirmedSuccess bool, err error) {
+	prov, err := s.ProvedorPorID(provedor)
+	if err != nil {
+		return false, false, err
+	}
 	metodo = strings.ToUpper(metodo)
-	if (metodo != "GPO" && metodo != "REF") || strings.TrimSpace(eventID) == "" {
+	metodoValido := false
+	for _, r := range prov.RotasWebhook() {
+		if r.Metodo == metodo {
+			metodoValido = true
+		}
+	}
+	if !metodoValido || strings.TrimSpace(eventID) == "" {
 		return false, false, errors.New("webhook inválido")
 	}
-	res, err := s.client.DB().ExecContext(ctx, `INSERT INTO financeiro_webhooks_recebidos(event_id,metodo) VALUES($1,$2) ON CONFLICT(event_id) DO NOTHING`, eventID, metodo)
+	actor := prov.Slug() + ":webhook"
+	res, err := s.client.DB().ExecContext(ctx, `INSERT INTO financeiro_webhooks_recebidos(provedor,event_id,metodo) VALUES($1,$2,$3) ON CONFLICT(provedor,event_id) DO NOTHING`, prov.ID(), eventID, metodo)
 	if err != nil {
 		return false, false, err
 	}
@@ -1623,9 +1026,9 @@ func (s *Service) AcceptWebhook(ctx context.Context, metodo, eventID string, own
 	if affected == 0 {
 		return false, false, nil
 	}
-	data := map[string]any{"event_id": eventID, "metodo": metodo, "credential_id": owner.CredentialID.String(), "contexto_tipo": owner.ContextoTipo, "codigo_academia": owner.CodigoAcademia, "payload": sanitize(payload)}
-	if err = s.record(ctx, uuid.New(), "WebhookAppyPayRecebido", data, "appypay:webhook", "sistema", "webhook"); err != nil {
-		_, _ = s.client.DB().ExecContext(ctx, `DELETE FROM financeiro_webhooks_recebidos WHERE event_id=$1`, eventID)
+	data := map[string]any{"provedor": prov.ID(), "event_id": eventID, "metodo": metodo, "credential_id": owner.CredentialID.String(), "contexto_tipo": owner.ContextoTipo, "codigo_academia": owner.CodigoAcademia, "payload": sanitize(payload)}
+	if err = s.record(ctx, uuid.New(), aggregates.WebhookProvedorRecebido, data, actor, "sistema", "webhook"); err != nil {
+		_, _ = s.client.DB().ExecContext(ctx, `DELETE FROM financeiro_webhooks_recebidos WHERE provedor=$1 AND event_id=$2`, prov.ID(), eventID)
 		return false, false, err
 	}
 	// Reflete no read model qualquer estado que o webhook reporte — sucesso
@@ -1633,14 +1036,14 @@ func (s *Service) AcceptWebhook(ctx context.Context, metodo, eventID string, own
 	// própria AppyPay documenta (Failed, Cancelled, Expired). Antes desta
 	// correção só um webhook de sucesso atualizava a cobrança: um webhook
 	// avisando que uma referência REF expirou ou que um GPO foi recusado
-	// era gravado em WebhookAppyPayRecebido (acima) mas nunca refletia em
+	// era gravado em WebhookProvedorRecebido (acima) mas nunca refletia em
 	// financeiro_cobrancas, deixando a cobrança "presa" em
 	// aguardando_pagamento até alguém consultá-la manualmente.
-	outcome := extractProviderOutcome(payload)
+	outcome, payloadProviderID := prov.ResultadoWebhook(payload)
 	if outcome.Status != "" || outcome.HasCode {
 		normalized := normalizeChargeStatus(outcome.Status)
 		success := isSuccessfulChargeStatus(normalized)
-		if charge, loadErr := s.loadCharge(ctx, eventID); loadErr == nil && charge.Contexto == owner.ContextoTipo && charge.Academia == owner.CodigoAcademia &&
+		if charge, loadErr := s.loadChargeDoProvedor(ctx, prov.ID(), eventID); loadErr == nil && charge.Contexto == owner.ContextoTipo && charge.Academia == owner.CodigoAcademia &&
 			// Um webhook atrasado e não-bem-sucedido nunca sobrescreve uma
 			// cobrança que já chegou a um estado terminal (ex.: já paga, já
 			// cancelada) — só um sucesso tem tratamento de conflito próprio
@@ -1654,7 +1057,7 @@ func (s *Service) AcceptWebhook(ctx context.Context, metodo, eventID string, own
 			// está cancelada localmente) só é tratado como definitivo depois
 			// de uma consulta ao vivo concordar. O caso de sucesso chegando
 			// depois de um cancelamento local (abaixo, eventType
-			// CobrancaAppyPayConflitoPosCancelamento) já não dispara nenhum
+			// CobrancaConflitoPosCancelamento) já não dispara nenhum
 			// efeito irreversível por si só — é só um registo de conflito
 			// para reconciliação manual — então não precisa do double-check.
 			if success && !strings.EqualFold(charge.Status, "cancelada") {
@@ -1671,21 +1074,22 @@ func (s *Service) AcceptWebhook(ctx context.Context, metodo, eventID string, own
 			if success {
 				updated["status"] = "Success"
 			}
-			updated["provider_charge_id"] = first(responseID(payload), charge.ProviderID)
+			updated["provider_charge_id"] = first(payloadProviderID, charge.ProviderID)
 			updated["response"] = sanitize(payload)
+			comProvedor(updated, prov.ID())
 			applyProviderOutcome(updated, outcome)
-			eventType := "CobrancaAppyPayConsultada"
+			eventType := aggregates.CobrancaConsultada
 			if success && strings.EqualFold(charge.Status, "cancelada") {
 				// A provider may still settle a REF/GPO/QR after Spuri's local
 				// cancellation. Preserve cancellation and leave an explicit audit
 				// conflict for FPP reconciliation.
 				updated["status"] = "cancelada"
 				updated["provider_status"] = "Success"
-				eventType = "CobrancaAppyPayConflitoPosCancelamento"
+				eventType = aggregates.CobrancaConflitoPosCancelamento
 			}
-			if s.record(ctx, charge.ID, eventType, updated, "appypay:webhook", "sistema", "webhook") == nil && success && eventType == "CobrancaAppyPayConsultada" {
+			if s.record(ctx, charge.ID, eventType, updated, actor, "sistema", "webhook") == nil && success && eventType == aggregates.CobrancaConsultada {
 				confirmedSuccess = true
-				_ = s.confirmMensalidadeCharge(ctx, charge.ID, "appypay:webhook", "sistema", "webhook")
+				_ = s.confirmMensalidadeCharge(ctx, charge.ID, actor, "sistema", "webhook")
 			}
 		}
 	}
@@ -1695,13 +1099,27 @@ func (s *Service) AcceptWebhook(ctx context.Context, metodo, eventID string, own
 type chargeRow struct {
 	ID                                               uuid.UUID
 	ProviderID, Merchant, Contexto, Academia, Status string
-	Payload                                          map[string]any
+	// Provedor é o PSP que emitiu a cobrança. Toda operação posterior sobre a
+	// cobrança (consulta, cancelamento, webhook) usa este provedor — nunca o
+	// provedor ativo do contexto, que pode ter mudado entretanto.
+	Provedor string
+	Payload  map[string]any
 }
 
 func (s *Service) loadCharge(ctx context.Context, identifier string) (chargeRow, error) {
+	return s.loadChargeWhere(ctx, identifier, "")
+}
+
+// loadChargeDoProvedor localiza uma cobrança dentro de um provedor — os
+// identificadores do provedor só são únicos dentro dele.
+func (s *Service) loadChargeDoProvedor(ctx context.Context, provedor, identifier string) (chargeRow, error) {
+	return s.loadChargeWhere(ctx, identifier, provedor)
+}
+
+func (s *Service) loadChargeWhere(ctx context.Context, identifier, provedor string) (chargeRow, error) {
 	var r chargeRow
 	var raw []byte
-	err := s.client.DB().QueryRowContext(ctx, `SELECT id,COALESCE(provider_charge_id,''),merchant_transaction_id,contexto_tipo,COALESCE(codigo_academia,''),payload FROM financeiro_cobrancas WHERE id::text=$1 OR provider_charge_id=$1 OR merchant_transaction_id=$1`, identifier).Scan(&r.ID, &r.ProviderID, &r.Merchant, &r.Contexto, &r.Academia, &raw)
+	err := s.client.DB().QueryRowContext(ctx, `SELECT id,COALESCE(provider_charge_id,''),merchant_transaction_id,contexto_tipo,COALESCE(codigo_academia,''),provedor,payload FROM financeiro_cobrancas WHERE (id::text=$1 OR provider_charge_id=$1 OR merchant_transaction_id=$1) AND ($2='' OR provedor=$2) ORDER BY (id::text=$1) DESC,(merchant_transaction_id=$1) DESC LIMIT 1`, identifier, provedor).Scan(&r.ID, &r.ProviderID, &r.Merchant, &r.Contexto, &r.Academia, &r.Provedor, &raw)
 	if err != nil {
 		return r, fmt.Errorf("%w: cobrança não encontrada", ErrNotFound)
 	}
@@ -1711,6 +1129,28 @@ func (s *Service) loadCharge(ctx context.Context, identifier string) (chargeRow,
 	rawStatus, _ := r.Payload["status"].(string)
 	r.Status = normalizeChargeStatus(rawStatus)
 	return r, nil
+}
+
+// provedorDaCobranca resolve o provedor e as credenciais de uma cobrança JÁ
+// EMITIDA. É o mecanismo retroativo: mesmo que o contexto tenha trocado de
+// provedor, a cobrança continua a falar com o provedor que a criou enquanto
+// aguarda a resposta.
+func (s *Service) provedorDaCobranca(ctx context.Context, row chargeRow) (Provedor, credencialProvedor, error) {
+	prov, err := s.ProvedorPorID(row.Provedor)
+	if err != nil {
+		return nil, credencialProvedor{}, err
+	}
+	cred, err := s.loadCredentialDoProvedor(ctx, row.Contexto, row.Academia, prov.ID())
+	if err != nil {
+		return nil, credencialProvedor{}, err
+	}
+	return prov, cred, nil
+}
+
+// comProvedor grava no payload o provedor que originou o evento.
+func comProvedor(payload map[string]any, provedor string) map[string]any {
+	payload["provedor"] = provedor
+	return payload
 }
 
 func (s *Service) reserveCharge(ctx context.Context, merchant string, chargeID uuid.UUID) (bool, error) {
@@ -1754,7 +1194,7 @@ func (s *Service) existingChargeResult(ctx context.Context, merchant, contexto, 
 		return ChargeResult{}, ErrConflict
 	}
 	response, _ := row.Payload["response"].(map[string]any)
-	result := ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status, Response: response}
+	result := ChargeResult{ID: row.ID, Provedor: row.Provedor, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status, Response: response}
 	applyPersistedProviderFields(&result, row.Payload)
 	return result, nil
 }
@@ -1776,7 +1216,7 @@ func qrCodeResultFromRow(row chargeRow, contexto, academia string) (QRCodeResult
 	}
 	response, _ := row.Payload["response"].(map[string]any)
 	qr, _ := response["qrCodeArr"].(string)
-	chargeResult := ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status, Response: response}
+	chargeResult := ChargeResult{ID: row.ID, Provedor: row.Provedor, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status, Response: response}
 	applyPersistedProviderFields(&chargeResult, row.Payload)
 	return QRCodeResult{ChargeResult: chargeResult, QRCodeArr: qr}, nil
 }
@@ -1786,6 +1226,7 @@ func sameJSON(a, b any) bool {
 	right, rightErr := json.Marshal(b)
 	return leftErr == nil && rightErr == nil && bytes.Equal(left, right)
 }
+
 func validateCharge(in *ChargeRequest) error {
 	if err := validContext(in.ContextoTipo, in.CodigoAcademia); err != nil {
 		return err
@@ -1871,11 +1312,13 @@ func validateQRCode(in *QRCodeRequest) error {
 }
 
 func validAmount(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0 }
+
 func merchantID() string {
 	b := make([]byte, 7)
 	_, _ = rand.Read(b)
 	return "T" + strings.ToUpper(hex.EncodeToString(b))
 }
+
 func validMerchantID(value string) bool {
 	if len(value) == 0 || len(value) > 15 {
 		return false
@@ -1887,10 +1330,12 @@ func validMerchantID(value string) bool {
 	}
 	return true
 }
+
 func chargePayload(id uuid.UUID, in ChargeRequest, providerID, status string, response map[string]any) map[string]any {
 	return map[string]any{"charge_id": id.String(), "contexto_tipo": in.ContextoTipo, "codigo_academia": in.CodigoAcademia, "codigo_estudante": in.CodigoEstudante, "codigo_solicitacao": in.CodigoSolicitacao,
 		"codigo_inscricao_servico": in.CodigoInscricaoServico, "tipo_lancamento_servico_extra": in.TipoLancamentoServicoExtra, "mes_referencia": in.MesReferencia, "ano_referencia": in.AnoReferencia, "mensalidades": in.Mensalidades, "amount": roundAmount(in.Amount), "currency": in.Currency, "description": in.Description, "merchant_transaction_id": in.MerchantTransactionID, "payment_method": in.PaymentMethod, "payment_info": in.PaymentInfo, "options": in.Options, "notify": in.Notify, "async": in.Async, "provider_charge_id": providerID, "status": status, "response": sanitize(response)}
 }
+
 func qrCodePayload(id uuid.UUID, in QRCodeRequest, typ, providerID, status string, response map[string]any) map[string]any {
 	var minAmount any
 	if in.MinAmount != nil {
@@ -1898,33 +1343,6 @@ func qrCodePayload(id uuid.UUID, in QRCodeRequest, typ, providerID, status strin
 	}
 	return map[string]any{"charge_id": id.String(), "contexto_tipo": in.ContextoTipo, "codigo_academia": in.CodigoAcademia, "codigo_estudante": in.CodigoEstudante, "codigo_solicitacao": in.CodigoSolicitacao,
 		"codigo_inscricao_servico": in.CodigoInscricaoServico, "tipo_lancamento_servico_extra": in.TipoLancamentoServicoExtra, "mes_referencia": in.MesReferencia, "ano_referencia": in.AnoReferencia, "amount": roundAmount(in.Amount), "currency": in.Currency, "description": in.Description, "merchant_transaction_id": in.MerchantTransactionID, "provider_charge_id": providerID, "status": status, "payment_method": "GPO", "qr_code_type": typ, "mensalidades": in.Mensalidades, "min_amount": minAmount, "max_transactions": in.MaxTransactions, "start_date": in.StartDate, "end_date": in.EndDate, "response": sanitize(response)}
-}
-func responseID(v map[string]any) string {
-	for _, k := range []string{"id", "chargeId", "charge_id"} {
-		if x, ok := v[k].(string); ok {
-			return x
-		}
-	}
-	// GET /charges/{id} (e GET /charges?merchantTransactionId=...) devolvem
-	// tudo dentro de um envelope "payment" — ver
-	// extractProviderOutcome, logo abaixo, para o mesmo problema aplicado ao
-	// status.
-	if payment, ok := v["payment"].(map[string]any); ok {
-		for _, k := range []string{"id", "chargeId", "charge_id"} {
-			if x, ok := payment[k].(string); ok {
-				return x
-			}
-		}
-	}
-	return ""
-}
-func responseStatus(v map[string]any) string {
-	for _, k := range []string{"status", "state"} {
-		if x, ok := v[k].(string); ok {
-			return x
-		}
-	}
-	return ""
 }
 
 // providerOutcome carrega tudo o que a Spuri consegue aprender de uma única
@@ -1943,92 +1361,6 @@ type providerOutcome struct {
 	Categoria string
 }
 
-func extractProviderOutcome(v map[string]any) providerOutcome {
-	if payment, ok := v["payment"].(map[string]any); ok {
-		out := providerOutcome{}
-		if s, ok := payment["status"].(string); ok {
-			out.Status = s
-		}
-		if events, ok := payment["transactionEvents"].([]any); ok && len(events) > 0 {
-			if last, ok := events[len(events)-1].(map[string]any); ok {
-				if rs, ok := last["responseStatus"].(map[string]any); ok {
-					applyResponseStatus(&out, rs)
-				}
-			}
-		}
-		if out.Status != "" || out.HasCode {
-			resolveOutcomeStatus(&out)
-			return out
-		}
-	}
-	if rs, ok := v["responseStatus"].(map[string]any); ok {
-		out := providerOutcome{}
-		applyResponseStatus(&out, rs)
-		if out.Status != "" || out.HasCode {
-			resolveOutcomeStatus(&out)
-			return out
-		}
-	}
-	out := providerOutcome{Status: responseStatus(v)}
-	resolveOutcomeStatus(&out)
-	return out
-}
-
-// IsSuccessfulProviderPayload informa se um payload cru vindo da AppyPay —
-// seja a resposta síncrona de POST /charges ou /qr-codes, seja o corpo de um
-// webhook — representa um pagamento concluído com sucesso.
-//
-// É a MESMA extração/normalização usada por CreateCharge, CreateGPOQRCode e
-// ConsultCharge (extractProviderOutcome + normalizeChargeStatus), incluindo
-// a leitura correta de "responseStatus.status"/"responseStatus.successful",
-// que é onde a AppyPay realmente coloca o status (nunca em campos soltos
-// "status"/"state" na raiz do payload — ver seção "Merchant Webhooks" de
-// docs/Parceiros e integrações/AppyPay Documentação.md). Qualquer código
-// fora deste pacote que precise reagir a um sucesso da AppyPay (por exemplo,
-// um handler HTTP de webhook decidindo se efetiva uma matrícula) deve
-// chamar esta função em vez de reimplementar sua própria leitura do
-// payload — ver docs/Debbugs/Auditoria de conformidade AppyPay (autenticação
-// e geração de cobrança).md para o bug que isto substitui.
-func IsSuccessfulProviderPayload(payload map[string]any) bool {
-	return isSuccessfulChargeStatus(normalizeChargeStatus(extractProviderOutcome(payload).Status))
-}
-
-func applyResponseStatus(out *providerOutcome, rs map[string]any) {
-	if s, ok := rs["status"].(string); ok {
-		out.Status = s
-	}
-	if m, ok := rs["message"].(string); ok {
-		out.Message = m
-	}
-	if src, ok := rs["source"].(string); ok {
-		out.Source = src
-	}
-	switch c := rs["code"].(type) {
-	case float64:
-		out.Code = int(c)
-		out.HasCode = true
-	case string:
-		if n, err := strconv.Atoi(strings.TrimSpace(c)); err == nil {
-			out.Code = n
-			out.HasCode = true
-		}
-	}
-}
-
-func resolveOutcomeStatus(out *providerOutcome) {
-	if out.HasCode {
-		if info, ok := appyPayCodeOutcomes[out.Code]; ok {
-			out.Status = info.Estado
-			out.Categoria = info.Categoria
-			return
-		}
-		out.Categoria = "desconhecido"
-		if out.Status == "" {
-			out.Status = "Failed"
-		}
-	}
-}
-
 func applyProviderOutcome(payload map[string]any, outcome providerOutcome) {
 	if outcome.HasCode {
 		payload["codigo_provedor"] = outcome.Code
@@ -2044,30 +1376,13 @@ func applyProviderOutcome(payload map[string]any, outcome providerOutcome) {
 	}
 }
 
-type appyPayCodeInfo struct {
-	Estado    string
-	Categoria string
-}
-
-var appyPayCodeOutcomes = map[int]appyPayCodeInfo{
-	100: {"Success", ""}, 101: {"Pending", ""}, 102: {"Pending", ""}, 103: {"Success", ""}, 319: {"Pending", ""}, 1100: {"Success", ""},
-	231: {"Cancelled", "recusado_pelo_cliente"}, 219: {"Cancelled", "recusado_pelo_cliente"},
-	209: {"Cancelled", "saldo_insuficiente"}, 203: {"Cancelled", "saldo_insuficiente"}, 204: {"Cancelled", "saldo_insuficiente"},
-	210: {"Cancelled", "tempo_esgotado"}, 211: {"Cancelled", "tempo_esgotado"},
-	200: {"Cancelled", "recusado_pelo_processador"}, 206: {"Cancelled", "recusado_pelo_processador"}, 208: {"Cancelled", "recusado_pelo_processador"}, 217: {"Cancelled", "recusado_pelo_processador"}, 227: {"Cancelled", "recusado_pelo_processador"}, 230: {"Cancelled", "recusado_pelo_processador"}, 205: {"Cancelled", "recusado_pelo_processador"}, 207: {"Cancelled", "recusado_pelo_processador"}, 218: {"Cancelled", "recusado_pelo_processador"}, 226: {"Cancelled", "recusado_pelo_processador"},
-	201: {"Cancelled", "recusado_pelo_emissor"}, 212: {"Cancelled", "recusado_pelo_emissor"}, 213: {"Cancelled", "recusado_pelo_emissor"}, 214: {"Cancelled", "recusado_pelo_emissor"}, 215: {"Cancelled", "recusado_pelo_emissor"}, 216: {"Cancelled", "recusado_pelo_emissor"}, 220: {"Cancelled", "recusado_pelo_emissor"}, 221: {"Cancelled", "recusado_pelo_emissor"}, 222: {"Cancelled", "recusado_pelo_emissor"}, 223: {"Cancelled", "recusado_pelo_emissor"}, 224: {"Cancelled", "recusado_pelo_emissor"}, 225: {"Cancelled", "recusado_pelo_emissor"}, 228: {"Cancelled", "recusado_pelo_emissor"}, 229: {"Cancelled", "recusado_pelo_emissor"}, 202: {"Cancelled", "recusado_pelo_emissor"},
-	245: {"Expired", "referencia_expirada"}, 762: {"Failed", "referencia_invalida"}, 763: {"Failed", "referencia_duplicada"},
-	233: {"Cancelled", "conta_invalida"}, 238: {"Cancelled", "recusado_pelo_processador"}, 239: {"Cancelled", "recusado_pelo_cliente"}, 240: {"Cancelled", "recusado_pelo_processador"}, 242: {"Cancelled", "conta_invalida"}, 243: {"Cancelled", "pin_invalido"}, 244: {"Cancelled", "erro_interno_provedor"}, 246: {"Failed", "erro_interno_provedor"}, 247: {"Failed", "erro_interno_provedor"}, 248: {"Failed", "erro_interno_provedor"}, 309: {"Failed", "erro_comunicacao"}, 310: {"Failed", "erro_interno_provedor"}, 311: {"Failed", "erro_interno_provedor"}, 312: {"Failed", "erro_interno_provedor"}, 313: {"Failed", "erro_interno_provedor"}, 314: {"Failed", "erro_comunicacao"}, 315: {"Failed", "erro_interno_provedor"}, 316: {"Failed", "erro_interno_provedor"}, 317: {"Failed", "erro_interno_provedor"}, 413: {"Failed", "erro_interno_provedor"}, 414: {"Failed", "erro_interno_provedor"}, 415: {"Failed", "erro_interno_provedor"}, 416: {"Failed", "erro_interno_provedor"}, 417: {"Failed", "erro_interno_provedor"}, 418: {"Failed", "erro_interno_provedor"}, 759: {"Failed", "valor_minimo"},
-	249: {"Cancelled", "erro_interno_provedor"}, 318: {"Failed", "erro_interno_provedor"}, 301: {"Failed", "erro_interno_provedor"}, 302: {"Failed", "erro_interno_provedor"}, 306: {"Failed", "erro_comunicacao"}, 308: {"Failed", "erro_interno_provedor"}, 402: {"Failed", "erro_interno_provedor"}, 403: {"Failed", "erro_interno_provedor"}, 404: {"Failed", "erro_interno_provedor"}, 405: {"Failed", "erro_interno_provedor"}, 406: {"Failed", "erro_comunicacao"}, 407: {"Failed", "erro_comunicacao"}, 408: {"Failed", "erro_interno_provedor"}, 410: {"Failed", "erro_interno_provedor"}, 411: {"Failed", "erro_interno_provedor"}, 412: {"Failed", "erro_interno_provedor"}, 440: {"Failed", "erro_interno_provedor"}, 900: {"Failed", "erro_desconhecido"}, 901: {"Failed", "erro_desconhecido"}, 1101: {"Failed", "conta_inativa"}, 1102: {"Failed", "conta_inativa"}, 1103: {"Failed", "conta_inativa"}, 1104: {"Failed", "conta_inativa"}, 1105: {"Failed", "conta_inativa"}, -1: {"Failed", "erro_desconhecido"},
-	717: {"Failed", "dados_invalidos"}, 718: {"Failed", "dados_invalidos"}, 719: {"Failed", "dados_invalidos"}, 720: {"Failed", "transacao_nao_encontrada"}, 726: {"Failed", "referencia_duplicada"}, 760: {"Failed", "dados_invalidos"}, 761: {"Failed", "dados_invalidos"}, 800: {"Failed", "dados_invalidos"}, 803: {"Failed", "dados_invalidos"}, 500: {"Failed", "erro_interno_provedor"}, 501: {"Failed", "erro_interno_provedor"}, 502: {"Failed", "erro_interno_provedor"}, 503: {"Failed", "erro_interno_provedor"}, 504: {"Failed", "erro_interno_provedor"}, 505: {"Failed", "erro_interno_provedor"}, 507: {"Failed", "erro_interno_provedor"}, 508: {"Failed", "erro_interno_provedor"}, 801: {"Failed", "dados_invalidos"}, 802: {"Failed", "dados_invalidos"},
-}
-
 func first(a, b string) string {
 	if a != "" {
 		return a
 	}
 	return b
 }
+
 func sanitize(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -2108,6 +1423,7 @@ func ValidateEncryptionConfig() error {
 	_, err := key()
 	return err
 }
+
 func encrypt(v string) (string, error) {
 	k, err := key()
 	if err != nil {
@@ -2127,6 +1443,7 @@ func encrypt(v string) (string, error) {
 	}
 	return base64.StdEncoding.EncodeToString(append(nonce, gcm.Seal(nil, nonce, []byte(v), nil)...)), nil
 }
+
 func decrypt(v string) (string, error) {
 	k, err := key()
 	if err != nil {

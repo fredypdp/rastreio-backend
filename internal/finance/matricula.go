@@ -170,8 +170,8 @@ func (s *Service) validateConfiguracaoMatricula(ctx context.Context, in *Matricu
 		seen[m] = true
 		in.MetodosPagamento[i] = m
 	}
-	if _, err := s.loadCredential(ctx, ContextoAcademia, in.CodigoAcademia); err != nil {
-		return errors.New("não é possível habilitar matrícula sem credenciais AppyPay da academia")
+	if err := s.validarMetodosDoProvedor(ctx, in.CodigoAcademia, "matrícula", in.MetodosPagamento); err != nil {
+		return err
 	}
 	var anosRaw []byte
 	if err := s.client.DB().QueryRowContext(ctx, `SELECT anos_academicos FROM projection_academias WHERE codigo_academia=$1`, in.CodigoAcademia).Scan(&anosRaw); err == sql.ErrNoRows {

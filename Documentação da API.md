@@ -1,8 +1,8 @@
 ---
-modificado: 18-09-2026 00:00
+modificado: 11-10-2026 00:00
 criado: 05-04-2026 13:01
 ---
-Versão atual: 2.6.0
+Versão atual: 2.7.0
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -47,7 +47,7 @@ Versão atual: 2.6.0
 16. [Admins](#16-admins)
 17. [Jobs Assíncronos](#17-jobs-assíncronos)
 18. [Batch Assíncrono](#18-batch-assíncrono)
-19. [Financeiro / AppyPay](#19-financeiro--appypay)
+19. [Financeiro / Provedores de pagamento](#19-financeiro--provedores-de-pagamento)
 20. [Armazenamento](#20-armazenamento)
 21. [Integrações Externas / Ziett (Teste)](#21-integrações-externas--ziett-teste)
 22. [Sumários](#22-sumários)
@@ -7832,39 +7832,44 @@ A documentação cobre todas as rotas registradas em `cmd/server/main.go`: públ
 
 
 
-## 19. Financeiro / AppyPay
+## 19. Financeiro / Provedores de pagamento
 
-### Processos e Regras de Negócio — Financeiro / AppyPay e mensalidades
+### Processos e Regras de Negócio — Financeiro / Provedores de pagamento e mensalidades
 
-O módulo financeiro integra o backend com a AppyPay para gerir credenciais, criar cobranças GPO/REF, gerar QR Codes GPO, consultar cobranças e receber webhooks do gateway. As operações financeiras são auditadas no ledger com aggregate `Financeiro`; as tabelas `financeiro_*` funcionam como projeções/read models e índices operacionais de consulta e idempotência.
+O módulo financeiro é dividido por **provedores de serviços de pagamento (PSP)**. O Spuri e cada academia definem **um único provedor** (sem padrão nem secundário) e as credenciais dele; criar cobranças GPO/REF, gerar QR Codes, consultar cobranças e receber webhooks seguem sempre o provedor da cobrança. Cada provedor vive no seu próprio arquivo do backend (`internal/finance/provedor_<nome>.go`) e implementa a interface `Provedor`; hoje só a **AppyPay** está implementada (`APPYPAY`), e Intelize e PayPay estão previstos. As operações financeiras são auditadas no ledger com aggregate `Financeiro`; as tabelas `financeiro_*` funcionam como projeções/read models e índices operacionais de consulta e idempotência.
 
 **Regras gerais do escopo financeiro:**
 
 - Todas as rotas `/financeiro/*` exigem autenticação. As rotas de administração aceitam somente `academia` ou admin FPP; a consulta de mensalidades e a consulta do histórico de cobranças (seção 19.8) de um estudante também podem ser feitas pelo próprio estudante autenticado.
 - Academia autenticada opera apenas no próprio contexto: o backend força `contexto_tipo="academia"` e `codigo_academia` igual ao código do token, mesmo que esses campos venham vazios no request.
-- Admin FPP pode **consultar** o contexto global `spuri` e os contextos de academias específicas. Nas configurações financeiras de uma academia — credenciais AppyPay, mensalidades, taxa de matrícula e mês de início de cobrança — somente a própria academia pode criar, atualizar, remover ou rotacionar; tentativas de escrita por admin FPP retornam `403`. O admin FPP mantém escrita nessas configurações apenas no contexto global `spuri`. Essa restrição não se aplica às operações transacionais de cobrança e QR Code, cujo comportamento administrativo permanece o mesmo.
-- Segredos AppyPay (`client_secret`, métodos de pagamento sensíveis) nunca são devolvidos em resposta; a API retorna apenas máscaras e metadados. A única exceção deliberada é o segredo de webhook (`webhook_secret`): como é gerado pelo servidor e o usuário precisa colá-lo no painel da AppyPay, ele é devolvido em texto plano apenas na criação da credencial (seção 19.1) e nas rotas dedicadas de consulta/rotação (seções 19.12 e 19.13) — nunca em `PUT`, listagem ou qualquer outra resposta.
-- `ENV=development` ou `ENV=test` usa o gateway TEST; `ENV=production` usa o gateway PROD. O ambiente persistido em credenciais e cobranças segue essa resolução do backend.
-- Cada cobrança ou QR Code exige credenciais ativas para o contexto resolvido antes de chamar a AppyPay.
+- Admin FPP pode **consultar** o contexto global `spuri` e os contextos de academias específicas. Nas configurações financeiras de uma academia — provedor de pagamento e credenciais, mensalidades, taxa de matrícula e mês de início de cobrança — somente a própria academia pode criar, atualizar, remover, definir ou rotacionar; tentativas de escrita por admin FPP retornam `403`. O admin FPP mantém escrita nessas configurações apenas no contexto global `spuri`. Essa restrição não se aplica às operações transacionais de cobrança e QR Code, cujo comportamento administrativo permanece o mesmo.
+- Segredos de provedor (ex.: `client_secret` e os métodos de pagamento da AppyPay) nunca são devolvidos em resposta; a API retorna apenas máscaras (`credenciais_mascaradas`) e metadados, e campos marcados como `secreto` no catálogo (19.27) nem aparecem mascarados. A única exceção deliberada é o segredo de webhook (`webhook_secret`), nos provedores que autenticam webhooks por segredo (`usa_segredo_webhook=true`): como é gerado pelo servidor e o usuário precisa colá-lo no painel do provedor, ele é devolvido em texto plano apenas na criação da credencial (seção 19.1) e nas rotas dedicadas de consulta/rotação (seções 19.12 e 19.13) — nunca em `PUT`, listagem ou qualquer outra resposta.
+- `ENV=development` ou `ENV=test` usa o ambiente de teste do provedor (AppyPay: gateway TEST); `ENV=production` usa o de produção. O ambiente persistido em credenciais e cobranças segue essa resolução do backend. No arranque, cada provedor valida a configuração de ambiente de que depende (AppyPay: `APPYPAY_RESOURCE`).
+- Cada cobrança ou QR Code **novo** exige, no contexto resolvido, um provedor ativo com credenciais configuradas e que suporte o método pedido, antes de chamar o provedor; caso contrário a resposta é `404` (sem provedor/credenciais) ou `400` (método indisponível no provedor ativo).
 - Todo valor monetário do módulo usa `float64`, em conformidade com o `number<double>` da AppyPay. Valores de entrada devem ter no máximo duas casas decimais; antes de chamar o gateway o backend aplica arredondamento *half away from zero* a duas casas, e comparações monetárias usam tolerância de meio cêntimo. Os futuros campos `ValorMensalidade`, `ValorMatricula` e equivalentes devem reutilizar esse mesmo contrato.
-- O cancelamento de uma cobrança REF, GPO ou QR Code é exclusivamente interno ao Spuri: a AppyPay não documenta endpoint de cancelamento para esses métodos. Por isso, o cancelamento deixa de exibir/cobrar pela plataforma, mas não invalida tecnicamente uma referência ou QR já emitido no banco/gateway até a expiração; qualquer sucesso detectado depois dele é registrado como conflito para reconciliação manual FPP.
-- Os webhooks são públicos por necessidade do gateway, mas autenticados pelo segredo de webhook gerado automaticamente na criação da credencial, enviado pela AppyPay num único cabeçalho HTTP fixo para toda a plataforma (`webhook_header_name`, sempre `X-Spuri-Webhook-Secret`). Eventos aceitos ou duplicados respondem `200` e são tratados de forma idempotente pelo identificador do evento.
+- O cancelamento de uma cobrança REF, GPO ou QR Code é exclusivamente interno ao Spuri: a AppyPay (único provedor implementado) não documenta endpoint de cancelamento para esses métodos. Por isso, o cancelamento deixa de exibir/cobrar pela plataforma, mas não invalida tecnicamente uma referência ou QR já emitido no banco/gateway até a expiração; qualquer sucesso detectado depois dele é registrado como conflito para reconciliação manual FPP.
+- Os webhooks são públicos por necessidade do provedor, mas autenticados pelo próprio provedor: na AppyPay, pelo segredo de webhook gerado automaticamente na criação da credencial, enviado num único cabeçalho HTTP fixo para toda a plataforma (`webhook_header_name`, sempre `X-Spuri-Webhook-Secret`). Só as credenciais **do provedor do webhook** são candidatas — o segredo de um provedor nunca autentica notificações de outro. As rotas são `/webhooks/<slug do provedor>/<método>` (AppyPay: `/webhooks/appypay/gpo` e `/webhooks/appypay/ref`, inalteradas). Eventos aceitos ou duplicados respondem `200` e são tratados de forma idempotente por `(provedor, identificador do evento)`.
+- **Provedor da cobrança e mecanismo retroativo:** toda cobrança grava o provedor que a emitiu (campo `provedor` nas respostas e no ledger; `EXTERNO` para pagamentos registrados fora da plataforma). Trocar o provedor ativo (19.28) afeta só as cobranças **novas**: consulta, cancelamento, conferência ao vivo, webhook e pagamento externo de uma cobrança já emitida usam sempre o provedor e as credenciais da própria cobrança, mesmo que o contexto já tenha outro provedor ativo. As credenciais do provedor anterior são mantidas, e **não podem ser removidas (`409`) enquanto o provedor tiver cobranças pendentes** (não terminais) no contexto (19.23).
+- **Eventos do ledger:** os eventos de provedor têm nomes neutros (`CredenciaisProvedorConfiguradas`, `CredenciaisProvedorRemovidas`, `SegredoWebhookProvedorRotacionado`, `ProvedorPagamentoDefinido`, `CobrancaSolicitada`, `CobrancaCriada`, `CobrancaFalhou`, `CobrancaConsultada`, `CobrancaCancelada`, `CobrancaConflitoPosCancelamento`, `QRCodeSolicitado`, `QRCodeGerado`, `QRCodeFalhou`, `WebhookProvedorRecebido`) e carregam o provedor no payload. Os nomes antigos com prefixo `AppyPay` continuam existindo no ledger (imutável) e são reprocessados normalmente pela projeção; eventos antigos sem o campo `provedor` são tratados como `APPYPAY`.
 - A taxa de matrícula é configurada pela própria academia em `/financeiro/matriculas/configuracoes` (seção 19.21); admin FPP pode apenas consultá-la. A cobrança em si nunca é criada por uma rota de `/financeiro/*`: ela nasce quando o próprio candidato aprovado paga pelas rotas públicas da seção 9, especialmente 9.10 e 9.11.
 - Erros das rotas autenticadas seguem o envelope global `{error, message, request_id, details?}`. Webhooks públicos retornam apenas status HTTP para reduzir acoplamento com o gateway.
 
 | Método | Rota | Escopo resumido |
 |---|---|---|
-| `POST` | `/financeiro/appypay/credenciais` | Cria credenciais para a própria academia ou, para admin FPP, somente `spuri`. |
-| `PUT` | `/financeiro/appypay/credenciais/:id` | Substitui credencial da própria academia ou, para admin FPP, somente do contexto `spuri`. |
-| `GET` | `/financeiro/appypay/credenciais` | Lista credenciais mascaradas por contexto autorizado. |
-| `GET` | `/financeiro/appypay/credenciais/:id/webhook-secret` | Consulta o segredo de webhook atual (texto plano) de uma credencial. |
-| `POST` | `/financeiro/appypay/credenciais/:id/webhook-secret/rotacionar` | Gera novo segredo da própria academia ou, para admin FPP, somente de `spuri`. |
-| `POST` | `/financeiro/appypay/cobrancas` | Cria cobrança AppyPay GPO ou REF genérica. |
-| `POST` | `/financeiro/appypay/qr-codes` | Gera QR Code GPO e devolve `qrCodeArr` em base64 quando enviado pela AppyPay. |
-| `GET` | `/financeiro/appypay/cobrancas/:id` | Consulta cobrança por id AppyPay ou `merchantTransactionId`. |
+| `GET` | `/financeiro/provedores` | Catálogo dos provedores implementados: campos de credencial, métodos suportados, webhooks (19.27). |
+| `GET` | `/financeiro/provedor` | Provedor ativo do contexto e estado de cada provedor (credenciais, cobranças pendentes) (19.28). |
+| `PUT` | `/financeiro/provedor` | Define o provedor único das cobranças novas do contexto (19.28). |
+| `POST` | `/financeiro/credenciais` | Cria credenciais de um provedor para a própria academia ou, para admin FPP, somente `spuri`. |
+| `PUT` | `/financeiro/credenciais/:id` | Substitui credencial da própria academia ou, para admin FPP, somente do contexto `spuri`. |
+| `GET` | `/financeiro/credenciais` | Lista credenciais mascaradas (de todos os provedores) por contexto autorizado. |
+| `GET` | `/financeiro/credenciais/:id/webhook-secret` | Consulta o segredo de webhook atual (texto plano) de uma credencial. |
+| `POST` | `/financeiro/credenciais/:id/webhook-secret/rotacionar` | Gera novo segredo da própria academia ou, para admin FPP, somente de `spuri`. |
+| `POST` | `/financeiro/cobrancas` | Cria cobrança GPO ou REF genérica no provedor ativo. |
+| `POST` | `/financeiro/qr-codes` | Gera QR Code (`GPO_QR`) no provedor ativo e devolve `qrCodeArr` em base64 quando enviado pelo provedor. |
+| `GET` | `/financeiro/cobrancas/:id` | Consulta cobrança por id do provedor, id interno ou `merchantTransactionId`. |
 | `GET` | `/financeiro/cobrancas` | Lista cobranças (mensalidade, matrícula, avulsa) do contexto autorizado, com filtros e paginação. |
 | `GET` | `/financeiro/cobrancas/estudante/:codigo` | Lista todas as cobranças de um estudante, em qualquer estado — acessível ao próprio estudante. |
-| `POST` | `/financeiro/appypay/cobrancas/:id/cancelar` | Cancela localmente uma cobrança pendente do próprio contexto. |
+| `POST` | `/financeiro/cobrancas/:id/cancelar` | Cancela localmente uma cobrança pendente do próprio contexto. |
 | `POST` | `/financeiro/mensalidades/configuracoes` | A própria academia privada versiona valor e mês final de cobrança por ano/curso. |
 | `GET` | `/financeiro/mensalidades/configuracoes` | Lista a configuração vigente de mensalidade de uma academia. |
 | `POST` | `/financeiro/mensalidades/inicio-cobranca` | A própria academia define mês inicial excepcional ao entrar no ano letivo em curso. |
@@ -7874,29 +7879,34 @@ O módulo financeiro integra o backend com a AppyPay para gerir credenciais, cri
 | `POST` | `/financeiro/matriculas/configuracoes` | A própria academia versiona valor e métodos da taxa de matrícula por nível/ano/curso. |
 | `PUT` | `/financeiro/matriculas/configuracoes` | Idêntico ao `POST` acima — mesma rota, mesmo efeito (nova versão da própria academia). |
 | `GET` | `/financeiro/matriculas/configuracoes` | Lista as configurações vigentes de taxa de matrícula de uma academia. |
-| `DELETE` | `/financeiro/appypay/credenciais` | Remove credenciais da própria academia ou, para admin FPP, somente de `spuri`. |
+| `DELETE` | `/financeiro/credenciais` | Remove as credenciais de um provedor da própria academia ou, para admin FPP, somente de `spuri` (`409` com cobranças pendentes). |
 | `DELETE` | `/financeiro/mensalidades/configuracoes` | A própria academia remove a configuração vigente sem apagar o histórico de preço cobrado. |
 | `DELETE` | `/financeiro/mensalidades/inicio-cobranca` | A própria academia remove a exceção de início de cobrança, voltando ao mês natural. |
 | `DELETE` | `/financeiro/matriculas/configuracoes` | A própria academia remove a configuração vigente de taxa de matrícula. |
-| `POST` | `/webhooks/appypay/gpo` | Recebe webhook público AppyPay para eventos GPO. |
-| `POST` | `/webhooks/appypay/ref` | Recebe webhook público AppyPay para eventos REF. |
+| `POST` | `/webhooks/appypay/gpo` | Recebe webhook público da AppyPay para eventos GPO. |
+| `POST` | `/webhooks/appypay/ref` | Recebe webhook público da AppyPay para eventos REF. |
 
-#### 19.1 POST /financeiro/appypay/credenciais
+**Rotas deprecadas (aliases, Tarefa 119):** `/financeiro/appypay/credenciais*` (POST, PUT `:id`, GET, DELETE, `webhook-secret`, `webhook-secret/rotacionar`), `/financeiro/appypay/cobrancas`, `/financeiro/appypay/qr-codes`, `/financeiro/appypay/cobrancas/:id`, `.../cancelar` e `.../pago-externamente` continuam registradas apenas para o frontend anterior à Tarefa 119 durante o deploy. As de cobrança chamam exatamente os mesmos handlers das rotas neutras. As de credenciais falam só com o provedor `APPYPAY` e mantêm o formato antigo (ver 19.29). Serão removidas numa tarefa futura.
 
-**Escopo da rota:** configuração inicial de credenciais AppyPay de um contexto financeiro. Use para cadastrar o contexto global `spuri` ou a credencial de uma academia. Não consulta saldos, não cria cobrança e não retorna segredos em claro.
+#### 19.1 POST /financeiro/credenciais
+
+**Escopo da rota:** configuração de credenciais de **um provedor** para um contexto financeiro. Use para cadastrar o contexto global `spuri` ou a credencial de uma academia. Não consulta saldos, não cria cobrança e não retorna segredos em claro. O formulário de credenciais deve ser montado a partir do catálogo (19.27): os campos variam por provedor.
 
 **Proteção:** autenticado + academia dona do próprio contexto ou admin FPP exclusivamente para o contexto `spuri`. Para academia, `contexto_tipo` e `codigo_academia` são resolvidos pelo token. Admin FPP recebe `403` ao tentar configurar credenciais de uma academia.
 
-**Request JSON:**
+**Request JSON (provedor `APPYPAY`):**
 
 ```json
 {
   "contexto_tipo": "academia",
   "codigo_academia": "LDA20261",
-  "client_id": "appy-client-id",
-  "client_secret": "appy-client-secret",
-  "gpo_payment_method": "GPO_METHOD_ID",
-  "ref_payment_method": "REF_METHOD_ID"
+  "provedor": "APPYPAY",
+  "credenciais": {
+    "client_id": "appy-client-id",
+    "client_secret": "appy-client-secret",
+    "gpo_method": "GPO_METHOD_ID",
+    "ref_method": "REF_METHOD_ID"
+  }
 }
 ```
 
@@ -7908,9 +7918,13 @@ O módulo financeiro integra o backend com a AppyPay para gerir credenciais, cri
   "contexto_tipo": "academia",
   "codigo_academia": "LDA20261",
   "ambiente": "test",
-  "client_id_mask": "appy**********id",
-  "gpo_payment_method_mask": "GPO_**********_ID",
-  "ref_payment_method_mask": "REF_**********_ID",
+  "provedor": "APPYPAY",
+  "credenciais_mascaradas": {
+    "client_id": "****d-id",
+    "gpo_method": "****D_ID",
+    "ref_method": "****D_ID"
+  },
+  "ativo": true,
   "webhook_header_name": "X-Spuri-Webhook-Secret",
   "webhook_secret": "aB3xY9kLm2PqRtZ",
   "updated_at": "2026-08-08T12:00:00Z"
@@ -7919,32 +7933,33 @@ O módulo financeiro integra o backend com a AppyPay para gerir credenciais, cri
 
 **Regras de negócio:**
 
-- `client_id`, `client_secret`, `gpo_payment_method` e `ref_payment_method` são obrigatórios. `resource` não é enviado neste endpoint: é lido da variável de ambiente `APPYPAY_RESOURCE`, com o mesmo valor para todas as academias e para o Spuri no mesmo ambiente.
-- O segredo de webhook não é enviado pelo cliente: o backend gera automaticamente um valor alfanumérico de 15 caracteres na criação da credencial e devolve-o em texto plano apenas nesta resposta (campo `webhook_secret`), para o usuário colar no painel de webhooks da AppyPay. O nome do cabeçalho HTTP (`webhook_header_name`) é fixo para toda a plataforma (`X-Spuri-Webhook-Secret`) e não é mais configurável por credencial — a AppyPay confirmou que o painel deles só oferece um único par nome/valor de cabeçalho HTTP, por isso também não existe modo de autenticação alternativo (ex.: Basic Auth) para o webhook.
+- `provedor` é obrigatório e precisa existir no catálogo (`400` caso contrário). `credenciais` é indexado pelas chaves de `campos_credenciais` do provedor; o provedor valida presença e formato. Na AppyPay, `client_id`, `client_secret`, `gpo_method` (começa por `GPO_`) e `ref_method` (começa por `REF_`) são obrigatórios. `resource` não é enviado neste endpoint: é lido da variável de ambiente `APPYPAY_RESOURCE`, com o mesmo valor para todas as academias e para o Spuri no mesmo ambiente.
+- Configurar credenciais **não** troca o provedor ativo, exceto quando o contexto ainda não tem nenhum provedor definido: nesse caso o provedor configurado passa a ser o ativo (`ativo: true`). Para trocar de provedor use `PUT /financeiro/provedor` (19.28). Um contexto pode ter credenciais de vários provedores ao mesmo tempo (uma por provedor e ambiente); só um é o ativo.
+- Nos provedores com `usa_segredo_webhook=true` (AppyPay), o segredo de webhook não é enviado pelo cliente: o backend gera automaticamente um valor alfanumérico de 15 caracteres na criação da credencial e devolve-o em texto plano apenas nesta resposta (campo `webhook_secret`), para o usuário colar no painel de webhooks do provedor. O nome do cabeçalho HTTP (`webhook_header_name`) é fixo para toda a plataforma (`X-Spuri-Webhook-Secret`) — a AppyPay confirmou que o painel deles só oferece um único par nome/valor de cabeçalho HTTP, por isso não existe modo de autenticação alternativo (ex.: Basic Auth). Provedores que não usam segredo não devolvem `webhook_secret` nem `webhook_header_name`.
 - Uma academia não pode criar credenciais para `spuri` nem para outra academia.
 - Admin FPP não pode criar credenciais de academia; pode configurar somente as credenciais do contexto global `spuri`.
-- O backend cifra segredos em armazenamento próprio e grava no ledger apenas metadados/máscaras.
+- O backend cifra segredos em armazenamento próprio (`financeiro_segredos_provedor`) e grava no ledger apenas metadados/máscaras (`CredenciaisProvedorConfiguradas`).
 
-#### 19.2 PUT /financeiro/appypay/credenciais/:id
+#### 19.2 PUT /financeiro/credenciais/:id
 
-**Escopo da rota:** atualização/substituição completa dos dados de conta AppyPay (`client_id`, `client_secret`, métodos GPO/REF) da credencial identificada por `:id`. Não altera o segredo de webhook — para isso, use `POST .../webhook-secret/rotacionar` (seção 19.13).
+**Escopo da rota:** atualização/substituição completa dos dados de conta do provedor (campos de `credenciais`) da credencial identificada por `:id`. Não altera o segredo de webhook — para isso, use `POST .../webhook-secret/rotacionar` (seção 19.13). O provedor de uma credencial existente não muda: o `provedor` do corpo tem de ser o da credencial.
 
 **Proteção:** autenticado + academia dona do próprio contexto ou admin FPP exclusivamente quando a credencial pertence ao contexto `spuri`. O `id` precisa ser UUID válido; admin FPP recebe `403` para atualizar credencial de academia.
 
-**Request JSON:** igual ao `POST /financeiro/appypay/credenciais`.
+**Request JSON:** igual ao `POST /financeiro/credenciais`.
 
-**Response 200:** igual ao `POST /financeiro/appypay/credenciais`, com o mesmo `id` informado na URL e `updated_at` atualizado.
+**Response 200:** igual ao `POST /financeiro/credenciais` (sem `webhook_secret`), com o mesmo `id` informado na URL e `updated_at` atualizado.
 
 **Regras de negócio:**
 
 - A atualização revalida todas as regras do cadastro de credenciais; envie o conjunto completo de campos obrigatórios.
-- A atualização é sempre uma substituição completa dos dados de conta (`client_id`, `client_secret`, métodos GPO/REF); o segredo de webhook nunca é alterado por este endpoint — ele só muda por rotação explícita (`POST .../webhook-secret/rotacionar`, seção 19.13). `resource` continua fora do corpo da requisição e vem de `APPYPAY_RESOURCE`.
+- A atualização é sempre uma substituição completa dos dados de conta; o segredo de webhook nunca é alterado por este endpoint — ele só muda por rotação explícita (`POST .../webhook-secret/rotacionar`, seção 19.13).
 - A rota não expõe o valor antigo nem o novo valor dos segredos.
 - Academia só pode manter o escopo no próprio contexto; mudança para `spuri` ou outra academia é bloqueada por autorização.
 
-#### 19.3 GET /financeiro/appypay/credenciais
+#### 19.3 GET /financeiro/credenciais
 
-**Escopo da rota:** leitura de credenciais mascaradas para telas administrativas/operacionais. Não testa credenciais, não devolve segredos e não cria cobrança.
+**Escopo da rota:** leitura de credenciais mascaradas, de todos os provedores do contexto, para telas administrativas/operacionais. Não testa credenciais, não devolve segredos e não cria cobrança.
 
 **Proteção:** autenticado + academia ou admin FPP.
 
@@ -7954,6 +7969,7 @@ O módulo financeiro integra o backend com a AppyPay para gerir credenciais, cri
 |---|---|---|---|
 | `contexto_tipo` | string | Não | `spuri` ou `academia`. Para academia autenticada é forçado para `academia`. |
 | `codigo_academia` | string | Não | Código da academia. Para academia autenticada é forçado para o código do token. |
+| `provedor` | string | Não | Restringe a um provedor (ex.: `APPYPAY`). |
 
 **Response 200:**
 
@@ -7964,9 +7980,9 @@ O módulo financeiro integra o backend com a AppyPay para gerir credenciais, cri
     "contexto_tipo": "academia",
     "codigo_academia": "LDA20261",
     "ambiente": "test",
-    "client_id_mask": "appy**********id",
-    "gpo_payment_method_mask": "GPO_**********_ID",
-    "ref_payment_method_mask": "REF_**********_ID",
+    "provedor": "APPYPAY",
+    "credenciais_mascaradas": { "client_id": "****d-id", "gpo_method": "****D_ID", "ref_method": "****D_ID" },
+    "ativo": true,
     "webhook_header_name": "X-Spuri-Webhook-Secret",
     "updated_at": "2026-08-08T12:00:00Z"
   }
@@ -7975,13 +7991,15 @@ O módulo financeiro integra o backend com a AppyPay para gerir credenciais, cri
 
 **Regras de negócio:**
 
-- Academias sempre recebem somente a própria credencial.
+- Academias sempre recebem somente as próprias credenciais.
 - Admin FPP pode filtrar por contexto; sem filtro, recebe as credenciais autorizadas pela consulta.
-- Máscaras não devem ser usadas como segredos pelo cliente; rotação de `client_secret`/métodos exige `PUT` com os segredos reais. O segredo de webhook tem rotação própria (`POST .../credenciais/:id/webhook-secret/rotacionar`, seção 19.13) e nunca aparece mascarado aqui — só em texto pleno pelas rotas dedicadas (seções 19.1, 19.12 e 19.13).
+- `ativo` indica que aquele é o provedor definido para o contexto da credencial; o frontend usa-o para saber se o contexto já pode cobrar.
+- Credenciais gravadas antes da Tarefa 119 (campos planos da AppyPay no ledger) são devolvidas já no formato neutro, com `provedor: "APPYPAY"`.
+- Máscaras não devem ser usadas como segredos pelo cliente; rotação de segredos do provedor exige `PUT` com os valores reais. O segredo de webhook tem rotação própria (`POST .../credenciais/:id/webhook-secret/rotacionar`, seção 19.13) e nunca aparece mascarado aqui — só em texto pleno pelas rotas dedicadas (seções 19.1, 19.12 e 19.13).
 
-#### 19.4 POST /financeiro/appypay/cobrancas
+#### 19.4 POST /financeiro/cobrancas
 
-**Escopo da rota:** cria uma cobrança AppyPay genérica para pagamento GPO ou REF no contexto autorizado. A rota encaminha ao gateway os campos de cobrança e persiste o resultado para idempotência e consulta posterior.
+**Escopo da rota:** cria uma cobrança genérica para pagamento GPO ou REF no contexto autorizado, **pelo provedor ativo do contexto** (a rota antiga `POST /financeiro/appypay/cobrancas` é um alias deprecado). A rota encaminha ao provedor os campos de cobrança e persiste o resultado para idempotência e consulta posterior. Os objetos `paymentInfo`, `options` e `notify` são sacos de extensão interpretados pelo provedor (nomes e formato da AppyPay, hoje o único provedor implementado).
 
 **Proteção:** autenticado + academia do próprio contexto ou admin FPP.
 
@@ -7994,7 +8012,7 @@ O módulo financeiro integra o backend com a AppyPay para gerir credenciais, cri
 | `amount` | número (`float64`) | Sim | Valor da cobrança, estritamente maior que zero, com no máximo duas casas decimais. O contrato segue `number<double>` da AppyPay. |
 | `currency` | string | Não | Moeda da cobrança. Aceita somente `AOA`; se omitida, o backend usa `AOA`. |
 | `description` | string | Sim | Descrição não vazia da cobrança, por exemplo a mensalidade ou o serviço cobrado. |
-| `merchantTransactionId` | string | Não | Identificador externo da transação. Deve ser alfanumérico, sem espaços ou símbolos, com no máximo 15 caracteres. Se omitido, é gerado pelo backend. Reutilize o mesmo valor ao repetir uma tentativa: ele é a chave de idempotência global e também pode ser usado no `GET /financeiro/appypay/cobrancas/:id`. |
+| `merchantTransactionId` | string | Não | Identificador externo da transação. Deve ser alfanumérico, sem espaços ou símbolos, com no máximo 15 caracteres. Se omitido, é gerado pelo backend. Reutilize o mesmo valor ao repetir uma tentativa: ele é a chave de idempotência global e também pode ser usado no `GET /financeiro/cobrancas/:id`. |
 | `paymentMethod` | string | Sim | Método a usar: `GPO`, `REF`, ou o identificador configurado na credencial que comece por `GPO_` ou `REF_`. O backend resolve `GPO`/`REF` para o método efetivamente cadastrado nas credenciais do contexto. |
 | `paymentInfo` | objeto | Condicional | Dados específicos do método. Para GPO, `paymentInfo.phoneNumber` é obrigatório e não pode estar vazio. Para REF, ele pode ser omitido ou vazio; se tiver qualquer campo, deve conter os três campos string não vazios: `referenceNumber`, `dueDate` e `nib`. O objeto é enviado ao gateway. |
 | `options` | objeto | Não | Opções adicionais encaminhadas à AppyPay. Aceita no máximo duas chaves; os nomes e valores devem seguir o contrato do método AppyPay configurado. |
@@ -8078,20 +8096,22 @@ Neste caso, `currency` assume `AOA` e a AppyPay gera os dados de referência seg
 | Campo da resposta | Descrição |
 |---|---|
 | `id` | UUID interno da cobrança no Spuri. |
-| `provider_charge_id` | Identificador retornado pela AppyPay, quando o gateway o fornece. |
+| `provedor` | Provedor (PSP) que emitiu a cobrança, ex.: `APPYPAY`. |
+| `provider_charge_id` | Identificador retornado pelo provedor, quando ele o fornece. |
 | `merchant_transaction_id` | Identificador enviado ou gerado para a cobrança. |
-| `status` | Estado retornado pela AppyPay; se ela não retornar um estado, a API informa `criada`. |
-| `response` | Resposta bruta sanitizada da AppyPay. Seus campos podem variar por método e versão do gateway. |
+| `status` | Estado retornado pelo provedor, traduzido para o vocabulário da plataforma; se ele não retornar um estado, a API informa `criada`. |
+| `response` | Resposta bruta sanitizada do provedor. Seus campos variam por provedor, método e versão. |
 
 **Regras de negócio:**
 
-- Exige credenciais AppyPay configuradas para o contexto resolvido.
+- Exige um provedor ativo, com credenciais, no contexto resolvido, e que o provedor suporte o método (`404` sem provedor/credenciais; `400` com `método de pagamento indisponível no provedor do contexto`).
+- A resposta traz `provedor`, o PSP que emitiu a cobrança; todas as operações seguintes sobre ela seguem esse provedor (mecanismo retroativo, regras gerais).
 - `amount` deve ser positivo e ter no máximo duas casas decimais; `currency`, `description` e `paymentMethod` devem ser coerentes com o método configurado na credencial.
 - `merchantTransactionId` é a referência externa recomendada para idempotência e posterior consulta.
 - O mesmo `merchantTransactionId` devolve o resultado já persistido e não cria uma nova cobrança. Enquanto a primeira requisição ainda estiver sendo processada, a repetição recebe `409` e pode ser tentada novamente.
 - A cobrança é registrada no ledger como solicitação e, conforme resposta da AppyPay, como criada ou `Failed` (se a própria chamada HTTP à AppyPay falhar, sem chegar a existir cobrança do lado do provedor).
 
-#### 19.5 POST /financeiro/appypay/qr-codes
+#### 19.5 POST /financeiro/qr-codes
 
 **Escopo da rota:** cria uma cobrança GPO com QR Code. Use quando o cliente precisa exibir um QR Code de pagamento gerado pelo gateway. O método GPO é obtido exclusivamente das credenciais do contexto, portanto esta rota não aceita `paymentMethod` nem `paymentInfo`.
 
@@ -8167,11 +8187,12 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 | Campo da resposta | Descrição |
 |---|---|
 | `id` | UUID interno do QR Code/cobrança no Spuri. |
-| `provider_charge_id` | Identificador retornado pela AppyPay, quando disponível. |
+| `provedor` | Provedor (PSP) que emitiu o QR Code. |
+| `provider_charge_id` | Identificador retornado pelo provedor, quando disponível. |
 | `merchant_transaction_id` | Referência enviada ou gerada pela API. |
-| `status` | Estado retornado pela AppyPay; quando ausente, a API usa `criada`. |
-| `qrCodeArr` | Representação do QR Code retornada pela AppyPay, normalmente em base64. O cliente deve decodificá-la/interpretá-la conforme o formato retornado pelo gateway antes de exibir. |
-| `response` | Resposta bruta sanitizada da AppyPay, que pode conter campos adicionais próprios do gateway. |
+| `status` | Estado retornado pelo provedor; quando ausente, a API usa `criada`. |
+| `qrCodeArr` | Representação do QR Code retornada pelo provedor, normalmente em base64. O cliente deve decodificá-la/interpretá-la conforme o formato retornado pelo gateway antes de exibir. |
+| `response` | Resposta bruta sanitizada do provedor, que pode conter campos adicionais próprios dele. |
 
 **Regras de negócio:**
 
@@ -8182,9 +8203,9 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 - Datas e limites (`minAmount`, `maxTransactions`) são repassados ao gateway conforme suporte da AppyPay.
 - O QR Code também gera histórico financeiro no ledger.
 
-#### 19.6 GET /financeiro/appypay/cobrancas/:id
+#### 19.6 GET /financeiro/cobrancas/:id
 
-**Escopo da rota:** consulta uma cobrança financeira já criada, por `provider_charge_id` da AppyPay ou por `merchantTransactionId`.
+**Escopo da rota:** consulta uma cobrança financeira já criada, por `provider_charge_id` do provedor, id interno ou `merchantTransactionId`. A consulta ao vivo vai ao **provedor que emitiu a cobrança**, com as credenciais dele, mesmo que o contexto já tenha trocado de provedor (alias deprecado: `GET /financeiro/appypay/cobrancas/:id`).
 
 **Proteção:** autenticado + academia do próprio contexto ou admin FPP.
 
@@ -8215,7 +8236,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 - A consulta respeita isolamento por contexto: academia não consulta cobrança de outra academia nem do `spuri`.
 - O `:id` pode ser o identificador retornado pelo provider ou o `merchantTransactionId` informado na criação.
 - A consulta grava evento financeiro apenas quando o estado, identificador do provider ou resposta relevante mudar; consultas sem mudança não poluem o ledger.
-- Se a consulta detectar `Success` da AppyPay depois de a cobrança ter sido cancelada localmente, grava `CobrancaAppyPayConflitoPosCancelamento` e preserva o status local `cancelada`, para reconciliação manual por admin FPP.
+- Se a consulta detectar `Success` da AppyPay depois de a cobrança ter sido cancelada localmente, grava `CobrancaConflitoPosCancelamento` e preserva o status local `cancelada`, para reconciliação manual por admin FPP.
 
 #### 19.7 GET /financeiro/cobrancas
 
@@ -8343,9 +8364,9 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 **Erros comuns:** `404` estudante inexistente, `403` estudante tentando ver outro código, academia sem vínculo ou admin sem `fpp`.
 
 
-#### 19.9 POST /financeiro/appypay/cobrancas/:id/cancelar
+#### 19.9 POST /financeiro/cobrancas/:id/cancelar
 
-**Escopo da rota:** cancela localmente uma cobrança REF, GPO ou QR Code ainda não paga. Não chama endpoint de cancelamento da AppyPay, pois esse endpoint não é documentado para esses métodos.
+**Escopo da rota:** cancela localmente uma cobrança REF, GPO ou QR Code ainda não paga. Não chama endpoint de cancelamento do provedor (a AppyPay não documenta um para esses métodos). A reconsulta prévia vai ao provedor da cobrança.
 
 **Proteção:** autenticado + academia dona da própria cobrança, ou admin FPP somente quando a cobrança pertence ao contexto `spuri`. Ao contrário das demais operações financeiras, admin FPP nunca pode cancelar cobrança de academia.
 
@@ -8363,13 +8384,13 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 **Regras de negócio:**
 
-- Antes de registrar `CobrancaAppyPayCancelada`, o backend reconsulta a AppyPay. Se o estado mais recente já for `Success`, não cancela nem grava evento de cancelamento.
+- Antes de registrar `CobrancaCancelada`, o backend reconsulta o provedor da cobrança. Se o estado mais recente já for `Success`, não cancela nem grava evento de cancelamento.
 - Cobranças em qualquer estado terminal — `cancelada`, `falhada`, `Success`, `Failed`, `Cancelled` ou `Expired` — não podem ser canceladas novamente ou reabertas. Para cobrar de novo, crie uma nova cobrança com outro `merchantTransactionId`.
-- O evento `CobrancaAppyPayCancelada` é interno ao ledger Spuri. Uma referência/QR já emitido pode continuar tecnicamente pagável fora da plataforma até expirar; sucesso tardio gera `CobrancaAppyPayConflitoPosCancelamento`, sem alterar o status local cancelado.
+- O evento `CobrancaCancelada` é interno ao ledger Spuri. Uma referência/QR já emitido pode continuar tecnicamente pagável fora da plataforma até expirar; sucesso tardio gera `CobrancaConflitoPosCancelamento`, sem alterar o status local cancelado.
 
 #### 19.10 POST /webhooks/appypay/gpo
 
-**Escopo da rota:** entrada pública para notificações AppyPay do método GPO.
+**Escopo da rota:** entrada pública para notificações da AppyPay do método GPO. As rotas de webhook de cada provedor são declaradas pelo próprio provedor (`/webhooks/<slug>/<caminho>`); as URLs da AppyPay não mudaram com a Tarefa 119.
 
 **Proteção:** pública no roteamento HTTP, autenticada pelo segredo de webhook gerado pelo servidor, enviado no único cabeçalho HTTP fixo da plataforma (`webhook_header_name`, sempre `X-Spuri-Webhook-Secret`). A AppyPay confirmou que a autenticação do webhook sempre viaja por cabeçalho HTTP, nunca por query parameter — por isso este é o único método suportado.
 
@@ -8386,11 +8407,11 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 **Response 200:** corpo vazio.
 
-**Regras de negócio:** evento sem autenticação válida retorna `401`; JSON inválido ou sem identificador retorna `400`; reentregas com o mesmo identificador respondem `200` e são idempotentes. O `status` reportado é refletido na cobrança correspondente sempre que ela ainda não estiver num estado terminal — não só em sucesso: um webhook de `Failed`, `Cancelled` ou `Expired` também atualiza `status` (ver 19.7), evitando que a cobrança fique presa em `aguardando_pagamento` até uma consulta manual (19.6).
+**Regras de negócio:** só são candidatas à autenticação as credenciais do provedor da rota (AppyPay); a cobrança é localizada dentro desse provedor e a conferência ao vivo antes de confirmar um sucesso também vai a ele. Evento sem autenticação válida retorna `401`; JSON inválido ou sem identificador retorna `400`; reentregas com o mesmo identificador respondem `200` e são idempotentes. O `status` reportado é refletido na cobrança correspondente sempre que ela ainda não estiver num estado terminal — não só em sucesso: um webhook de `Failed`, `Cancelled` ou `Expired` também atualiza `status` (ver 19.7), evitando que a cobrança fique presa em `aguardando_pagamento` até uma consulta manual (19.6).
 
 #### 19.11 POST /webhooks/appypay/ref
 
-**Escopo da rota:** entrada pública para notificações AppyPay do método REF.
+**Escopo da rota:** entrada pública para notificações da AppyPay do método REF.
 
 **Proteção:** igual ao webhook GPO: autenticação pelo segredo de webhook no único cabeçalho HTTP fixo da plataforma (`webhook_header_name`, sempre `X-Spuri-Webhook-Secret`).
 
@@ -8409,7 +8430,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 **Regras de negócio:** aplica as mesmas regras de autenticação, validação mínima e idempotência do webhook GPO; o método interno é `REF`.
 
-#### 19.12 GET /financeiro/appypay/credenciais/:id/webhook-secret
+#### 19.12 GET /financeiro/credenciais/:id/webhook-secret
 
 **Escopo da rota:** consulta do segredo de webhook atual, em texto plano, de uma credencial já cadastrada.
 
@@ -8426,7 +8447,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 **Regras de negócio:** `webhook_header_name` é a constante fixa da plataforma; `id` inexistente ou fora do contexto autorizado retorna `404`, e falta de permissão retorna `403`.
 
-#### 19.13 POST /financeiro/appypay/credenciais/:id/webhook-secret/rotacionar
+#### 19.13 POST /financeiro/credenciais/:id/webhook-secret/rotacionar
 
 **Escopo da rota:** gera um novo segredo de webhook para a credencial, invalidando o anterior imediatamente.
 
@@ -8436,7 +8457,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 **Response 200:** igual à seção 19.12, com o novo valor de `webhook_secret`.
 
-**Regras de negócio:** a rotação é imediata e definitiva, e grava `SegredoWebhookAppyPayRotacionado` no ledger sem expor o valor do segredo no payload do evento.
+**Regras de negócio:** a rotação é imediata e definitiva, e grava `SegredoWebhookProvedorRotacionado` no ledger sem expor o valor do segredo no payload do evento.
 
 A obrigação mensal usa a chave estável `(codigo_estudante, codigo_academia, ano_letivo, mes)`. Só academias privadas (`type = "private"`) configuram e geram propinas. Cada mês é resolvido dinamicamente pelo preço vigente no primeiro dia daquele mês e pela turma/curso históricos do estudante no ano letivo; por isso meses antigos não mudam quando há troca posterior de turma, curso ou preço. `mes_fim_cobranca` só aceita `6` ou `7`; setembro é o início natural de fundamental/médio e outubro o de superior, e `POST /financeiro/mensalidades/inicio-cobranca` apenas encurta esse início para o par `(academia, ano_letivo)` informado. Valores seguem a regra financeira única do módulo: `float64`, duas casas, arredondamento *half away from zero*.
 
@@ -8456,7 +8477,7 @@ A obrigação mensal usa a chave estável `(codigo_estudante, codigo_academia, a
 | `curso_id` | UUID | Médio/superior | Obrigatório para `medio`/`superior` e proibido para `fundamental`; curso deve pertencer à academia, ter o mesmo `type` e oferecer o ano. |
 | `valor` | número (`float64`) | Sim | Maior que zero, no máximo duas casas decimais. |
 | `mes_fim_cobranca` | inteiro | Sim | Apenas `6` ou `7`. |
-| `metodos_pagamento` | array string | Não | Itens `GPO`, `REF` ou `GPO_QR`, sem duplicados; lista vazia desactiva pagamento de propina para a combinação. Se não vazia, exige credencial AppyPay. |
+| `metodos_pagamento` | array string | Não | Itens `GPO`, `REF` ou `GPO_QR`, sem duplicados; lista vazia desactiva pagamento de propina para a combinação. Se não vazia, exige provedor ativo com credenciais que suporte todos os métodos listados. |
 | `modo_vigencia` | string | Sim | `cobrancas_pendentes` reprecifica toda obrigação pendente sem cobrança real, inclusive meses atrasados; `a_partir_da_atualizacao` preserva o comportamento histórico e só vale para cobranças posteriores. |
 
 **Request JSON:**
@@ -8679,7 +8700,7 @@ A taxa de matrícula abaixo é apenas a configuração financeira feita pela pr�
 | `ano_academico` | string | Sim | Deve ser oferecido pela academia/curso. |
 | `curso_id` | UUID | Médio/superior | Obrigatório para `medio`/`superior` e proibido para `fundamental`; mesmas regras de vínculo curso↔academia↔ano de 19.14. |
 | `valor` | número (`float64`) | Sim | Maior que zero, no máximo duas casas decimais. |
-| `metodos_pagamento` | array string | Sim | Pelo menos um item; `GPO`, `REF` ou `GPO_QR`, sem duplicados; exige credencial AppyPay. |
+| `metodos_pagamento` | array string | Sim | Pelo menos um item; `GPO`, `REF` ou `GPO_QR`, sem duplicados; exige provedor ativo com credenciais que suporte todos os métodos listados. |
 | `modo_vigencia` | string | Sim | `cobrancas_pendentes` reprecifica solicitações aprovadas e pendentes sem cobrança real; `a_partir_da_atualizacao` só vale para novas aprovações. |
 
 **Request JSON:**
@@ -8745,23 +8766,26 @@ A taxa de matrícula abaixo é apenas a configuração financeira feita pela pr�
 
 **Regras de negócio:** devolve apenas a versão mais recente de cada combinação `(nivel, ano_academico, curso_id)`, não o histórico completo.
 
-#### 19.23 DELETE /financeiro/appypay/credenciais
+#### 19.23 DELETE /financeiro/credenciais
 
-**Escopo da rota:** remove as credenciais AppyPay vigentes de um contexto (`spuri` ou `academia`), respeitando event sourcing — nenhum evento é apagado do ledger, a remoção é registrada como um novo evento imutável.
+**Escopo da rota:** remove as credenciais vigentes de **um provedor** num contexto (`spuri` ou `academia`), respeitando event sourcing — nenhum evento é apagado do ledger, a remoção é registrada como um novo evento imutável.
 
 **Proteção:** academia dona do próprio contexto ou admin FPP exclusivamente para o contexto `spuri`. Admin FPP recebe `403` ao remover credenciais de academia.
 
 **Request JSON:**
 
 ```json
-{ "contexto_tipo": "academia", "codigo_academia": "LDA20261" }
+{ "contexto_tipo": "academia", "codigo_academia": "LDA20261", "provedor": "APPYPAY" }
 ```
 
 **Response 204:** corpo vazio.
 
-**Regras de negócio:** grava `CredenciaisAppyPayRemovidas`; o evento `CredenciaisAppyPayConfiguradas` original permanece no ledger, apenas deixa de ser o fato mais recente. A partir deste comando, qualquer tentativa de gerar cobrança nesse contexto (seções 19.4, 19.5, 19.18, 9.11) volta a ser bloqueada por ausência de credenciais, exatamente como antes de terem sido configuradas alguma vez. O cofre operacional de segredos é limpo no mesmo comando. Configurar novamente (19.1) funciona normalmente a qualquer momento depois.
+**Regras de negócio:** grava `CredenciaisProvedorRemovidas`; o evento de configuração original permanece no ledger, apenas deixa de ser o fato mais recente. O cofre operacional de segredos é limpo no mesmo comando. Configurar novamente (19.1) funciona normalmente a qualquer momento depois.
 
-**Erros comuns:** `404` nenhuma credencial configurada para o contexto no ambiente atual (inclusive ao tentar remover uma segunda vez), `403` sem permissão.
+- **Mecanismo retroativo:** a remoção é recusada com `409` enquanto o provedor tiver cobranças pendentes (não terminais) no contexto — sem as credenciais não haveria como consultar, cancelar nem autenticar os webhooks delas. A mensagem informa quantas são. Depois de resolvidas (pagas, falhadas, expiradas ou canceladas) a remoção passa a ser permitida.
+- Se o provedor removido era o ativo, o contexto fica sem provedor ativo e qualquer tentativa de gerar cobrança nova (seções 19.4, 19.5, 19.18, 9.11) volta a ser bloqueada, exatamente como antes de haver provedor. Remover o provedor que **não** é o ativo não altera o ativo.
+
+**Erros comuns:** `404` nenhuma credencial do provedor configurada para o contexto no ambiente atual (inclusive ao tentar remover uma segunda vez), `403` sem permissão, `409` provedor com cobranças pendentes, `400` provedor desconhecido.
 
 #### 19.24 DELETE /financeiro/mensalidades/configuracoes
 
@@ -8831,7 +8855,7 @@ A taxa de matrícula abaixo é apenas a configuração financeira feita pela pr�
 
 **Erros comuns:** `404` nenhuma configuração ativa para o escopo (inclusive numa segunda remoção), `403` sem permissão.
 
-Nas rotas de `/financeiro/*` (excepto o fluxo público 9.9–9.12), `404` só representa recurso referenciado inexistente, `409` só representa operação equivalente já em processamento por idempotência do mesmo `merchantTransactionId`, e `503` só representa falha de comunicação com a AppyPay. Qualquer outra violação de regra de negócio — mesmo mensagens que soem como conflito, por exemplo mensalidade com cobrança aberta ou cobrança já paga e não cancelável — responde `400`; não infira `409` pelo texto da mensagem.
+Nas rotas de `/financeiro/*` (excepto o fluxo público 9.9–9.12), `404` só representa recurso referenciado inexistente, `409` só representa operação equivalente já em processamento por idempotência do mesmo `merchantTransactionId`, e `503` só representa falha de comunicação com o provedor de pagamento. Qualquer outra violação de regra de negócio — mesmo mensagens que soem como conflito, por exemplo mensalidade com cobrança aberta ou cobrança já paga e não cancelável — responde `400`; não infira `409` pelo texto da mensagem.
 
 **Erros comuns das rotas autenticadas:**
 
@@ -8842,10 +8866,95 @@ Nas rotas de `/financeiro/*` (excepto o fluxo público 9.9–9.12), `404` só re
 | `403` | Usuário autenticado tenta operar contexto sem permissão. |
 | `404` | Credencial/cobrança inexistente ou não encontrada no contexto permitido. |
 | `409` | Uma cobrança com o mesmo `merchantTransactionId` ainda está sendo processada. |
-| `503` | Falha de comunicação, autenticação ou resposta inválida da AppyPay; tente novamente mais tarde. |
+| `503` | Falha de comunicação, autenticação ou resposta inválida do provedor de pagamento; tente novamente mais tarde. |
 | `500` | Falha interna não tratada do serviço financeiro. |
 
 ---
+
+#### 19.27 GET /financeiro/provedores
+
+**Escopo da rota:** catálogo público (sem segredos) dos provedores de pagamento implementados no backend. É a fonte para o frontend montar o formulário de credenciais e saber os métodos suportados — o frontend não conhece os campos de nenhum provedor.
+
+**Proteção:** autenticado + academia ou admin FPP.
+
+**Response 200:**
+
+```json
+[
+  {
+    "id": "APPYPAY",
+    "nome": "AppyPay",
+    "slug": "appypay",
+    "metodos": ["REF", "GPO", "GPO_QR"],
+    "campos_credenciais": [
+      { "chave": "client_id", "rotulo": "Client ID", "obrigatorio": true, "secreto": false },
+      { "chave": "client_secret", "rotulo": "Client Secret", "obrigatorio": true, "secreto": true },
+      { "chave": "gpo_method", "rotulo": "Método de pagamento GPO", "obrigatorio": true, "secreto": false, "ajuda": "Começa por GPO_ (ex.: GPO_xxxxxxxx-xxxx)" },
+      { "chave": "ref_method", "rotulo": "Método de pagamento REF", "obrigatorio": true, "secreto": false, "ajuda": "Começa por REF_ (ex.: REF_xxxx)" }
+    ],
+    "usa_segredo_webhook": true,
+    "cabecalho_webhook": "X-Spuri-Webhook-Secret",
+    "webhooks": ["/webhooks/appypay/gpo", "/webhooks/appypay/ref"]
+  }
+]
+```
+
+**Regras de negócio:** `metodos` usa os métodos canônicos da plataforma (`REF`, `GPO`, `GPO_QR`); cada provedor traduz para os códigos próprios dele. Campos com `secreto=true` nunca são devolvidos pela API, nem mascarados. Provedores previstos (Intelize, PayPay) entram aqui quando forem implementados.
+
+#### 19.28 GET e PUT /financeiro/provedor
+
+**Escopo da rota:** consulta e definição do provedor de pagamento **único** de um contexto. Não existe provedor padrão nem secundário: só o provedor definido gera cobranças novas.
+
+**Proteção:** autenticado + academia dona do próprio contexto ou admin FPP. `GET`: admin FPP consulta qualquer contexto. `PUT`: academia no próprio contexto; admin FPP exclusivamente no contexto `spuri` (`403` para academia).
+
+**GET — query params:** `contexto_tipo` e `codigo_academia` (forçados pelo token para academia).
+
+**GET — Response 200:**
+
+```json
+{
+  "contexto_tipo": "academia",
+  "codigo_academia": "LDA20261",
+  "provedor_ativo": "APPYPAY",
+  "definido_em": "2026-10-11T09:00:00Z",
+  "provedores": [
+    {
+      "id": "APPYPAY", "nome": "AppyPay", "slug": "appypay", "metodos": ["REF", "GPO", "GPO_QR"],
+      "campos_credenciais": [], "usa_segredo_webhook": true,
+      "ativo": true, "credenciais_configuradas": true,
+      "credencial_id": "2f0f8d8f-27a1-4b2d-9a70-8e26d208f7e4", "cobrancas_pendentes": 0
+    }
+  ]
+}
+```
+
+`provedor_ativo` é `null` quando o contexto não definiu provedor. `cobrancas_pendentes` conta as cobranças ainda não terminais do provedor no contexto (mecanismo retroativo).
+
+**PUT — Request JSON:**
+
+```json
+{ "contexto_tipo": "academia", "codigo_academia": "LDA20261", "provedor": "APPYPAY" }
+```
+
+**PUT — Response 200:** o mesmo corpo do `GET` mais `provedor_anterior` e `cobrancas_pendentes_no_anterior`.
+
+**Regras de negócio:**
+
+- As credenciais do provedor escolhido têm de já estar configuradas no ambiente atual (19.1); caso contrário `400` ("configure as credenciais … antes de o definir como provedor"). Provedor desconhecido: `400`.
+- Definir o provedor que já é o ativo é idempotente (não grava novo evento). A troca grava `ProvedorPagamentoDefinido` no ledger.
+- **Retroativo:** trocar de provedor nunca toca nas cobranças existentes nem nas credenciais do provedor anterior. As cobranças pendentes continuam sendo consultadas, confirmadas por webhook e canceladas junto ao provedor que as emitiu; `cobrancas_pendentes_no_anterior` diz quantas são.
+- Os métodos habilitados nas configurações de propina e de taxa de matrícula (19.14, 19.21) são validados contra o provedor ativo no momento de salvar; um método que o provedor ativo não suporta é recusado (`400`). Se o provedor mudar depois para um que não suporta um método já habilitado, a geração de cobrança por esse método falha com `400` até a configuração ser ajustada.
+- As primeiras credenciais configuradas num contexto sem provedor tornam esse provedor o ativo automaticamente. Contextos que já tinham credenciais AppyPay antes da Tarefa 119 passaram a ter `APPYPAY` como provedor ativo (migration 131).
+
+#### 19.29 Rotas deprecadas `/financeiro/appypay/credenciais*`
+
+Mantidas apenas durante o deploy do frontend da Tarefa 119 (ver tabela de rotas). Falam só com o provedor `APPYPAY`.
+
+- **`POST` / `PUT :id`:** corpo antigo `{contexto_tipo, codigo_academia, client_id, client_secret, gpo_payment_method, ref_payment_method}`; o backend o traduz para o formato neutro com `provedor: "APPYPAY"`. A resposta traz todos os campos neutros (19.1) **e** os campos antigos `client_id_mask`, `gpo_payment_method_mask`, `ref_payment_method_mask` e, no `POST`, `webhook_secret`.
+- **`GET`:** devolve só as credenciais do provedor `APPYPAY`, com os mesmos campos acrescidos dos antigos.
+- **`DELETE`:** corpo `{contexto_tipo, codigo_academia}`; remove as credenciais `APPYPAY` (com a mesma proteção de `409` da 19.23).
+- **`webhook-secret` e `webhook-secret/rotacionar`:** mesmos handlers das rotas neutras.
+- **Rotas de cobrança** (`/financeiro/appypay/cobrancas`, `.../qr-codes`, `.../cobrancas/:id`, `.../cancelar`, `.../pago-externamente`): mesmos handlers das rotas neutras (19.4, 19.5, 19.6, 19.9); seguem o provedor da cobrança/do contexto, não necessariamente a AppyPay.
 
 ## 20. Armazenamento
 

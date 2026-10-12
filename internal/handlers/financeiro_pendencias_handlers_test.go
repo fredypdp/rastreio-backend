@@ -85,7 +85,7 @@ func TestIntegrationListarCobrancasAppyPayComEscopoRetornaPendenciaSintetica(t *
 		ctx.Set("user_id", uuid.New())
 		ctx.Set("user_type", "academia")
 		ctx.Set("codigo_academia", academia)
-		ListarCobrancasAppyPay(ctx)
+		ListarCobrancas(ctx)
 		return recorder
 	}
 
@@ -166,7 +166,7 @@ func TestIntegrationListarCobrancasAppyPayFiltroEstadoExcluiPendenciasSinteticas
 		ctx.Set("user_id", uuid.New())
 		ctx.Set("user_type", "academia")
 		ctx.Set("codigo_academia", academia)
-		ListarCobrancasAppyPay(ctx)
+		ListarCobrancas(ctx)
 		return recorder
 	}
 
@@ -302,7 +302,7 @@ func TestIntegrationListarCobrancasAppyPayFiltraPorMes(t *testing.T) {
 		ctx.Set("user_id", uuid.New())
 		ctx.Set("user_type", "academia")
 		ctx.Set("codigo_academia", academia)
-		ListarCobrancasAppyPay(ctx)
+		ListarCobrancas(ctx)
 		return recorder
 	}
 

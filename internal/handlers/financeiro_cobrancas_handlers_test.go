@@ -53,7 +53,7 @@ func TestIntegrationListarCobrancasAppyPayFiltraPorEscopoEEstado(t *testing.T) {
 		ctx.Set("user_id", uuid.New())
 		ctx.Set("user_type", "academia")
 		ctx.Set("codigo_academia", academia)
-		ListarCobrancasAppyPay(ctx)
+		ListarCobrancas(ctx)
 		return recorder
 	}
 
@@ -165,7 +165,7 @@ func TestIntegrationListarCobrancasAppyPayFiltroFailedIncluiFalhadaLocal(t *test
 	ctx.Set("user_id", uuid.New())
 	ctx.Set("user_type", "academia")
 	ctx.Set("codigo_academia", academia)
-	ListarCobrancasAppyPay(ctx)
+	ListarCobrancas(ctx)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("academia filtrando estado=Failed = %d: %s", recorder.Code, recorder.Body.String())
@@ -204,7 +204,7 @@ func TestIntegrationListarCobrancasAppyPayRejeitaAdminSemPermissaoFPP(t *testing
 	ctx.Set("user_id", adminID)
 	ctx.Set("user_type", "admin")
 
-	ListarCobrancasAppyPay(ctx)
+	ListarCobrancas(ctx)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("admin sem permissão fpp recebeu %d, queria 403: %s", recorder.Code, recorder.Body.String())
 	}

@@ -557,7 +557,7 @@ func efetivarVinculoMatriculaPaga(c *gin.Context, codigo string) error {
 	guardConsumed := false
 	if agg.BilheteIdentidade != nil && strings.TrimSpace(*agg.BilheteIdentidade) != "" {
 		var err error
-		biGuard, err = db.NewUniqueOperationGuard(getDbClient(c)).WithContext(c.Request.Context()).Reserve("estudante:bilhete_identidade", db.CanonicalGuardKey(*agg.BilheteIdentidade), db.UniqueGuardOptions{UserID: "appypay:matricula", UserType: "sistema", Metadata: map[string]interface{}{"origem": "pagamento_matricula"}})
+		biGuard, err = db.NewUniqueOperationGuard(getDbClient(c)).WithContext(c.Request.Context()).Reserve("estudante:bilhete_identidade", db.CanonicalGuardKey(*agg.BilheteIdentidade), db.UniqueGuardOptions{UserID: "pagamento:matricula", UserType: "sistema", Metadata: map[string]interface{}{"origem": "pagamento_matricula"}})
 		if err != nil {
 			return err
 		}
@@ -587,7 +587,7 @@ func efetivarVinculoMatriculaPaga(c *gin.Context, codigo string) error {
 		return err
 	}
 	repo := getRepository(c).WithContext(c.Request.Context())
-	audit := db.AuditContext{UserID: "appypay:matricula", UserType: "sistema", IP: c.ClientIP()}
+	audit := db.AuditContext{UserID: "pagamento:matricula", UserType: "sistema", IP: c.ClientIP()}
 	if err = repo.SaveWithAudit(est, audit); err != nil {
 		return err
 	}
