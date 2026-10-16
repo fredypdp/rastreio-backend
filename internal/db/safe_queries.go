@@ -135,6 +135,7 @@ var validEventTypes = map[string]bool{
 	// continuam aceitos porque existem para sempre no ledger).
 	"CredenciaisProvedorConfiguradas":   true,
 	"CredenciaisProvedorRemovidas":      true,
+	"CredenciaisArquivadasPurgadas":     true,
 	"SegredoWebhookProvedorRotacionado": true,
 	"ProvedorPagamentoDefinido":         true,
 	"CobrancaSolicitada":                true,

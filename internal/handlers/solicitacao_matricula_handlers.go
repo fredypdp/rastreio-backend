@@ -444,7 +444,9 @@ func ConsultarStatusSolicitacaoMatricula(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": status, "codigo_academia": academia})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": status, "codigo_academia": academia, "valor_matricula": valor.Float64, "metodos_pagamento": metodos})
+	// Só os métodos habilitados pela academia que o provedor de pagamento ativo
+	// dela suporta (Tarefa 120).
+	c.JSON(http.StatusOK, gin.H{"status": status, "codigo_academia": academia, "valor_matricula": valor.Float64, "metodos_pagamento": FinanceiroService.FiltrarMetodosPorProvedor(c.Request.Context(), academia, metodos)})
 }
 
 func BuscarSolicitacoesMatricula(c *gin.Context) {

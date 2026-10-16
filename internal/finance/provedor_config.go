@@ -32,6 +32,9 @@ type ProvedorDoContexto struct {
 	// contexto. Enquanto houver, o provedor continua sendo consultado mesmo
 	// que deixe de ser o ativo (mecanismo retroativo).
 	CobrancasPendentes int `json:"cobrancas_pendentes"`
+	// CredenciaisArquivadas: as credenciais deste provedor foram removidas com
+	// cobranças pendentes e continuam arquivadas (snapshot) só para concluí-las.
+	CredenciaisArquivadas bool `json:"credenciais_arquivadas"`
 }
 
 // ProvedorContextoView é o estado completo de provedores de um contexto.
@@ -71,6 +74,9 @@ func (s *Service) ConsultarProvedorContexto(ctx context.Context, contexto, acade
 			return ProvedorContextoView{}, err
 		}
 		item.CobrancasPendentes = pendentes
+		if arquivadas, err := s.credenciaisArquivadasDoContexto(ctx, contexto, academia, info.ID); err == nil {
+			item.CredenciaisArquivadas = arquivadas
+		}
 		view.Provedores = append(view.Provedores, item)
 	}
 	return view, nil
@@ -151,3 +157,26 @@ func (s *Service) validarMetodosDoProvedor(ctx context.Context, academia, objeto
 }
 
 func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
+
+// FiltrarMetodosPorProvedor devolve, na ordem recebida, apenas os métodos que o
+// provedor ATIVO da academia suporta — é o que o pagador (estudante) pode
+// realmente usar. Sem provedor ativo com credenciais devolve lista vazia (não
+// há como pagar). Numa falha de infraestrutura devolve os métodos recebidos: uma
+// falha transitória não esconde opções, e a geração da cobrança continua
+// validando o método.
+func (s *Service) FiltrarMetodosPorProvedor(ctx context.Context, academia string, metodos []string) []string {
+	prov, _, err := s.loadCredentialAtiva(ctx, ContextoAcademia, academia)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return []string{}
+		}
+		return metodos
+	}
+	out := make([]string, 0, len(metodos))
+	for _, m := range metodos {
+		if suportaMetodo(prov, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}

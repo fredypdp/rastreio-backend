@@ -37,7 +37,7 @@ func newDeleteJSONContext(method, path string, body any) (*gin.Context, *httptes
 // autorização que já vale para os endpoints de configuração equivalentes:
 // a academia só remove a PRÓPRIA configuração; tentar remover algo que não
 // existe retorna 404 (ErrNotFound -> financeError); removendo o que existe
-// retorna 204 e a segunda tentativa (idempotência de erro) volta a dar 404.
+// retorna 200 (com o resumo da remoção) e a segunda tentativa (idempotência de erro) volta a dar 404.
 func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	client := integrationFinanceClient(t)
@@ -59,13 +59,13 @@ func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testin
 	}
 
 	// 1) Credenciais: nada configurado ainda -> 404.
-	ctx, rec := newDeleteJSONContext(http.MethodDelete, "/financeiro/appypay/credenciais", map[string]any{
-		"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academiaDona,
+	ctx, rec := newDeleteJSONContext(http.MethodDelete, "/financeiro/credenciais", map[string]any{
+		"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academiaDona, "provedor": finance.ProvedorAppyPay,
 	})
 	setActor(ctx, academiaDona)
-	RemoverCredencialAppyPay(ctx)
+	RemoverCredencial(ctx)
 	if ctx.Writer.Status() != http.StatusNotFound {
-		t.Fatalf("RemoverCredencialAppyPay sem credencial: esperava 404, obteve %d: %s", ctx.Writer.Status(), rec.Body.String())
+		t.Fatalf("RemoverCredencial sem credencial: esperava 404, obteve %d: %s", ctx.Writer.Status(), rec.Body.String())
 	}
 
 	// Configura via o Service diretamente (mais rápido que passar pelo
@@ -81,28 +81,28 @@ func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testin
 	// Outra academia não pode remover: authorizeFinanceScope reescreve o
 	// escopo para o dela própria, então a busca por credencial nesse
 	// escopo (vazio) falha com 404 — nunca afeta a credencial da dona.
-	ctxOutra, _ := newDeleteJSONContext(http.MethodDelete, "/financeiro/appypay/credenciais", map[string]any{
-		"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academiaDona,
+	ctxOutra, _ := newDeleteJSONContext(http.MethodDelete, "/financeiro/credenciais", map[string]any{
+		"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academiaDona, "provedor": finance.ProvedorAppyPay,
 	})
 	setActor(ctxOutra, academiaOutra)
-	RemoverCredencialAppyPay(ctxOutra)
-	if ctxOutra.Writer.Status() == http.StatusNoContent {
+	RemoverCredencial(ctxOutra)
+	if ctxOutra.Writer.Status() == http.StatusOK {
 		t.Fatal("academia sem vínculo conseguiu remover credencial de outra academia")
 	}
 
-	ctx2, rec2 := newDeleteJSONContext(http.MethodDelete, "/financeiro/appypay/credenciais", map[string]any{
-		"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academiaDona,
+	ctx2, rec2 := newDeleteJSONContext(http.MethodDelete, "/financeiro/credenciais", map[string]any{
+		"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academiaDona, "provedor": finance.ProvedorAppyPay,
 	})
 	setActor(ctx2, academiaDona)
-	RemoverCredencialAppyPay(ctx2)
-	if ctx2.Writer.Status() != http.StatusNoContent {
-		t.Fatalf("RemoverCredencialAppyPay pela dona: esperava 204, obteve %d: %s", ctx2.Writer.Status(), rec2.Body.String())
+	RemoverCredencial(ctx2)
+	if ctx2.Writer.Status() != http.StatusOK {
+		t.Fatalf("RemoverCredencial pela dona: esperava 200, obteve %d: %s", ctx2.Writer.Status(), rec2.Body.String())
 	}
-	ctx3, _ := newDeleteJSONContext(http.MethodDelete, "/financeiro/appypay/credenciais", map[string]any{
-		"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academiaDona,
+	ctx3, _ := newDeleteJSONContext(http.MethodDelete, "/financeiro/credenciais", map[string]any{
+		"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academiaDona, "provedor": finance.ProvedorAppyPay,
 	})
 	setActor(ctx3, academiaDona)
-	RemoverCredencialAppyPay(ctx3)
+	RemoverCredencial(ctx3)
 	if ctx3.Writer.Status() != http.StatusNotFound {
 		t.Fatalf("segunda remoção de credencial: esperava 404, obteve %d", ctx3.Writer.Status())
 	}

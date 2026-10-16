@@ -38,7 +38,7 @@ func TestIntegrationRemoveCredentialRespeitaEventSourcing(t *testing.T) {
 		t.Fatalf("esperava 1 evento CredenciaisProvedorConfiguradas, obteve %d", eventosConfigurados)
 	}
 
-	if err := service.RemoveCredential(context.Background(), ContextoAcademia, academia, ProvedorAppyPay, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
+	if _, err := service.RemoveCredential(context.Background(), ContextoAcademia, academia, ProvedorAppyPay, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatalf("RemoveCredential não deveria falhar: %v", err)
 	}
 
@@ -79,7 +79,7 @@ func TestIntegrationRemoveCredentialRespeitaEventSourcing(t *testing.T) {
 
 	// Remover de novo (idempotência de erro) deve falhar com ErrNotFound,
 	// nunca gravar um segundo evento de remoção para algo já removido.
-	if err := service.RemoveCredential(context.Background(), ContextoAcademia, academia, ProvedorAppyPay, uuid.NewString(), "academia", "127.0.0.1"); !errors.Is(err, ErrNotFound) {
+	if _, err := service.RemoveCredential(context.Background(), ContextoAcademia, academia, ProvedorAppyPay, uuid.NewString(), "academia", "127.0.0.1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("segunda remoção deveria falhar com ErrNotFound, obteve: %v", err)
 	}
 

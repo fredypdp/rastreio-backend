@@ -888,8 +888,17 @@ func (s *Service) metodosPagamentoMensalidade(ctx context.Context, academia stri
 	return out, rows.Err()
 }
 
+// MetodosPagamentoMensalidade devolve os métodos de pagamento que o ESTUDANTE
+// pode usar para pagar a propina: os habilitados nas configurações da academia
+// que o provedor de pagamento ativo dela suporta (Tarefa 120). A validação de
+// um pagamento (metodosPagamentoMensalidade, sem filtro) continua a usar só a
+// configuração, e a geração da cobrança recusa o que o provedor não suporta.
 func (s *Service) MetodosPagamentoMensalidade(ctx context.Context, academia string) ([]string, error) {
-	return s.metodosPagamentoMensalidade(ctx, academia)
+	itens, err := s.metodosPagamentoMensalidade(ctx, academia)
+	if err != nil {
+		return nil, err
+	}
+	return s.FiltrarMetodosPorProvedor(ctx, academia, itens), nil
 }
 
 // chargeAbertaStatusExcluidos é a lista (em minúsculas) de todo status

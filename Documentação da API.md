@@ -1,8 +1,8 @@
 ---
-modificado: 11-10-2026 00:00
+modificado: 14-10-2026 00:00
 criado: 05-04-2026 13:01
 ---
-Versão atual: 2.7.0
+Versão atual: 2.8.0
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -4349,6 +4349,7 @@ GET /solicitacao-matricula/AB12CD34EF5/status HTTP/1.1
 **Regras de negócio:**
 
 - `valor_matricula` e `metodos_pagamento` só aparecem quando `status` é `aprovada_pendente_pagamento_matricula`.
+- `metodos_pagamento` traz apenas os métodos habilitados pela academia que o provedor de pagamento ativo dela suporta; sem provedor ativo com credenciais vem vazio.
 - Para `pendente`, `aprovada`, `reprovada` ou `cancelada`, a resposta traz apenas `status` e `codigo_academia`.
 - Não expõe nome, documentos nem qualquer outro dado do candidato.
 
@@ -7849,8 +7850,8 @@ O módulo financeiro é dividido por **provedores de serviços de pagamento (PSP
 - Todo valor monetário do módulo usa `float64`, em conformidade com o `number<double>` da AppyPay. Valores de entrada devem ter no máximo duas casas decimais; antes de chamar o gateway o backend aplica arredondamento *half away from zero* a duas casas, e comparações monetárias usam tolerância de meio cêntimo. Os futuros campos `ValorMensalidade`, `ValorMatricula` e equivalentes devem reutilizar esse mesmo contrato.
 - O cancelamento de uma cobrança REF, GPO ou QR Code é exclusivamente interno ao Spuri: a AppyPay (único provedor implementado) não documenta endpoint de cancelamento para esses métodos. Por isso, o cancelamento deixa de exibir/cobrar pela plataforma, mas não invalida tecnicamente uma referência ou QR já emitido no banco/gateway até a expiração; qualquer sucesso detectado depois dele é registrado como conflito para reconciliação manual FPP.
 - Os webhooks são públicos por necessidade do provedor, mas autenticados pelo próprio provedor: na AppyPay, pelo segredo de webhook gerado automaticamente na criação da credencial, enviado num único cabeçalho HTTP fixo para toda a plataforma (`webhook_header_name`, sempre `X-Spuri-Webhook-Secret`). Só as credenciais **do provedor do webhook** são candidatas — o segredo de um provedor nunca autentica notificações de outro. As rotas são `/webhooks/<slug do provedor>/<método>` (AppyPay: `/webhooks/appypay/gpo` e `/webhooks/appypay/ref`, inalteradas). Eventos aceitos ou duplicados respondem `200` e são tratados de forma idempotente por `(provedor, identificador do evento)`.
-- **Provedor da cobrança e mecanismo retroativo:** toda cobrança grava o provedor que a emitiu (campo `provedor` nas respostas e no ledger; `EXTERNO` para pagamentos registrados fora da plataforma). Trocar o provedor ativo (19.28) afeta só as cobranças **novas**: consulta, cancelamento, conferência ao vivo, webhook e pagamento externo de uma cobrança já emitida usam sempre o provedor e as credenciais da própria cobrança, mesmo que o contexto já tenha outro provedor ativo. As credenciais do provedor anterior são mantidas, e **não podem ser removidas (`409`) enquanto o provedor tiver cobranças pendentes** (não terminais) no contexto (19.23).
-- **Eventos do ledger:** os eventos de provedor têm nomes neutros (`CredenciaisProvedorConfiguradas`, `CredenciaisProvedorRemovidas`, `SegredoWebhookProvedorRotacionado`, `ProvedorPagamentoDefinido`, `CobrancaSolicitada`, `CobrancaCriada`, `CobrancaFalhou`, `CobrancaConsultada`, `CobrancaCancelada`, `CobrancaConflitoPosCancelamento`, `QRCodeSolicitado`, `QRCodeGerado`, `QRCodeFalhou`, `WebhookProvedorRecebido`) e carregam o provedor no payload. Os nomes antigos com prefixo `AppyPay` continuam existindo no ledger (imutável) e são reprocessados normalmente pela projeção; eventos antigos sem o campo `provedor` são tratados como `APPYPAY`.
+- **Provedor da cobrança, credencial emitente e mecanismo retroativo:** toda cobrança grava o provedor que a emitiu (campo `provedor` nas respostas e no ledger; `EXTERNO` para pagamentos registrados fora da plataforma) **e a credencial com que foi emitida** (`credencial_id` no evento; sem campo público). Trocar o provedor ativo (19.28) afeta só as cobranças **novas**: consulta, cancelamento, conferência ao vivo, webhook e pagamento externo de uma cobrança já emitida usam sempre o provedor e as credenciais da própria cobrança, mesmo que o contexto já tenha outro provedor ativo. As credenciais do provedor anterior são mantidas. **Remover as credenciais de um provedor nunca é bloqueado (19.23):** se ele ainda tem cobranças pendentes (não terminais) no contexto, as credenciais ficam **arquivadas (snapshot)** — saem da listagem e nunca servem para cobranças novas, mas os segredos continuam cifrados no cofre para concluir essas cobranças (consulta, cancelamento, autenticação dos webhooks) — e são descartadas quando a última pendente é resolvida.
+- **Eventos do ledger:** os eventos de provedor têm nomes neutros (`CredenciaisProvedorConfiguradas`, `CredenciaisProvedorRemovidas`, `SegredoWebhookProvedorRotacionado`, `ProvedorPagamentoDefinido`, `CobrancaSolicitada`, `CobrancaCriada`, `CobrancaFalhou`, `CobrancaConsultada`, `CobrancaCancelada`, `CobrancaConflitoPosCancelamento`, `QRCodeSolicitado`, `QRCodeGerado`, `QRCodeFalhou`, `WebhookProvedorRecebido`, `CredenciaisArquivadasPurgadas`) e carregam o provedor no payload. Os nomes antigos com prefixo `AppyPay` continuam existindo no ledger (imutável) e são reprocessados normalmente pela projeção; eventos antigos sem o campo `provedor` são tratados como `APPYPAY`.
 - A taxa de matrícula é configurada pela própria academia em `/financeiro/matriculas/configuracoes` (seção 19.21); admin FPP pode apenas consultá-la. A cobrança em si nunca é criada por uma rota de `/financeiro/*`: ela nasce quando o próprio candidato aprovado paga pelas rotas públicas da seção 9, especialmente 9.10 e 9.11.
 - Erros das rotas autenticadas seguem o envelope global `{error, message, request_id, details?}`. Webhooks públicos retornam apenas status HTTP para reduzir acoplamento com o gateway.
 
@@ -7885,8 +7886,6 @@ O módulo financeiro é dividido por **provedores de serviços de pagamento (PSP
 | `DELETE` | `/financeiro/matriculas/configuracoes` | A própria academia remove a configuração vigente de taxa de matrícula. |
 | `POST` | `/webhooks/appypay/gpo` | Recebe webhook público da AppyPay para eventos GPO. |
 | `POST` | `/webhooks/appypay/ref` | Recebe webhook público da AppyPay para eventos REF. |
-
-**Rotas deprecadas (aliases, Tarefa 119):** `/financeiro/appypay/credenciais*` (POST, PUT `:id`, GET, DELETE, `webhook-secret`, `webhook-secret/rotacionar`), `/financeiro/appypay/cobrancas`, `/financeiro/appypay/qr-codes`, `/financeiro/appypay/cobrancas/:id`, `.../cancelar` e `.../pago-externamente` continuam registradas apenas para o frontend anterior à Tarefa 119 durante o deploy. As de cobrança chamam exatamente os mesmos handlers das rotas neutras. As de credenciais falam só com o provedor `APPYPAY` e mantêm o formato antigo (ver 19.29). Serão removidas numa tarefa futura.
 
 #### 19.1 POST /financeiro/credenciais
 
@@ -7999,7 +7998,7 @@ O módulo financeiro é dividido por **provedores de serviços de pagamento (PSP
 
 #### 19.4 POST /financeiro/cobrancas
 
-**Escopo da rota:** cria uma cobrança genérica para pagamento GPO ou REF no contexto autorizado, **pelo provedor ativo do contexto** (a rota antiga `POST /financeiro/appypay/cobrancas` é um alias deprecado). A rota encaminha ao provedor os campos de cobrança e persiste o resultado para idempotência e consulta posterior. Os objetos `paymentInfo`, `options` e `notify` são sacos de extensão interpretados pelo provedor (nomes e formato da AppyPay, hoje o único provedor implementado).
+**Escopo da rota:** cria uma cobrança genérica para pagamento GPO ou REF no contexto autorizado, **pelo provedor ativo do contexto**. A rota encaminha ao provedor os campos de cobrança e persiste o resultado para idempotência e consulta posterior. Os objetos `paymentInfo`, `options` e `notify` são sacos de extensão interpretados pelo provedor (nomes e formato da AppyPay, hoje o único provedor implementado).
 
 **Proteção:** autenticado + academia do próprio contexto ou admin FPP.
 
@@ -8205,7 +8204,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 #### 19.6 GET /financeiro/cobrancas/:id
 
-**Escopo da rota:** consulta uma cobrança financeira já criada, por `provider_charge_id` do provedor, id interno ou `merchantTransactionId`. A consulta ao vivo vai ao **provedor que emitiu a cobrança**, com as credenciais dele, mesmo que o contexto já tenha trocado de provedor (alias deprecado: `GET /financeiro/appypay/cobrancas/:id`).
+**Escopo da rota:** consulta uma cobrança financeira já criada, por `provider_charge_id` do provedor, id interno ou `merchantTransactionId`. A consulta ao vivo vai ao **provedor que emitiu a cobrança**, com as credenciais dele, mesmo que o contexto já tenha trocado de provedor ou removido as credenciais (nesse caso, com o snapshot delas).
 
 **Proteção:** autenticado + academia do próprio contexto ou admin FPP.
 
@@ -8596,7 +8595,7 @@ A obrigação mensal usa a chave estável `(codigo_estudante, codigo_academia, a
 }
 ```
 
-**Regras de negócio:** `estado` é `pendente`, `pago` ou `anulado`; pagamento real prevalece sobre anulação, e reativação só muda mês anulado. `eventos_auditoria` lista IDs de eventos aplicados ao mês. `metodos_pagamento_por_academia` reflecte a configuração vigente mais recente; lista vazia significa propina desactivada para pagamento. Academia vê só a própria academia; estudante e FPP vêem todas.
+**Regras de negócio:** `estado` é `pendente`, `pago` ou `anulado`; pagamento real prevalece sobre anulação, e reativação só muda mês anulado. `eventos_auditoria` lista IDs de eventos aplicados ao mês. `metodos_pagamento_por_academia` reflecte a configuração vigente mais recente **restrita aos métodos que o provedor de pagamento ativo da academia suporta** (sem provedor ativo com credenciais a lista vem vazia: não há como pagar); lista vazia significa propina desactivada para pagamento. Academia vê só a própria academia; estudante e FPP vêem todas.
 
 **Erros comuns:** `404` estudante inexistente, `403` estudante tentando ver outro código, academia sem vínculo ou admin sem `fpp`.
 
@@ -8768,7 +8767,7 @@ A taxa de matrícula abaixo é apenas a configuração financeira feita pela pr�
 
 #### 19.23 DELETE /financeiro/credenciais
 
-**Escopo da rota:** remove as credenciais vigentes de **um provedor** num contexto (`spuri` ou `academia`), respeitando event sourcing — nenhum evento é apagado do ledger, a remoção é registrada como um novo evento imutável.
+**Escopo da rota:** remove as credenciais vigentes de **um provedor** num contexto (`spuri` ou `academia`), respeitando event sourcing — nenhum evento é apagado do ledger, a remoção é registrada como um novo evento imutável. **Nunca é bloqueada:** havendo cobranças pendentes do provedor no contexto, as credenciais ficam arquivadas (snapshot) para concluí-las.
 
 **Proteção:** academia dona do próprio contexto ou admin FPP exclusivamente para o contexto `spuri`. Admin FPP recebe `403` ao remover credenciais de academia.
 
@@ -8778,14 +8777,26 @@ A taxa de matrícula abaixo é apenas a configuração financeira feita pela pr�
 { "contexto_tipo": "academia", "codigo_academia": "LDA20261", "provedor": "APPYPAY" }
 ```
 
-**Response 204:** corpo vazio.
+**Response 200:**
 
-**Regras de negócio:** grava `CredenciaisProvedorRemovidas`; o evento de configuração original permanece no ledger, apenas deixa de ser o fato mais recente. O cofre operacional de segredos é limpo no mesmo comando. Configurar novamente (19.1) funciona normalmente a qualquer momento depois.
+```json
+{ "provedor": "APPYPAY", "cobrancas_pendentes": 2, "credenciais_arquivadas": true }
+```
 
-- **Mecanismo retroativo:** a remoção é recusada com `409` enquanto o provedor tiver cobranças pendentes (não terminais) no contexto — sem as credenciais não haveria como consultar, cancelar nem autenticar os webhooks delas. A mensagem informa quantas são. Depois de resolvidas (pagas, falhadas, expiradas ou canceladas) a remoção passa a ser permitida.
+| Campo | Descrição |
+|---|---|
+| `provedor` | Provedor cujas credenciais foram removidas. |
+| `cobrancas_pendentes` | Cobranças do provedor ainda em andamento no contexto no momento da remoção. |
+| `credenciais_arquivadas` | `true` quando havia pendentes e as credenciais ficaram arquivadas (aviso para o usuário); `false` quando tudo foi apagado. |
+
+**Regras de negócio:** grava `CredenciaisProvedorRemovidas` (com `arquivada`, `cobrancas_pendentes` e a visão mascarada das credenciais); o evento de configuração original permanece no ledger. Configurar novamente (19.1) funciona normalmente a qualquer momento depois.
+
+- **Snapshot (credenciais arquivadas).** Com pendentes, a credencial deixa a tabela ativa e passa a `financeiro_credenciais_arquivadas`; os segredos continuam no cofre, cifrados. O snapshot: (a) **só** serve para cobranças já emitidas — consulta, conferência ao vivo, cancelamento e autenticação dos webhooks do provedor — nunca para cobranças novas, para definir provedor ou aparecer na listagem; (b) é o usado pelas cobranças emitidas com aquela credencial (`credencial_id`) e, para cobranças legadas sem esse vínculo, é o mais recente do contexto + provedor; (c) convive com credenciais novas do mesmo provedor: cobranças novas usam as novas, as antigas continuam com o snapshot (é assim que se troca de conta num provedor sem perder as pendentes: **remover e cadastrar de novo**, em vez de editar a credencial, que substitui os segredos usados pelas cobranças pendentes); (d) é **descartado** — evento `CredenciaisArquivadasPurgadas` no ledger e limpeza do cofre — assim que a última cobrança que dependia dele é resolvida (paga, falhada, expirada, cancelada ou registrada como paga fora). `GET /financeiro/provedor` (19.28) mostra `credenciais_arquivadas` e `cobrancas_pendentes` por provedor.
+- Sem pendentes não há snapshot: as credenciais e os segredos são apagados de imediato.
 - Se o provedor removido era o ativo, o contexto fica sem provedor ativo e qualquer tentativa de gerar cobrança nova (seções 19.4, 19.5, 19.18, 9.11) volta a ser bloqueada, exatamente como antes de haver provedor. Remover o provedor que **não** é o ativo não altera o ativo.
+- Uma cobrança que nunca é resolvida (ex.: referência abandonada que o provedor não expira) mantém o snapshot indefinidamente; a academia pode cancelá-la (19.9) ou registrar o pagamento externo para liberá-lo.
 
-**Erros comuns:** `404` nenhuma credencial do provedor configurada para o contexto no ambiente atual (inclusive ao tentar remover uma segunda vez), `403` sem permissão, `409` provedor com cobranças pendentes, `400` provedor desconhecido.
+**Erros comuns:** `404` nenhuma credencial ativa do provedor para o contexto no ambiente atual (inclusive ao tentar remover uma segunda vez), `403` sem permissão, `400` provedor desconhecido.
 
 #### 19.24 DELETE /financeiro/mensalidades/configuracoes
 
@@ -8922,13 +8933,14 @@ Nas rotas de `/financeiro/*` (excepto o fluxo público 9.9–9.12), `404` só re
       "id": "APPYPAY", "nome": "AppyPay", "slug": "appypay", "metodos": ["REF", "GPO", "GPO_QR"],
       "campos_credenciais": [], "usa_segredo_webhook": true,
       "ativo": true, "credenciais_configuradas": true,
-      "credencial_id": "2f0f8d8f-27a1-4b2d-9a70-8e26d208f7e4", "cobrancas_pendentes": 0
+      "credencial_id": "2f0f8d8f-27a1-4b2d-9a70-8e26d208f7e4", "cobrancas_pendentes": 0,
+      "credenciais_arquivadas": false
     }
   ]
 }
 ```
 
-`provedor_ativo` é `null` quando o contexto não definiu provedor. `cobrancas_pendentes` conta as cobranças ainda não terminais do provedor no contexto (mecanismo retroativo).
+`provedor_ativo` é `null` quando o contexto não definiu provedor. `cobrancas_pendentes` conta as cobranças ainda não terminais do provedor no contexto (mecanismo retroativo). `credenciais_arquivadas` é `true` quando as credenciais do provedor foram removidas com cobranças pendentes e continuam arquivadas (snapshot, 19.23) só para concluí-las; nesse caso `credenciais_configuradas` é `false`.
 
 **PUT — Request JSON:**
 
@@ -8945,16 +8957,6 @@ Nas rotas de `/financeiro/*` (excepto o fluxo público 9.9–9.12), `404` só re
 - **Retroativo:** trocar de provedor nunca toca nas cobranças existentes nem nas credenciais do provedor anterior. As cobranças pendentes continuam sendo consultadas, confirmadas por webhook e canceladas junto ao provedor que as emitiu; `cobrancas_pendentes_no_anterior` diz quantas são.
 - Os métodos habilitados nas configurações de propina e de taxa de matrícula (19.14, 19.21) são validados contra o provedor ativo no momento de salvar; um método que o provedor ativo não suporta é recusado (`400`). Se o provedor mudar depois para um que não suporta um método já habilitado, a geração de cobrança por esse método falha com `400` até a configuração ser ajustada.
 - As primeiras credenciais configuradas num contexto sem provedor tornam esse provedor o ativo automaticamente. Contextos que já tinham credenciais AppyPay antes da Tarefa 119 passaram a ter `APPYPAY` como provedor ativo (migration 131).
-
-#### 19.29 Rotas deprecadas `/financeiro/appypay/credenciais*`
-
-Mantidas apenas durante o deploy do frontend da Tarefa 119 (ver tabela de rotas). Falam só com o provedor `APPYPAY`.
-
-- **`POST` / `PUT :id`:** corpo antigo `{contexto_tipo, codigo_academia, client_id, client_secret, gpo_payment_method, ref_payment_method}`; o backend o traduz para o formato neutro com `provedor: "APPYPAY"`. A resposta traz todos os campos neutros (19.1) **e** os campos antigos `client_id_mask`, `gpo_payment_method_mask`, `ref_payment_method_mask` e, no `POST`, `webhook_secret`.
-- **`GET`:** devolve só as credenciais do provedor `APPYPAY`, com os mesmos campos acrescidos dos antigos.
-- **`DELETE`:** corpo `{contexto_tipo, codigo_academia}`; remove as credenciais `APPYPAY` (com a mesma proteção de `409` da 19.23).
-- **`webhook-secret` e `webhook-secret/rotacionar`:** mesmos handlers das rotas neutras.
-- **Rotas de cobrança** (`/financeiro/appypay/cobrancas`, `.../qr-codes`, `.../cobrancas/:id`, `.../cancelar`, `.../pago-externamente`): mesmos handlers das rotas neutras (19.4, 19.5, 19.6, 19.9); seguem o provedor da cobrança/do contexto, não necessariamente a AppyPay.
 
 ## 20. Armazenamento
 

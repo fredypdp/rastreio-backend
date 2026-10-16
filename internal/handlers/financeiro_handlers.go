@@ -103,9 +103,6 @@ func financeError(c *gin.Context, err error) {
 		utils.RespondWithConflictError(c, "operação financeira equivalente em processamento")
 	case errors.Is(err, finance.ErrUpstream):
 		utils.RespondWithServiceUnavailable(c, err)
-	case errors.Is(err, finance.ErrCredenciaisEmUso):
-		// Mecanismo retroativo: o provedor ainda tem cobranças pendentes.
-		utils.RespondWithConflictError(c, err.Error())
 	default:
 		utils.RespondWithValidationError(c, err)
 	}

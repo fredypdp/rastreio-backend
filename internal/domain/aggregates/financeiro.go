@@ -25,6 +25,7 @@ type EventoFinanceiro struct{ BaseEvent }
 const (
 	CredenciaisProvedorConfiguradas   = "CredenciaisProvedorConfiguradas"
 	CredenciaisProvedorRemovidas      = "CredenciaisProvedorRemovidas"
+	CredenciaisArquivadasPurgadas     = "CredenciaisArquivadasPurgadas"
 	SegredoWebhookProvedorRotacionado = "SegredoWebhookProvedorRotacionado"
 	ProvedorPagamentoDefinido         = "ProvedorPagamentoDefinido"
 	CobrancaSolicitada                = "CobrancaSolicitada"

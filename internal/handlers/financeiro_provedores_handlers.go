@@ -156,8 +156,10 @@ func ListarCredenciais(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// RemoverCredencial remove as credenciais de um provedor do contexto. É
-// recusada (409) enquanto o provedor tiver cobranças pendentes no contexto.
+// RemoverCredencial remove as credenciais de um provedor do contexto. Nunca é
+// bloqueada: se o provedor tiver cobranças pendentes no contexto, as credenciais
+// ficam arquivadas (snapshot) só para concluí-las. Responde 200 com o resumo
+// (provedor, cobranças pendentes e se ficaram arquivadas).
 func RemoverCredencial(c *gin.Context) {
 	var in struct {
 		ContextoTipo   string `json:"contexto_tipo"`
@@ -181,11 +183,12 @@ func removerCredencial(c *gin.Context, contexto, academia, provedor string) {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	if err := FinanceiroService.RemoveCredential(c.Request.Context(), contexto, academia, provedor, id.String(), t, c.ClientIP()); err != nil {
+	resultado, err := FinanceiroService.RemoveCredential(c.Request.Context(), contexto, academia, provedor, id.String(), t, c.ClientIP())
+	if err != nil {
 		financeError(c, err)
 		return
 	}
-	c.Status(http.StatusNoContent)
+	c.JSON(http.StatusOK, resultado)
 }
 
 // ConsultarSegredoWebhook devolve o segredo de webhook atual em texto plano.
@@ -230,119 +233,4 @@ func RotacionarSegredoWebhook(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"webhook_secret": secret, "webhook_header_name": finance.WebhookHeaderName})
-}
-
-// ---------------------------------------------------------------------------
-// Rotas legadas /financeiro/appypay/credenciais* (DEPRECADAS).
-//
-// Mantidas para que o frontend anterior à Tarefa 119 continue funcionando
-// durante o deploy (backend primeiro, frontend depois). Falam apenas com o
-// provedor AppyPay e usam o formato antigo de payload/resposta (client_id,
-// client_secret, gpo_payment_method, ref_payment_method e as máscaras
-// correspondentes). Serão removidas numa tarefa futura, depois de o frontend
-// novo estar em produção.
-// ---------------------------------------------------------------------------
-
-type credencialAppyPayLegadaInput struct {
-	ContextoTipo     string `json:"contexto_tipo"`
-	CodigoAcademia   string `json:"codigo_academia,omitempty"`
-	Ambiente         string `json:"ambiente"`
-	ClientID         string `json:"client_id"`
-	ClientSecret     string `json:"client_secret"`
-	GPOPaymentMethod string `json:"gpo_payment_method"`
-	REFPaymentMethod string `json:"ref_payment_method"`
-}
-
-func (l credencialAppyPayLegadaInput) neutro() finance.CredentialInput {
-	return finance.CredentialInput{
-		ContextoTipo:   l.ContextoTipo,
-		CodigoAcademia: l.CodigoAcademia,
-		Ambiente:       l.Ambiente,
-		Provedor:       finance.ProvedorAppyPay,
-		Credenciais: map[string]string{
-			"client_id":     l.ClientID,
-			"client_secret": l.ClientSecret,
-			"gpo_method":    l.GPOPaymentMethod,
-			"ref_method":    l.REFPaymentMethod,
-		},
-	}
-}
-
-// CredencialAppyPayCriada é a resposta legada (campos planos da AppyPay).
-type CredencialAppyPayCriada struct {
-	finance.CredentialView
-	ClientIDMask         string `json:"client_id_mask"`
-	GPOPaymentMethodMask string `json:"gpo_payment_method_mask"`
-	REFPaymentMethodMask string `json:"ref_payment_method_mask"`
-	WebhookSecret        string `json:"webhook_secret,omitempty"`
-}
-
-func credencialAppyPayLegada(v finance.CredentialView, secret string) CredencialAppyPayCriada {
-	return CredencialAppyPayCriada{
-		CredentialView:       v,
-		ClientIDMask:         v.CredenciaisMascaradas["client_id"],
-		GPOPaymentMethodMask: v.CredenciaisMascaradas["gpo_method"],
-		REFPaymentMethodMask: v.CredenciaisMascaradas["ref_method"],
-		WebhookSecret:        secret,
-	}
-}
-
-func ConfigurarCredencialAppyPay(c *gin.Context) {
-	var in credencialAppyPayLegadaInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		utils.RespondWithValidationError(c, errors.New("payload inválido"))
-		return
-	}
-	configurarCredencial(c, nil, in.neutro(), http.StatusCreated, func(v finance.CredentialView, secret string) any {
-		return credencialAppyPayLegada(v, secret)
-	})
-}
-
-func AtualizarCredencialAppyPay(c *gin.Context) {
-	idParam, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		utils.RespondWithValidationError(c, errors.New("id inválido"))
-		return
-	}
-	var in credencialAppyPayLegadaInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		utils.RespondWithValidationError(c, errors.New("payload inválido"))
-		return
-	}
-	configurarCredencial(c, &idParam, in.neutro(), http.StatusOK, func(v finance.CredentialView, _ string) any {
-		return credencialAppyPayLegada(v, "")
-	})
-}
-
-func ListarCredenciaisAppyPay(c *gin.Context) {
-	contexto := c.Query("contexto_tipo")
-	academia := c.Query("codigo_academia")
-	if !authorizeFinanceScope(c, &contexto, &academia, false) {
-		utils.RespondWithForbiddenError(c, "sem permissão para consultar credenciais financeiras")
-		return
-	}
-	out, err := FinanceiroService.ListCredentials(c.Request.Context(), contexto, academia)
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-	legado := []CredencialAppyPayCriada{}
-	for _, v := range out {
-		if v.Provedor == finance.ProvedorAppyPay {
-			legado = append(legado, credencialAppyPayLegada(v, ""))
-		}
-	}
-	c.JSON(http.StatusOK, legado)
-}
-
-func RemoverCredencialAppyPay(c *gin.Context) {
-	var in struct {
-		ContextoTipo   string `json:"contexto_tipo"`
-		CodigoAcademia string `json:"codigo_academia"`
-	}
-	if err := c.ShouldBindJSON(&in); err != nil {
-		utils.RespondWithValidationError(c, errors.New("payload inválido"))
-		return
-	}
-	removerCredencial(c, in.ContextoTipo, in.CodigoAcademia, finance.ProvedorAppyPay)
 }

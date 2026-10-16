@@ -65,9 +65,6 @@ var (
 	// ErrMetodoIndisponivel: o provedor ativo do contexto não suporta o método
 	// de pagamento pedido.
 	ErrMetodoIndisponivel = errors.New("método de pagamento indisponível no provedor do contexto")
-	// ErrCredenciaisEmUso: o provedor ainda tem cobranças em andamento e as
-	// suas credenciais não podem ser removidas (mecanismo retroativo).
-	ErrCredenciaisEmUso = errors.New("o provedor ainda tem cobranças pendentes neste contexto")
 )
 
 // CampoCredencial descreve um campo de credencial exigido por um provedor. É

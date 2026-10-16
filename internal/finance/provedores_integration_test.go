@@ -335,15 +335,18 @@ func TestIntegrationRetroativoCobrancaPendenteSegueProvedorOriginalAposTroca(t *
 		t.Fatal(err)
 	}
 
-	// 1. As credenciais do provedor anterior estão protegidas enquanto houver pendente.
-	if err = service.RemoveCredential(ctx, ContextoAcademia, academia, ProvedorAppyPay, "u", "academia", "ip"); !errors.Is(err, ErrCredenciaisEmUso) {
-		t.Fatalf("remover credenciais com cobrança pendente: %v", err)
+	// 1. Remover as credenciais do provedor anterior com a cobrança antiga
+	// pendente é PERMITIDO: elas ficam arquivadas (snapshot) em vez de bloqueadas.
+	removida, err := service.RemoveCredential(ctx, ContextoAcademia, academia, ProvedorAppyPay, "u", "academia", "ip")
+	if err != nil || !removida.CredenciaisArquivadas || removida.CobrancasPendentes != 1 {
+		t.Fatalf("remover credenciais com cobrança pendente: %+v, %v", removida, err)
 	}
-	if err = service.RemoveCredential(ctx, ContextoAcademia, academia, provedorFalsoID, "u", "academia", "ip"); !errors.Is(err, ErrCredenciaisEmUso) {
-		t.Fatalf("o provedor ativo também está protegido: %v", err)
+	if ativo, _ := service.ProvedorAtivo(ctx, ContextoAcademia, academia); ativo != provedorFalsoID {
+		t.Fatalf("remover as credenciais do provedor inativo alterou o ativo para %q", ativo)
 	}
 
-	// 2. Consultar a cobrança antiga fala com a AppyPay, nunca com o provedor ativo.
+	// 2. Consultar a cobrança antiga fala com a AppyPay (com o snapshot das
+	// credenciais removidas), nunca com o provedor ativo.
 	consulta, err := service.ConsultCharge(ctx, ContextoAcademia, academia, a.ID.String(), "u", "academia", "ip")
 	if err != nil {
 		t.Fatal(err)
@@ -384,13 +387,18 @@ func TestIntegrationRetroativoCobrancaPendenteSegueProvedorOriginalAposTroca(t *
 		t.Fatalf("provedor da cobrança mudou para %q", p)
 	}
 
-	// 4. Resolvida a última pendente da AppyPay, as credenciais podem ser
-	// removidas sem tocar no provedor ativo.
-	if err = service.RemoveCredential(ctx, ContextoAcademia, academia, ProvedorAppyPay, "u", "academia", "ip"); err != nil {
-		t.Fatalf("remover credenciais sem pendentes: %v", err)
+	// 4. Resolvida a última pendente da AppyPay, o snapshot é descartado e o
+	// segredo antigo deixa de autenticar; o provedor ativo segue intacto.
+	var arquivadas int
+	_ = client.DB().QueryRow(`SELECT COUNT(*) FROM financeiro_credenciais_arquivadas WHERE credential_id=$1`, appyCredID).Scan(&arquivadas)
+	if arquivadas != 0 {
+		t.Fatalf("snapshot não foi descartado ao resolver a última pendente: %d", arquivadas)
+	}
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{appySecret}}); err == nil {
+		t.Fatal("o segredo do snapshot descartado continuou autenticando")
 	}
 	if ativo, _ := service.ProvedorAtivo(ctx, ContextoAcademia, academia); ativo != provedorFalsoID {
-		t.Fatalf("remover o provedor inativo alterou o ativo para %q", ativo)
+		t.Fatalf("o descarte do snapshot alterou o provedor ativo para %q", ativo)
 	}
 }
 

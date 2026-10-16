@@ -309,6 +309,8 @@ func ConsultarMensalidadesEstudante(c *gin.Context) {
 	}
 	for academia := range academias {
 		if itens, err := FinanceiroService.MetodosPagamentoMensalidade(c.Request.Context(), academia); err == nil {
+			// MetodosPagamentoMensalidade já devolve só os métodos que o provedor
+			// ativo da academia suporta (Tarefa 120).
 			metodos[academia] = itens
 		}
 	}

@@ -445,20 +445,6 @@ func setupRouter() *gin.Engine {
 			financeiro.POST("/cobrancas/:id/cancelar", handlers.CancelarCobranca)
 			financeiro.POST("/cobrancas/:id/pago-externamente", handlers.RegistrarPagamentoExternoCobranca)
 			financeiro.GET("/cobrancas", handlers.ListarCobrancas)
-			// DEPRECADAS (Tarefa 119): aliases das rotas anteriores, mantidos
-			// para o frontend antigo durante o deploy. As rotas de credenciais
-			// falam apenas com a AppyPay e usam o formato antigo.
-			financeiro.POST("/appypay/credenciais", handlers.ConfigurarCredencialAppyPay)
-			financeiro.PUT("/appypay/credenciais/:id", handlers.AtualizarCredencialAppyPay)
-			financeiro.GET("/appypay/credenciais", handlers.ListarCredenciaisAppyPay)
-			financeiro.DELETE("/appypay/credenciais", handlers.RemoverCredencialAppyPay)
-			financeiro.GET("/appypay/credenciais/:id/webhook-secret", handlers.ConsultarSegredoWebhook)
-			financeiro.POST("/appypay/credenciais/:id/webhook-secret/rotacionar", handlers.RotacionarSegredoWebhook)
-			financeiro.POST("/appypay/cobrancas", handlers.CriarCobranca)
-			financeiro.POST("/appypay/qr-codes", handlers.GerarQRCode)
-			financeiro.GET("/appypay/cobrancas/:id", handlers.ConsultarCobranca)
-			financeiro.POST("/appypay/cobrancas/:id/cancelar", handlers.CancelarCobranca)
-			financeiro.POST("/appypay/cobrancas/:id/pago-externamente", handlers.RegistrarPagamentoExternoCobranca)
 			financeiro.POST("/servicos-extras/obrigacao/anular", handlers.AnularObrigacaoServicoExtra)
 			financeiro.POST("/servicos-extras/obrigacao/reativar", handlers.ReativarObrigacaoServicoExtra)
 			financeiro.POST("/mensalidades/configuracoes", handlers.ConfigurarMensalidade)

@@ -126,50 +126,10 @@ func TestIntegrationHandlersProvedorCatalogoEFluxoDaAcademia(t *testing.T) {
 	}
 }
 
-// As rotas legadas /financeiro/appypay/credenciais* continuam aceitando o
-// formato antigo e devolvendo os campos antigos (client_id_mask etc.) além dos
-// novos, para o frontend anterior continuar funcionando durante o deploy.
-func TestIntegrationHandlersCredenciaisLegadasAppyPayMantemFormatoAntigo(t *testing.T) {
-	client, setActor := provedoresHandlersSetup(t)
-	academia := "PRL" + uuid.NewString()[:6]
-	seedAcademiaParaRemocaoHandlers(t, client, academia)
-
-	ctx, rec := newDeleteJSONContext(http.MethodPost, "/financeiro/appypay/credenciais", map[string]any{
-		"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academia,
-		"client_id": "client-legado", "client_secret": "secret-legado", "gpo_payment_method": "GPO_LEGADO", "ref_payment_method": "REF_LEGADO",
-	})
-	setActor(ctx, academia)
-	ConfigurarCredencialAppyPay(ctx)
-	var criada map[string]any
-	decodeJSON(t, rec, &criada)
-	if rec.Code != http.StatusCreated || criada["client_id_mask"] != "****gado" || criada["gpo_payment_method_mask"] != "****GADO" || criada["ref_payment_method_mask"] != "****GADO" || criada["webhook_secret"] == nil {
-		t.Fatalf("formato legado: %d %s", rec.Code, rec.Body.String())
-	}
-	if criada["provedor"] != finance.ProvedorAppyPay {
-		t.Fatalf("a rota legada tem de gravar o provedor APPYPAY: %s", rec.Body.String())
-	}
-
-	ctx, rec = newDeleteJSONContext(http.MethodGet, "/financeiro/appypay/credenciais?contexto_tipo=academia&codigo_academia="+academia, nil)
-	setActor(ctx, academia)
-	ListarCredenciaisAppyPay(ctx)
-	var lista []map[string]any
-	decodeJSON(t, rec, &lista)
-	if rec.Code != http.StatusOK || len(lista) != 1 || lista[0]["client_id_mask"] != "****gado" {
-		t.Fatalf("listagem legada: %d %s", rec.Code, rec.Body.String())
-	}
-
-	// A rota legada de remoção continua funcionando (sem pendentes).
-	ctx, rec = newDeleteJSONContext(http.MethodDelete, "/financeiro/appypay/credenciais", map[string]any{"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academia})
-	setActor(ctx, academia)
-	RemoverCredencialAppyPay(ctx)
-	// c.Status(204) só chega ao recorder no flush; o status do writer é a fonte.
-	if ctx.Writer.Status() != http.StatusNoContent {
-		t.Fatalf("remoção legada: %d %s", ctx.Writer.Status(), rec.Body.String())
-	}
-}
-
-// Remover credenciais de um provedor com cobranças pendentes devolve 409.
-func TestIntegrationHandlersRemoverCredencialComCobrancaPendenteDevolve409(t *testing.T) {
+// Remover credenciais de um provedor com cobranças pendentes é PERMITIDO: a
+// resposta (200) avisa quantas são e que as credenciais ficaram arquivadas
+// (snapshot); sem pendentes responde 200 sem arquivar.
+func TestIntegrationHandlersRemoverCredencialComCobrancaPendenteArquivaEAvisa(t *testing.T) {
 	client, setActor := provedoresHandlersSetup(t)
 	academia := "PRP" + uuid.NewString()[:6]
 	seedAcademiaParaRemocaoHandlers(t, client, academia)
@@ -189,33 +149,106 @@ func TestIntegrationHandlersRemoverCredencialComCobrancaPendenteDevolve409(t *te
 		t.Fatalf("criar cobrança: %d %s", rec.Code, rec.Body.String())
 	}
 
-	remover := func() (int, string) {
+	remover := func() (int, map[string]any) {
 		ctx, rec := newDeleteJSONContext(http.MethodDelete, "/financeiro/credenciais", map[string]any{"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academia, "provedor": finance.ProvedorAppyPay})
 		setActor(ctx, academia)
 		RemoverCredencial(ctx)
-		return ctx.Writer.Status(), rec.Body.String()
+		var corpo map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &corpo)
+		return ctx.Writer.Status(), corpo
 	}
-	if code, body := remover(); code != http.StatusConflict {
-		t.Fatalf("remover com pendente: %d %s", code, body)
+	code, corpo := remover()
+	if code != http.StatusOK || corpo["provedor"] != finance.ProvedorAppyPay || corpo["cobrancas_pendentes"] != float64(1) || corpo["credenciais_arquivadas"] != true {
+		t.Fatalf("remover com pendente: %d %v", code, corpo)
 	}
-	// Cancelando a cobrança pendente (consulta ao vivo permitida: provedor ainda configurado)…
-	ctx, rec = newDeleteJSONContext(http.MethodPost, "/financeiro/cobrancas/x/cancelar", map[string]any{"contexto_tipo": finance.ContextoAcademia, "codigo_academia": academia})
+
+	// O estado do contexto mostra o snapshot e a pendente.
+	ctx, rec = newDeleteJSONContext(http.MethodGet, "/financeiro/provedor?contexto_tipo=academia&codigo_academia="+academia, nil)
 	setActor(ctx, academia)
-	ctx.Params = gin.Params{{Key: "id", Value: cobranca["merchant_transaction_id"].(string)}}
-	// O mock do handler responde Success a consultas (cenário de pagamento já
-	// feito), então o cancelamento é recusado e a cobrança fica resolvida
-	// como paga: o que importa aqui é que, resolvida a pendência, a remoção
-	// passa a ser permitida.
-	CancelarCobranca(ctx)
+	ConsultarProvedorContexto(ctx)
+	var estado finance.ProvedorContextoView
+	decodeJSON(t, rec, &estado)
+	if rec.Code != http.StatusOK || estado.ProvedorAtivo != nil || estado.Provedores[0].CredenciaisConfiguradas || !estado.Provedores[0].CredenciaisArquivadas || estado.Provedores[0].CobrancasPendentes != 1 {
+		t.Fatalf("estado após a remoção com pendente: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// A cobrança antiga continua consultável pelo snapshot (o mock responde Success).
 	ctx, rec = newDeleteJSONContext(http.MethodGet, "/financeiro/cobrancas/x", nil)
 	setActor(ctx, academia)
 	ctx.Params = gin.Params{{Key: "id", Value: cobranca["merchant_transaction_id"].(string)}}
 	ctx.Request.URL.RawQuery = "contexto_tipo=academia&codigo_academia=" + academia
 	ConsultarCobranca(ctx)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("consultar cobrança: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("consultar a cobrança antiga com as credenciais arquivadas: %d %s", rec.Code, rec.Body.String())
 	}
-	if code, body := remover(); code != http.StatusNoContent {
-		t.Fatalf("remover sem pendentes: %d %s", code, body)
+	// Resolvida a pendência, o snapshot some.
+	ctx, rec = newDeleteJSONContext(http.MethodGet, "/financeiro/provedor?contexto_tipo=academia&codigo_academia="+academia, nil)
+	setActor(ctx, academia)
+	ConsultarProvedorContexto(ctx)
+	decodeJSON(t, rec, &estado)
+	if estado.Provedores[0].CredenciaisArquivadas || estado.Provedores[0].CobrancasPendentes != 0 {
+		t.Fatalf("snapshot deveria ter sido descartado com a pendência resolvida: %s", rec.Body.String())
+	}
+	// Segunda remoção: não há mais credenciais.
+	if code, _ = remover(); code != http.StatusNotFound {
+		t.Fatalf("segunda remoção: %d", code)
+	}
+}
+
+// limparProvedorDaAcademia apaga provedor ativo, credenciais e segredos de uma
+// academia de seed fixo, para o teste ser repetível no mesmo banco.
+func limparProvedorDaAcademia(t *testing.T, client *db.Client, academia string) {
+	t.Helper()
+	for _, q := range []string{
+		`DELETE FROM financeiro_segredos_provedor WHERE credential_id IN (SELECT id FROM financeiro_credenciais_provedor WHERE codigo_academia=$1)`,
+		`DELETE FROM financeiro_credenciais_provedor WHERE codigo_academia=$1`,
+		`DELETE FROM financeiro_credenciais_arquivadas WHERE codigo_academia=$1`,
+		`DELETE FROM financeiro_provedores_pagamento WHERE codigo_academia=$1`,
+	} {
+		if _, err := client.DB().Exec(q, academia); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// O status público da solicitação de matrícula só oferece ao pagador os métodos
+// habilitados pela academia que o provedor ativo dela suporta.
+func TestIntegrationHandlersStatusMatriculaFiltraMetodosPeloProvedorAtivo(t *testing.T) {
+	client, setActor := provedoresHandlersSetup(t)
+	codigo, _, _ := seedSolicitacaoMatriculaParaBusca(t, client)
+	const academia = "ACA-BUSCA"
+	// A academia do seed é fixa (ACA-BUSCA): sem limpar, uma segunda execução no
+	// mesmo banco já começaria com provedor ativo. Limpa antes e depois.
+	limparProvedorDaAcademia(t, client, academia)
+	t.Cleanup(func() { limparProvedorDaAcademia(t, client, academia) })
+	if _, err := client.DB().Exec(`UPDATE projection_solicitacoes_matricula SET metodos_pagamento_matricula=ARRAY['REF','XYZ'] WHERE codigo_solicitacao=$1`, codigo); err != nil {
+		t.Fatal(err)
+	}
+	status := func() []any {
+		ctx, rec := newDeleteJSONContext(http.MethodGet, "/solicitacoes-matricula/"+codigo+"/status", nil)
+		ctx.Set("dbClient", client)
+		ctx.Params = gin.Params{{Key: "codigo", Value: codigo}}
+		ConsultarStatusSolicitacaoMatricula(ctx)
+		var corpo map[string]any
+		decodeJSON(t, rec, &corpo)
+		metodos, _ := corpo["metodos_pagamento"].([]any)
+		if rec.Code != http.StatusOK || metodos == nil {
+			t.Fatalf("status da solicitação: %d %s", rec.Code, rec.Body.String())
+		}
+		return metodos
+	}
+	// Sem provedor ativo ninguém consegue pagar: lista vazia.
+	if m := status(); len(m) != 0 {
+		t.Fatalf("sem provedor ativo: %v", m)
+	}
+	ctx, rec := newDeleteJSONContext(http.MethodPost, "/financeiro/credenciais", credenciaisAppyPayNeutras(academia))
+	setActor(ctx, academia)
+	ConfigurarCredencial(ctx)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("configurar: %d %s", rec.Code, rec.Body.String())
+	}
+	// Com a AppyPay: REF (suportado) fica, XYZ (desconhecido) sai.
+	if m := status(); len(m) != 1 || m[0] != "REF" {
+		t.Fatalf("com a AppyPay: %v", m)
 	}
 }

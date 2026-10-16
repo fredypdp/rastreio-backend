@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// Rotas de provedores de pagamento (Tarefa 119): as rotas neutras existem, os
-// aliases /financeiro/appypay/* continuam registrados (frontend antigo durante
-// o deploy) e as URLs públicas de webhook da AppyPay — já configuradas no
-// painel deles — não mudam.
-func TestRotasProvedoresPagamentoNeutrasAliasesEWebhooks(t *testing.T) {
+// Rotas de provedores de pagamento (Tarefas 119 e 120): as rotas neutras
+// existem, os aliases deprecados /financeiro/appypay/* foram removidos e as
+// URLs públicas de webhook da AppyPay — já configuradas no painel deles — não
+// mudam.
+func TestRotasProvedoresPagamentoNeutrasSemAliasesDeprecadosEWebhooks(t *testing.T) {
 	router := setupRouter()
 	registradas := map[string]bool{}
 	for _, r := range router.Routes() {
@@ -23,11 +23,6 @@ func TestRotasProvedoresPagamentoNeutrasAliasesEWebhooks(t *testing.T) {
 		"GET /financeiro/credenciais/:id/webhook-secret", "POST /financeiro/credenciais/:id/webhook-secret/rotacionar",
 		"POST /financeiro/cobrancas", "POST /financeiro/qr-codes", "GET /financeiro/cobrancas/:id",
 		"POST /financeiro/cobrancas/:id/cancelar", "POST /financeiro/cobrancas/:id/pago-externamente", "GET /financeiro/cobrancas",
-		// aliases deprecados
-		"POST /financeiro/appypay/credenciais", "PUT /financeiro/appypay/credenciais/:id", "GET /financeiro/appypay/credenciais", "DELETE /financeiro/appypay/credenciais",
-		"GET /financeiro/appypay/credenciais/:id/webhook-secret", "POST /financeiro/appypay/credenciais/:id/webhook-secret/rotacionar",
-		"POST /financeiro/appypay/cobrancas", "POST /financeiro/appypay/qr-codes", "GET /financeiro/appypay/cobrancas/:id",
-		"POST /financeiro/appypay/cobrancas/:id/cancelar", "POST /financeiro/appypay/cobrancas/:id/pago-externamente",
 		// webhooks públicos da AppyPay: URLs inalteradas
 		"POST /webhooks/appypay/gpo", "POST /webhooks/appypay/ref",
 		// rota que compartilha prefixo com /financeiro/cobrancas/:id
@@ -36,6 +31,13 @@ func TestRotasProvedoresPagamentoNeutrasAliasesEWebhooks(t *testing.T) {
 	for _, rota := range obrigatorias {
 		if !registradas[rota] {
 			t.Fatalf("rota %q não está registrada em setupRouter()", rota)
+		}
+	}
+	// Nenhuma rota /financeiro/appypay/* sobrou (aliases removidos na Tarefa 120).
+	// /webhooks/appypay/* NÃO conta: são as URLs públicas já configuradas na AppyPay.
+	for rota := range registradas {
+		if strings.Contains(rota, "/financeiro/appypay") {
+			t.Fatalf("alias deprecado ainda registrado: %s", rota)
 		}
 	}
 	// Rotas autenticadas nunca respondem 404 nem 2xx sem token.

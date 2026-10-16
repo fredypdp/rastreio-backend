@@ -353,6 +353,16 @@ func TestLegacyPaymentRoutesAreRemoved(t *testing.T) {
 		{http.MethodPost, "/finan" + "ceiro/app" + "ypay/credenciais/" + idPlaceholder + "/ativar"},
 		{http.MethodPost, "/finan" + "ceiro/app" + "ypay/credenciais/" + idPlaceholder + "/desativar"},
 		{http.MethodPost, "/finan" + "ceiro/modalidade-pagamento"},
+		// Aliases deprecados da Tarefa 119, removidos na Tarefa 120: já não
+		// existem (404), nem sequer protegidos por autenticação.
+		{http.MethodPost, "/finan" + "ceiro/app" + "ypay/credenciais"},
+		{http.MethodPut, "/finan" + "ceiro/app" + "ypay/credenciais/" + idPlaceholder},
+		{http.MethodGet, "/finan" + "ceiro/app" + "ypay/credenciais"},
+		{http.MethodDelete, "/finan" + "ceiro/app" + "ypay/credenciais"},
+		{http.MethodPost, "/finan" + "ceiro/app" + "ypay/cobrancas"},
+		{http.MethodPost, "/finan" + "ceiro/app" + "ypay/qr-codes"},
+		{http.MethodGet, "/finan" + "ceiro/app" + "ypay/cobrancas/" + idPlaceholder},
+		{http.MethodPost, "/finan" + "ceiro/app" + "ypay/cobrancas/" + idPlaceholder + "/cancelar"},
 	}
 	for _, tc := range removed {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
@@ -364,12 +374,13 @@ func TestLegacyPaymentRoutesAreRemoved(t *testing.T) {
 		}
 	}
 
-	// The base module deliberately restores only its documented configuration
-	// collection routes; authentication must protect them before validation.
+	// The provider-neutral credential routes (Tarefa 119) are the only ones left;
+	// authentication must protect them before validation.
 	for _, tc := range []struct{ method, path string }{
-		{http.MethodPost, "/financeiro/appypay/credenciais"},
-		{http.MethodPut, "/financeiro/appypay/credenciais/" + idPlaceholder},
-		{http.MethodGet, "/financeiro/appypay/credenciais"},
+		{http.MethodPost, "/financeiro/credenciais"},
+		{http.MethodPut, "/financeiro/credenciais/" + idPlaceholder},
+		{http.MethodGet, "/financeiro/credenciais"},
+		{http.MethodDelete, "/financeiro/credenciais"},
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		w := httptest.NewRecorder()

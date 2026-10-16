@@ -291,14 +291,14 @@ func (s *Service) CreateCharge(ctx context.Context, in ChargeRequest, actorID, a
 		}
 		return ChargeResult{}, err
 	}
-	payload := comProvedor(chargePayload(id, in, "", EstadoCobrancaAguardandoPagamento, nil), prov.ID())
+	payload := comCredencial(comProvedor(chargePayload(id, in, "", EstadoCobrancaAguardandoPagamento, nil), prov.ID()), credential)
 	if err = s.record(ctx, id, aggregates.CobrancaSolicitada, payload, actorID, actorType, ip); err != nil {
 		_ = s.releaseChargeReservation(ctx, in.MerchantTransactionID, id)
 		return ChargeResult{}, err
 	}
 	resp, err := prov.CriarCobranca(ctx, credential, pedidoCobranca{Valor: in.Amount, Moeda: in.Currency, Descricao: in.Description, IDComerciante: in.MerchantTransactionID, Metodo: method, Info: in.PaymentInfo, Opcoes: in.Options, Notificar: in.Notify, Async: in.Async})
 	if err != nil {
-		_ = s.record(ctx, id, aggregates.CobrancaFalhou, comProvedor(chargePayload(id, in, "", "Failed", map[string]any{"error": "provider_request_failed"}), prov.ID()), actorID, actorType, ip)
+		_ = s.record(ctx, id, aggregates.CobrancaFalhou, comCredencial(comProvedor(chargePayload(id, in, "", "Failed", map[string]any{"error": "provider_request_failed"}), prov.ID()), credential), actorID, actorType, ip)
 		return ChargeResult{ID: id, Provedor: prov.ID(), MerchantTransactionID: in.MerchantTransactionID, Status: "Failed"}, err
 	}
 	response, providerID, outcome := resp.Bruta, resp.ID, resp.Outcome
@@ -323,7 +323,7 @@ func (s *Service) CreateCharge(ctx context.Context, in ChargeRequest, actorID, a
 		// plataforma, válida para qualquer provedor.
 		status = EstadoCobrancaAguardandoPagamento
 	}
-	created := comProvedor(chargePayload(id, in, providerID, status, response), prov.ID())
+	created := comCredencial(comProvedor(chargePayload(id, in, providerID, status, response), prov.ID()), credential)
 	applyProviderOutcome(created, outcome)
 	if err = s.record(ctx, id, aggregates.CobrancaCriada, created, actorID, actorType, ip); err != nil {
 		return ChargeResult{}, err
@@ -387,13 +387,13 @@ func (s *Service) CreateGPOQRCode(ctx context.Context, in QRCodeRequest, actorID
 		}
 		return QRCodeResult{}, err
 	}
-	if err = s.record(ctx, id, aggregates.QRCodeSolicitado, comProvedor(qrCodePayload(id, in, typ, "", EstadoCobrancaAguardandoPagamento, nil), prov.ID()), actorID, actorType, ip); err != nil {
+	if err = s.record(ctx, id, aggregates.QRCodeSolicitado, comCredencial(comProvedor(qrCodePayload(id, in, typ, "", EstadoCobrancaAguardandoPagamento, nil), prov.ID()), cred), actorID, actorType, ip); err != nil {
 		_ = s.releaseChargeReservation(ctx, in.MerchantTransactionID, id)
 		return QRCodeResult{}, err
 	}
 	resp, err := prov.CriarQRCode(ctx, cred, pedidoQRCode{Valor: in.Amount, Moeda: in.Currency, Descricao: in.Description, IDComerciante: in.MerchantTransactionID, Tipo: typ, ValorMinimo: in.MinAmount, MaxTransacoes: in.MaxTransactions, Inicio: in.StartDate, Fim: in.EndDate})
 	if err != nil {
-		_ = s.record(ctx, id, aggregates.QRCodeFalhou, comProvedor(qrCodePayload(id, in, typ, "", "Failed", map[string]any{"error": "provider_request_failed"}), prov.ID()), actorID, actorType, ip)
+		_ = s.record(ctx, id, aggregates.QRCodeFalhou, comCredencial(comProvedor(qrCodePayload(id, in, typ, "", "Failed", map[string]any{"error": "provider_request_failed"}), prov.ID()), cred), actorID, actorType, ip)
 		return QRCodeResult{}, err
 	}
 	response, providerID, outcome := resp.Bruta, resp.ID, resp.Outcome
@@ -405,7 +405,7 @@ func (s *Service) CreateGPOQRCode(ctx context.Context, in QRCodeRequest, actorID
 		// resposta — ver CriarQRCode do provedor.)
 		status = EstadoCobrancaAguardandoPagamento
 	}
-	payload := comProvedor(qrCodePayload(id, in, typ, providerID, status, response), prov.ID())
+	payload := comCredencial(comProvedor(qrCodePayload(id, in, typ, providerID, status, response), prov.ID()), cred)
 	applyProviderOutcome(payload, outcome)
 	if err = s.record(ctx, id, aggregates.QRCodeGerado, payload, actorID, actorType, ip); err != nil {
 		return QRCodeResult{}, err
@@ -964,7 +964,35 @@ func (s *Service) record(ctx context.Context, id uuid.UUID, event string, payloa
 	if err := s.repository.WithContext(ctx).SaveWithAudit(agg, db.AuditContext{UserID: userID, UserType: userType, IP: ip}); err != nil {
 		return err
 	}
-	return s.projection.ApplyLatestForAggregate(id)
+	if err := s.projection.ApplyLatestForAggregate(id); err != nil {
+		return err
+	}
+	s.liberarSnapshotsSeCobrancaTerminal(ctx, event, clean)
+	return nil
+}
+
+// liberarSnapshotsSeCobrancaTerminal é o gancho do mecanismo de snapshot: depois
+// de gravar um evento que leva uma cobrança a um estado terminal, descarta os
+// snapshots de credenciais do contexto + provedor que já não têm pendentes.
+// Melhor esforço — uma falha aqui nunca desfaz o evento já gravado; o descarte
+// é refeito no próximo evento terminal do mesmo provedor/contexto.
+func (s *Service) liberarSnapshotsSeCobrancaTerminal(ctx context.Context, event string, payload map[string]any) {
+	switch event {
+	case aggregates.CobrancaConsultada, aggregates.CobrancaCancelada, aggregates.CobrancaFalhou, "CobrancaPagamentoExternoRegistrado", aggregates.QRCodeFalhou:
+	default:
+		return
+	}
+	status, _ := payload["status"].(string)
+	if !isTerminalChargeStatus(status) {
+		return
+	}
+	contexto, _ := payload["contexto_tipo"].(string)
+	academia, _ := payload["codigo_academia"].(string)
+	provedor := provedorDoPayloadCobranca(payload)
+	if contexto == "" || provedor == ProvedorExterno {
+		return
+	}
+	_ = s.purgarArquivadasSemPendentes(ctx, contexto, academia, provedor)
 }
 
 // liveChargeStatus faz uma consulta ao vivo (GET /charges/{id}) e devolve o
@@ -1103,7 +1131,10 @@ type chargeRow struct {
 	// cobrança (consulta, cancelamento, webhook) usa este provedor — nunca o
 	// provedor ativo do contexto, que pode ter mudado entretanto.
 	Provedor string
-	Payload  map[string]any
+	// CredencialID é a credencial (ativa ou arquivada) com que a cobrança foi
+	// emitida; uuid.Nil nas cobranças legadas sem ligação.
+	CredencialID uuid.UUID
+	Payload      map[string]any
 }
 
 func (s *Service) loadCharge(ctx context.Context, identifier string) (chargeRow, error) {
@@ -1119,9 +1150,13 @@ func (s *Service) loadChargeDoProvedor(ctx context.Context, provedor, identifier
 func (s *Service) loadChargeWhere(ctx context.Context, identifier, provedor string) (chargeRow, error) {
 	var r chargeRow
 	var raw []byte
-	err := s.client.DB().QueryRowContext(ctx, `SELECT id,COALESCE(provider_charge_id,''),merchant_transaction_id,contexto_tipo,COALESCE(codigo_academia,''),provedor,payload FROM financeiro_cobrancas WHERE (id::text=$1 OR provider_charge_id=$1 OR merchant_transaction_id=$1) AND ($2='' OR provedor=$2) ORDER BY (id::text=$1) DESC,(merchant_transaction_id=$1) DESC LIMIT 1`, identifier, provedor).Scan(&r.ID, &r.ProviderID, &r.Merchant, &r.Contexto, &r.Academia, &r.Provedor, &raw)
+	var credencial uuid.NullUUID
+	err := s.client.DB().QueryRowContext(ctx, `SELECT id,COALESCE(provider_charge_id,''),merchant_transaction_id,contexto_tipo,COALESCE(codigo_academia,''),provedor,credencial_id,payload FROM financeiro_cobrancas WHERE (id::text=$1 OR provider_charge_id=$1 OR merchant_transaction_id=$1) AND ($2='' OR provedor=$2) ORDER BY (id::text=$1) DESC,(merchant_transaction_id=$1) DESC LIMIT 1`, identifier, provedor).Scan(&r.ID, &r.ProviderID, &r.Merchant, &r.Contexto, &r.Academia, &r.Provedor, &credencial, &raw)
 	if err != nil {
 		return r, fmt.Errorf("%w: cobrança não encontrada", ErrNotFound)
+	}
+	if credencial.Valid {
+		r.CredencialID = credencial.UUID
 	}
 	if err = json.Unmarshal(raw, &r.Payload); err != nil {
 		return r, err
@@ -1134,17 +1169,25 @@ func (s *Service) loadChargeWhere(ctx context.Context, identifier, provedor stri
 // provedorDaCobranca resolve o provedor e as credenciais de uma cobrança JÁ
 // EMITIDA. É o mecanismo retroativo: mesmo que o contexto tenha trocado de
 // provedor, a cobrança continua a falar com o provedor que a criou enquanto
-// aguarda a resposta.
+// aguarda a resposta, com as credenciais com que foi emitida — ativas ou, se
+// foram removidas com pendentes, o snapshot arquivado delas.
 func (s *Service) provedorDaCobranca(ctx context.Context, row chargeRow) (Provedor, credencialProvedor, error) {
 	prov, err := s.ProvedorPorID(row.Provedor)
 	if err != nil {
 		return nil, credencialProvedor{}, err
 	}
-	cred, err := s.loadCredentialDoProvedor(ctx, row.Contexto, row.Academia, prov.ID())
+	cred, err := s.credencialDaCobranca(ctx, row)
 	if err != nil {
 		return nil, credencialProvedor{}, err
 	}
 	return prov, cred, nil
+}
+
+// comCredencial grava no payload a credencial com que a cobrança foi emitida
+// (vínculo exato com o snapshot, se ela for removida com a cobrança pendente).
+func comCredencial(payload map[string]any, cred credencialProvedor) map[string]any {
+	payload["credencial_id"] = cred.ID.String()
+	return payload
 }
 
 // comProvedor grava no payload o provedor que originou o evento.

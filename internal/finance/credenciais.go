@@ -244,59 +244,95 @@ func (s *Service) CobrancasPendentes(ctx context.Context, contexto, academia, pr
 	return n, err
 }
 
+// RemocaoCredencialResultado descreve o que a remoção de credenciais fez.
+type RemocaoCredencialResultado struct {
+	Provedor string `json:"provedor"`
+	// CobrancasPendentes são as cobranças ainda em andamento do provedor no
+	// contexto no momento da remoção.
+	CobrancasPendentes int `json:"cobrancas_pendentes"`
+	// CredenciaisArquivadas indica que havia pendentes e as credenciais ficaram
+	// arquivadas (snapshot) para concluir essas cobranças; serão descartadas
+	// quando a última for resolvida. Falso: não havia pendentes e tudo foi apagado.
+	CredenciaisArquivadas bool `json:"credenciais_arquivadas"`
+}
+
 // RemoveCredential remove as credenciais de um provedor configuradas para um
 // contexto (academia ou spuri) no ambiente ativo. A remoção é registrada
 // como um novo evento imutável no ledger (CredenciaisProvedorRemovidas) — o
 // evento CredenciaisProvedorConfiguradas original nunca é apagado ou
 // reescrito, apenas deixa de ser o fato mais recente.
 //
-// Mecanismo retroativo: se o provedor ainda tem cobranças pendentes neste
-// contexto a remoção é recusada com ErrCredenciaisEmUso — sem as credenciais
-// não haveria como consultar, cancelar nem autenticar os webhooks dessas
-// cobranças. Se o provedor removido era o ativo, o contexto fica sem provedor
-// ativo (regra da projeção) e novas cobranças são bloqueadas exatamente como
-// se nunca tivesse existido provedor. O cofre de segredos
-// (financeiro_segredos_provedor) é limpo neste mesmo comando, já que essa
-// tabela vive fora do replay do ledger (não é reconstruída a partir de
-// eventos).
-func (s *Service) RemoveCredential(ctx context.Context, contextoTipo, codigoAcademia, provedor, userID, userType, ip string) error {
+// Mecanismo retroativo (Tarefa 120): a remoção NUNCA é bloqueada. Se o
+// provedor ainda tem cobranças pendentes no contexto, as credenciais são
+// ARQUIVADAS (snapshot): saem da lista e nunca mais servem para cobranças
+// novas, mas os segredos continuam no cofre, cifrados, para o Spuri continuar
+// consultando, cancelando e autenticando os webhooks dessas cobranças junto ao
+// provedor que as emitiu. Quando a última pendente é resolvida o snapshot é
+// descartado (evento CredenciaisArquivadasPurgadas + limpeza do cofre).
+// Sem pendentes, tudo é apagado de imediato, como antes.
+//
+// Se o provedor removido era o ativo, o contexto fica sem provedor ativo (regra
+// da projeção) e novas cobranças são bloqueadas até definir outro. O cofre
+// (financeiro_segredos_provedor) vive fora do replay do ledger e por isso é
+// tratado neste mesmo comando.
+func (s *Service) RemoveCredential(ctx context.Context, contextoTipo, codigoAcademia, provedor, userID, userType, ip string) (RemocaoCredencialResultado, error) {
 	if s.client == nil {
-		return errors.New("serviço financeiro não inicializado")
+		return RemocaoCredencialResultado{}, errors.New("serviço financeiro não inicializado")
 	}
 	contextoTipo = strings.ToLower(strings.TrimSpace(contextoTipo))
 	if err := validContext(contextoTipo, codigoAcademia); err != nil {
-		return err
+		return RemocaoCredencialResultado{}, err
 	}
 	prov, err := s.ProvedorPorID(provedor)
 	if err != nil {
-		return err
+		return RemocaoCredencialResultado{}, err
 	}
 	ambiente := AmbienteAtual()
 	credentialID, err := s.findCredentialID(ctx, contextoTipo, codigoAcademia, ambiente, prov.ID())
 	if err != nil {
-		return fmt.Errorf("%w: credenciais %s não configuradas para este contexto", ErrNotFound, prov.Nome())
+		return RemocaoCredencialResultado{}, fmt.Errorf("%w: credenciais %s não configuradas para este contexto", ErrNotFound, prov.Nome())
 	}
 	pendentes, err := s.CobrancasPendentes(ctx, contextoTipo, codigoAcademia, prov.ID())
 	if err != nil {
-		return err
+		return RemocaoCredencialResultado{}, err
 	}
-	if pendentes > 0 {
-		return fmt.Errorf("%w: %d cobrança(s) pendente(s) no %s; aguarde a resolução ou cancele-as antes de remover as credenciais", ErrCredenciaisEmUso, pendentes, prov.Nome())
-	}
+	arquivar := pendentes > 0
 	payload := map[string]any{
 		"credential_id":   credentialID.String(),
 		"contexto_tipo":   contextoTipo,
 		"codigo_academia": codigoAcademia,
 		"ambiente":        ambiente,
 		"provedor":        prov.ID(),
+		"arquivada":       arquivar,
+		"removida_por":    userID,
+	}
+	if arquivar {
+		payload["cobrancas_pendentes"] = pendentes
+		// A visão mascarada fica no snapshot (e no ledger) para auditoria; os
+		// segredos em si ficam só no cofre.
+		if valores, err := s.loadSecrets(ctx, credentialID); err == nil {
+			payload["credenciais_mascaradas"] = prov.Mascarar(valores)
+		}
 	}
 	if err := s.record(ctx, credentialID, "CredenciaisProvedorRemovidas", payload, userID, userType, ip); err != nil {
-		return err
+		return RemocaoCredencialResultado{}, err
 	}
-	if _, err := s.client.DB().ExecContext(ctx, `DELETE FROM financeiro_segredos_provedor WHERE credential_id=$1`, credentialID); err != nil {
-		return err
+	resultado := RemocaoCredencialResultado{Provedor: prov.ID(), CobrancasPendentes: pendentes, CredenciaisArquivadas: arquivar}
+	if !arquivar {
+		if _, err := s.client.DB().ExecContext(ctx, `DELETE FROM financeiro_segredos_provedor WHERE credential_id=$1`, credentialID); err != nil {
+			return resultado, err
+		}
+		return resultado, nil
 	}
-	return nil
+	// Corrida: as pendentes podem ter sido resolvidas entre a contagem e a
+	// gravação do evento; reavalia já para o snapshot não ficar órfão.
+	if err := s.purgarArquivadasSemPendentes(ctx, contextoTipo, codigoAcademia, prov.ID()); err != nil {
+		return resultado, nil
+	}
+	if n, err := s.CobrancasPendentes(ctx, contextoTipo, codigoAcademia, prov.ID()); err == nil && n == 0 {
+		resultado.CredenciaisArquivadas = false
+	}
+	return resultado, nil
 }
 
 // loadCredential carrega as credenciais do provedor ATIVO do contexto — é o
@@ -340,18 +376,7 @@ func (s *Service) loadCredentialDoProvedor(ctx context.Context, contexto, academ
 	if err != nil {
 		return credencialProvedor{}, fmt.Errorf("%w: credenciais do provedor %s não configuradas para este contexto", ErrNotFound, provedor)
 	}
-	values, err := s.loadSecrets(ctx, id)
-	if err != nil {
-		return credencialProvedor{}, err
-	}
-	if prov, ok := s.provedores[provedor]; ok {
-		for _, campo := range prov.Campos() {
-			if campo.Obrigatorio && values[campo.Chave] == "" {
-				return credencialProvedor{}, fmt.Errorf("cofre de credenciais %s incompleto", prov.Nome())
-			}
-		}
-	}
-	return credencialProvedor{ID: id, Provedor: provedor, Valores: values}, nil
+	return s.credencialComSegredos(ctx, id, provedor)
 }
 
 // ProvedorAtivo devolve o identificador do provedor definido para o contexto.
@@ -509,6 +534,25 @@ func (s *Service) AuthenticateWebhook(ctx context.Context, provedor string, head
 	if err := rows.Err(); err != nil {
 		return WebhookOwner{}, err
 	}
+	// Também são candidatas as credenciais ARQUIVADAS do provedor: as
+	// notificações das cobranças pendentes de credenciais removidas continuam
+	// autenticando com o segredo de webhook guardado no snapshot.
+	arquivadas, err := s.client.DB().QueryContext(ctx, `SELECT credential_id,contexto_tipo,COALESCE(codigo_academia,'') FROM financeiro_credenciais_arquivadas WHERE provedor=$1 AND ambiente=$2`, prov.ID(), AmbienteAtual())
+	if err != nil {
+		return WebhookOwner{}, err
+	}
+	defer arquivadas.Close()
+	for arquivadas.Next() {
+		var o WebhookOwner
+		if err := arquivadas.Scan(&o.CredentialID, &o.ContextoTipo, &o.CodigoAcademia); err != nil {
+			return WebhookOwner{}, err
+		}
+		o.Provedor = prov.ID()
+		owners = append(owners, o)
+	}
+	if err := arquivadas.Err(); err != nil {
+		return WebhookOwner{}, err
+	}
 	candidatos := make([]credencialProvedor, 0, len(owners))
 	validos := make([]WebhookOwner, 0, len(owners))
 	for _, o := range owners {
@@ -523,4 +567,131 @@ func (s *Service) AuthenticateWebhook(ctx context.Context, provedor string, head
 		return validos[idx], nil
 	}
 	return WebhookOwner{}, errors.New("webhook não autenticado")
+}
+
+// validarCofre confirma que o cofre tem todos os campos obrigatórios do provedor.
+func (s *Service) validarCofre(prov Provedor, values map[string]string) error {
+	for _, campo := range prov.Campos() {
+		if campo.Obrigatorio && values[campo.Chave] == "" {
+			return fmt.Errorf("cofre de credenciais %s incompleto", prov.Nome())
+		}
+	}
+	return nil
+}
+
+// loadCredentialPorID carrega as credenciais com que uma cobrança foi emitida:
+// primeiro entre as ativas, depois entre as arquivadas (snapshot). Só vale para
+// o ambiente atual e para o provedor informado.
+func (s *Service) loadCredentialPorID(ctx context.Context, id uuid.UUID, provedor string) (credencialProvedor, error) {
+	var found uuid.UUID
+	err := s.client.DB().QueryRowContext(ctx, `SELECT id FROM financeiro_credenciais_provedor WHERE id=$1 AND provedor=$2 AND ambiente=$3`, id, provedor, AmbienteAtual()).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.client.DB().QueryRowContext(ctx, `SELECT credential_id FROM financeiro_credenciais_arquivadas WHERE credential_id=$1 AND provedor=$2 AND ambiente=$3`, id, provedor, AmbienteAtual()).Scan(&found)
+	}
+	if err != nil {
+		return credencialProvedor{}, fmt.Errorf("%w: credencial da cobrança não encontrada", ErrNotFound)
+	}
+	return s.credencialComSegredos(ctx, found, provedor)
+}
+
+func (s *Service) credencialComSegredos(ctx context.Context, id uuid.UUID, provedor string) (credencialProvedor, error) {
+	values, err := s.loadSecrets(ctx, id)
+	if err != nil {
+		return credencialProvedor{}, err
+	}
+	if prov, ok := s.provedores[provedor]; ok {
+		if err := s.validarCofre(prov, values); err != nil {
+			return credencialProvedor{}, err
+		}
+	}
+	return credencialProvedor{ID: id, Provedor: provedor, Valores: values}, nil
+}
+
+// loadCredentialArquivada devolve o snapshot mais recente do contexto + provedor
+// no ambiente atual (usado por cobranças legadas, sem credencial emitente).
+func (s *Service) loadCredentialArquivada(ctx context.Context, contexto, academia, provedor string) (credencialProvedor, error) {
+	var id uuid.UUID
+	err := s.client.DB().QueryRowContext(ctx, `SELECT credential_id FROM financeiro_credenciais_arquivadas WHERE contexto_tipo=$1 AND codigo_academia IS NOT DISTINCT FROM NULLIF($2,'') AND provedor=$3 AND ambiente=$4 ORDER BY arquivada_em DESC LIMIT 1`, contexto, academia, provedor, AmbienteAtual()).Scan(&id)
+	if err != nil {
+		return credencialProvedor{}, fmt.Errorf("%w: credenciais do provedor %s não configuradas para este contexto", ErrNotFound, provedor)
+	}
+	return s.credencialComSegredos(ctx, id, provedor)
+}
+
+// credencialDaCobranca resolve as credenciais com que uma cobrança JÁ EMITIDA
+// fala com o provedor que a emitiu (retroatividade). Ordem:
+//  1. a credencial exata que emitiu a cobrança — ativa ou arquivada (snapshot);
+//  2. a credencial ativa do contexto + provedor (cobranças sem credencial emitente);
+//  3. o snapshot mais recente do contexto + provedor.
+func (s *Service) credencialDaCobranca(ctx context.Context, row chargeRow) (credencialProvedor, error) {
+	if row.CredencialID != uuid.Nil {
+		if cred, err := s.loadCredentialPorID(ctx, row.CredencialID, row.Provedor); err == nil {
+			return cred, nil
+		} else if !errors.Is(err, ErrNotFound) {
+			return credencialProvedor{}, err
+		}
+	}
+	cred, err := s.loadCredentialDoProvedor(ctx, row.Contexto, row.Academia, row.Provedor)
+	if err == nil {
+		return cred, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return credencialProvedor{}, err
+	}
+	return s.loadCredentialArquivada(ctx, row.Contexto, row.Academia, row.Provedor)
+}
+
+// credenciaisArquivadasDoContexto informa se há snapshot do provedor no contexto.
+func (s *Service) credenciaisArquivadasDoContexto(ctx context.Context, contexto, academia, provedor string) (bool, error) {
+	var existe bool
+	err := s.client.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM financeiro_credenciais_arquivadas WHERE contexto_tipo=$1 AND codigo_academia IS NOT DISTINCT FROM NULLIF($2,'') AND provedor=$3 AND ambiente=$4)`, contexto, academia, provedor, AmbienteAtual()).Scan(&existe)
+	return existe, err
+}
+
+// pendentesDoSnapshot conta as cobranças em andamento que ainda dependem de um
+// snapshot: as emitidas com ele e, se for o mais recente do contexto + provedor,
+// também as legadas sem credencial emitente.
+func (s *Service) pendentesDoSnapshot(ctx context.Context, id uuid.UUID, contexto, academia, provedor string) (int, error) {
+	var n int
+	err := s.client.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM financeiro_cobrancas
+		WHERE provedor=$1 AND contexto_tipo=$2 AND codigo_academia IS NOT DISTINCT FROM NULLIF($3,'')
+		AND lower(COALESCE(payload->>'status','')) NOT IN (`+chargeAbertaStatusExcluidos+`)
+		AND (credencial_id=$4 OR (credencial_id IS NULL AND $4=(SELECT credential_id FROM financeiro_credenciais_arquivadas
+			WHERE provedor=$1 AND contexto_tipo=$2 AND codigo_academia IS NOT DISTINCT FROM NULLIF($3,'') ORDER BY arquivada_em DESC LIMIT 1)))`, provedor, contexto, academia, id).Scan(&n)
+	return n, err
+}
+
+// purgarArquivadasSemPendentes descarta os snapshots do contexto + provedor que
+// já não têm nenhuma cobrança pendente dependendo deles: grava
+// CredenciaisArquivadasPurgadas no ledger (a projeção apaga a linha) e limpa os
+// segredos do cofre. É idempotente e segura para chamar a qualquer momento.
+func (s *Service) purgarArquivadasSemPendentes(ctx context.Context, contexto, academia, provedor string) error {
+	rows, err := s.client.DB().QueryContext(ctx, `SELECT credential_id FROM financeiro_credenciais_arquivadas WHERE contexto_tipo=$1 AND codigo_academia IS NOT DISTINCT FROM NULLIF($2,'') AND provedor=$3`, contexto, academia, provedor)
+	if err != nil {
+		return err
+	}
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	for _, id := range ids {
+		n, err := s.pendentesDoSnapshot(ctx, id, contexto, academia, provedor)
+		if err != nil || n > 0 {
+			continue
+		}
+		payload := map[string]any{"credential_id": id.String(), "contexto_tipo": contexto, "codigo_academia": academia, "provedor": provedor}
+		if err := s.record(ctx, id, "CredenciaisArquivadasPurgadas", payload, "sistema:snapshot", "sistema", ""); err != nil {
+			return err
+		}
+		if _, err := s.client.DB().ExecContext(ctx, `DELETE FROM financeiro_segredos_provedor WHERE credential_id=$1`, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
