@@ -303,18 +303,23 @@ func ConsultarMensalidadesEstudante(c *gin.Context) {
 		return
 	}
 	metodos := map[string][]string{}
+	avisos := map[string]*finance.AvisoMetodos{}
 	academias := map[string]bool{}
 	for _, mensalidade := range out {
 		academias[mensalidade.CodigoAcademia] = true
 	}
 	for academia := range academias {
-		if itens, err := FinanceiroService.MetodosPagamentoMensalidade(c.Request.Context(), academia); err == nil {
-			// MetodosPagamentoMensalidade já devolve só os métodos que o provedor
-			// ativo da academia suporta (Tarefa 120).
+		if itens, aviso, err := FinanceiroService.MetodosPagamentoMensalidadeComAviso(c.Request.Context(), academia); err == nil {
+			// Só os métodos que o provedor ativo da academia suporta (Tarefa
+			// 120); quando a lista fica vazia, o aviso explica o motivo
+			// (provedor não configurado, métodos não suportados...) (Tarefa 121).
 			metodos[academia] = itens
+			if aviso != nil {
+				avisos[academia] = aviso
+			}
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"codigo_estudante": codigo, "mensalidades": out, "metodos_pagamento_por_academia": metodos})
+	c.JSON(http.StatusOK, gin.H{"codigo_estudante": codigo, "mensalidades": out, "metodos_pagamento_por_academia": metodos, "metodos_pagamento_avisos_por_academia": avisos})
 }
 
 // IniciarPagamentoMensalidades is intentionally outside the academy/admin

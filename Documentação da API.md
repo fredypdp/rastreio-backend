@@ -1,8 +1,8 @@
 ---
-modificado: 14-10-2026 00:00
+modificado: 25-10-2026 00:00
 criado: 05-04-2026 13:01
 ---
-Versão atual: 2.8.0
+Versão atual: 2.9.0
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -4350,6 +4350,7 @@ GET /solicitacao-matricula/AB12CD34EF5/status HTTP/1.1
 
 - `valor_matricula` e `metodos_pagamento` só aparecem quando `status` é `aprovada_pendente_pagamento_matricula`.
 - `metodos_pagamento` traz apenas os métodos habilitados pela academia que o provedor de pagamento ativo dela suporta; sem provedor ativo com credenciais vem vazio.
+- Quando `metodos_pagamento` vem vazio, a resposta traz também `metodos_pagamento_aviso` (2.9.0) — `{ "codigo", "mensagem" }` com um dos códigos `PROVEDOR_NAO_CONFIGURADO`, `METODOS_NAO_SUPORTADOS_PELO_PROVEDOR` ou `NENHUM_METODO_HABILITADO` — para que o cliente explique ao candidato por que não há como pagar. Com métodos disponíveis o campo não aparece.
 - Para `pendente`, `aprovada`, `reprovada` ou `cancelada`, a resposta traz apenas `status` e `codigo_academia`.
 - Não expõe nome, documentos nem qualquer outro dado do candidato.
 
@@ -7860,6 +7861,8 @@ O módulo financeiro é dividido por **provedores de serviços de pagamento (PSP
 | `GET` | `/financeiro/provedores` | Catálogo dos provedores implementados: campos de credencial, métodos suportados, webhooks (19.27). |
 | `GET` | `/financeiro/provedor` | Provedor ativo do contexto e estado de cada provedor (credenciais, cobranças pendentes) (19.28). |
 | `PUT` | `/financeiro/provedor` | Define o provedor único das cobranças novas do contexto (19.28). |
+
+Além das rotas acima, o servidor executa em segundo plano a **reconciliação automática de cobranças pendentes** (19.29): consulta o provedor das cobranças ainda pendentes e aplica o resultado pelo mesmo caminho do webhook, como rede de segurança.
 | `POST` | `/financeiro/credenciais` | Cria credenciais de um provedor para a própria academia ou, para admin FPP, somente `spuri`. |
 | `PUT` | `/financeiro/credenciais/:id` | Substitui credencial da própria academia ou, para admin FPP, somente do contexto `spuri`. |
 | `GET` | `/financeiro/credenciais` | Lista credenciais mascaradas (de todos os provedores) por contexto autorizado. |
@@ -7947,13 +7950,22 @@ O módulo financeiro é dividido por **provedores de serviços de pagamento (PSP
 
 **Request JSON:** igual ao `POST /financeiro/credenciais`.
 
-**Response 200:** igual ao `POST /financeiro/credenciais` (sem `webhook_secret`), com o mesmo `id` informado na URL e `updated_at` atualizado.
+**Response 200:** igual ao `POST /financeiro/credenciais` (sem `webhook_secret`), com o mesmo `id` informado na URL e `updated_at` atualizado. Acrescenta dois campos que descrevem o efeito da edição sobre as cobranças pendentes (omitidos quando valem zero/`false`):
+
+```json
+{ "snapshot_criado": true, "cobrancas_pendentes": 2 }
+```
+
+- `cobrancas_pendentes`: quantas cobranças pendentes o provedor tem no contexto.
+- `snapshot_criado`: `true` quando a edição alterou algum valor e havia pendentes que dependiam da credencial editada — as credenciais **anteriores** foram arquivadas (snapshot) para concluí-las.
 
 **Regras de negócio:**
 
 - A atualização revalida todas as regras do cadastro de credenciais; envie o conjunto completo de campos obrigatórios.
 - A atualização é sempre uma substituição completa dos dados de conta; o segredo de webhook nunca é alterado por este endpoint — ele só muda por rotação explícita (`POST .../webhook-secret/rotacionar`, seção 19.13).
 - A rota não expõe o valor antigo nem o novo valor dos segredos.
+- **Snapshot ao editar (2.9.0).** Quando existem cobranças pendentes do provedor no contexto e a edição altera algum valor, o estado anterior das credenciais é arquivado (mesma estrutura do snapshot por remoção, com `motivo: "editada"`) e as pendentes passam a apontar para ele; a credencial ativa mantém o mesmo `id` e recebe os valores novos. As pendentes continuam a ser consultadas, canceladas e autenticadas por webhook com os segredos com que foram emitidas; o snapshot é descartado (com os segredos do cofre) quando a última pendente é resolvida. Cobranças criadas depois da edição usam as credenciais novas. Reenviar os mesmos valores, ou editar sem pendentes, não cria snapshot. Uma segunda edição com pendentes que já usam um snapshot não cria outro.
+- O mesmo vale para o `POST /financeiro/credenciais` quando ele atualiza uma credencial já existente do mesmo contexto/ambiente/provedor.
 - Academia só pode manter o escopo no próprio contexto; mudança para `spuri` ou outra academia é bloqueada por autorização.
 
 #### 19.3 GET /financeiro/credenciais
@@ -8591,9 +8603,12 @@ A obrigação mensal usa a chave estável `(codigo_estudante, codigo_academia, a
   ],
   "metodos_pagamento_por_academia": {
     "ACA001": ["REF", "GPO_QR"]
-  }
+  },
+  "metodos_pagamento_avisos_por_academia": {}
 }
 ```
+
+`metodos_pagamento_avisos_por_academia` (2.9.0) existe sempre; traz, por academia, um aviso `{ "codigo", "mensagem" }` **somente** quando a lista de métodos dessa academia veio vazia, explicando por quê. Códigos: `PROVEDOR_NAO_CONFIGURADO` (a academia não tem provedor ativo com credenciais), `METODOS_NAO_SUPORTADOS_PELO_PROVEDOR` (há provedor, mas nenhum dos métodos habilitados é suportado por ele) e `NENHUM_METODO_HABILITADO`. Exemplo: `{ "ACA001": { "codigo": "PROVEDOR_NAO_CONFIGURADO", "mensagem": "A instituição ainda não definiu um provedor de pagamento, por isso não é possível pagar online neste momento. Contacte a secretaria da instituição." } }`. Clientes antigos podem ignorar o campo.
 
 **Regras de negócio:** `estado` é `pendente`, `pago` ou `anulado`; pagamento real prevalece sobre anulação, e reativação só muda mês anulado. `eventos_auditoria` lista IDs de eventos aplicados ao mês. `metodos_pagamento_por_academia` reflecte a configuração vigente mais recente **restrita aos métodos que o provedor de pagamento ativo da academia suporta** (sem provedor ativo com credenciais a lista vem vazia: não há como pagar); lista vazia significa propina desactivada para pagamento. Academia vê só a própria academia; estudante e FPP vêem todas.
 
@@ -8957,6 +8972,42 @@ Nas rotas de `/financeiro/*` (excepto o fluxo público 9.9–9.12), `404` só re
 - **Retroativo:** trocar de provedor nunca toca nas cobranças existentes nem nas credenciais do provedor anterior. As cobranças pendentes continuam sendo consultadas, confirmadas por webhook e canceladas junto ao provedor que as emitiu; `cobrancas_pendentes_no_anterior` diz quantas são.
 - Os métodos habilitados nas configurações de propina e de taxa de matrícula (19.14, 19.21) são validados contra o provedor ativo no momento de salvar; um método que o provedor ativo não suporta é recusado (`400`). Se o provedor mudar depois para um que não suporta um método já habilitado, a geração de cobrança por esse método falha com `400` até a configuração ser ajustada.
 - As primeiras credenciais configuradas num contexto sem provedor tornam esse provedor o ativo automaticamente. Contextos que já tinham credenciais AppyPay antes da Tarefa 119 passaram a ter `APPYPAY` como provedor ativo (migration 131).
+
+#### 19.29 Reconciliação automática de cobranças pendentes (2.9.0)
+
+Não é um endpoint: é um job em segundo plano do servidor, a rede de segurança dos webhooks. Para cada cobrança pendente de um provedor real, consulta o provedor ("como está esta cobrança agora?") e, se o estado mudou (paga, falhada, cancelada, expirada), aplica a resposta pelo **mesmo caminho** da consulta manual (`GET /financeiro/cobrancas/:id`) e dispara os **mesmos efeitos** do webhook: propina paga, matrícula efetivada, vínculo/lançamento de serviço extra e liberação de snapshots de credenciais. Cobertura: webhook perdido ou atrasado, servidor fora do ar e provedores sem webhook.
+
+**Funcionamento (pensado para banco cobrado por tempo de computação, como o NeonDB):**
+
+- As pendentes ficam num registro em memória, carregado com **uma** consulta no arranque, recarregado **uma vez por dia** como rede de segurança e mantido pelos eventos já gravados (criação e resolução de cobranças). Não há polling de tabela.
+- O laço dorme sem temporizador enquanto não há pendentes e, havendo, até a próxima data de verificação.
+- Uma verificação cujo resultado é "continua pendente" **não lê nem grava no banco**: usa dados do registro e as credenciais decifradas em cache (TTL padrão de 6 h; invalidado ao editar/remover credenciais e a cada erro do provedor). Só uma mudança de estado toca o banco.
+- Um erro do provedor **nunca** altera a cobrança: há recuo exponencial por cobrança (1 min até 1 h) e, após 5 erros seguidos de um provedor, um disjuntor pausa as consultas a ele (1 a 15 min). Há limite de taxa e de concorrência por provedor.
+- Cobranças já pagas cujos efeitos de negócio falham são repetidas (os efeitos são idempotentes) sem reconsultar o provedor.
+- Sem trava no banco: a aplicação é idempotente, então duas instâncias só duplicam consultas ao provedor. Em implantações com várias instâncias, desligue o job nas demais (`RECONCILIACAO_ATIVA=false`).
+- Cobranças com pagamento externo registado e a credencial emitente de cada cobrança (ativa ou snapshot) são respeitadas.
+
+**Política de reverificação por método** (padrão; um provedor pode declarar a sua, e cada cobrança usa o intervalo da faixa da sua idade; a última consulta acontece exatamente na idade máxima, depois a cobrança sai da reconciliação sem mudar de estado e continua consultável manualmente):
+
+| Método | Intervalos por idade da cobrança | Idade máxima |
+|---|---|---|
+| `GPO` | 2 min até 15 min · 10 min até 2 h · 1 h até 24 h | 24 h |
+| `GPO_QR` | 5 min até 1 h · 30 min até 12 h · 2 h até 3 dias · 12 h até 30 dias | 30 dias |
+| `REF` e outros | 10 min até 1 h · 30 min até 6 h · 2 h até 2 dias · 6 h até 7 dias · 24 h até 30 dias | 30 dias |
+
+A idade vem de `financeiro_cobrancas.emitida_em` (migration 133), o momento do primeiro evento da cobrança. Depois de um arranque, a primeira verificação das pendentes acontece em até ~1 minuto, espalhada.
+
+**Variáveis de ambiente (todas opcionais):**
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `RECONCILIACAO_ATIVA` | `true` | `false` ou `0` desliga o job |
+| `RECONCILIACAO_CONCORRENCIA` | `3` | consultas simultâneas por provedor |
+| `RECONCILIACAO_CHAMADAS_POR_SEGUNDO` | `2` | taxa máxima por provedor |
+| `RECONCILIACAO_CACHE_CREDENCIAIS_SEG` | `21600` | TTL do cache de credenciais |
+| `RECONCILIACAO_RESYNC_MIN` | `1440` | recarrega as pendentes do banco a cada N min (padrão: diário); `0` = só no arranque |
+
+Os eventos de ledger gravados pelo job usam o ator `sistema:reconciliacao` (tipo `sistema`). O token de acesso do provedor passa a ser guardado em cache por credencial **e** valores (`client_id`/`client_secret`), de modo que editar uma credencial deixa de reaproveitar o token do cliente anterior.
 
 ## 20. Armazenamento
 
@@ -9484,6 +9535,8 @@ Exemplo (`Natação`):
 
 **Regras de negócio:** campos financeiros são obrigatórios apenas quando a respectiva cobrança estiver ativa; `anos_academicos_disponiveis` e `cursos_disponiveis` vazios (ambos) disponibilizam o serviço para todos os anos/cursos. `anos_academicos_disponiveis` só aceita anos de ensino fundamental (`N_ano_fundamental`), sem vínculo com curso — o ensino fundamental não tem cursos neste sistema. `cursos_disponiveis` restringe a um curso específico: cada item é `"<curso_id>|<ano_academico>"`, com ano médio ou superior — médio e superior são sempre escopados a um curso, nunca soltos. O curso precisa pertencer à mesma academia, não estar deletado, ter o tipo correspondente ao ano e conter o ano entre seus anos acadêmicos. As duas listas são combináveis (ex.: fundamental solto + um curso médio específico). Em `POST /estudante/servicos-extras/:id/solicitacao`, se o serviço tiver restrições, o estudante só consegue se inscrever quando seu ano/curso atual corresponder a uma das listas; caso contrário recebe `403`.
 
+
+**Métodos de pagamento e provedor (2.9.0).** `metodos_pagamento` e `metodos_pagamento_taxa_inscricao` precisam ser suportados pelo provedor de pagamento ativo da academia; um método não suportado é recusado com `400` (`VALIDATION_ERROR`, a mensagem cita o método e o provedor). Em `PUT` só as listas enviadas são validadas, então editar outro campo de um serviço com método legado não é bloqueado.
 ### 23.2 Atualizar serviço extra
 **Proteção:** academia proprietária autenticada e ativa. `PUT /academia/servicos-extras/:id`. Aceita os mesmos campos da criação (incluindo `cursos_disponiveis` e `categoria_servico_id`) de forma parcial — envie só os campos que quer alterar. Enviar `categoria_servico_id` explicitamente como `null` remove a categoria do serviço; omitir o campo mantém a categoria atual inalterada.
 
@@ -9495,6 +9548,8 @@ Exemplo (`Natação`):
 
 ### 23.5 Listar e consultar serviços extras
 **Proteção:** `GET /academia/servicos-extras` e `GET /academia/servicos-extras/:id` exigem academia ou admin autenticado. A listagem pública `GET /academia/servico/:codigo_academia/servicos-extras` retorna somente serviços ativos.
+
+**Métodos de pagamento vistos por quem paga (2.9.0).** A listagem pública e o catálogo do estudante (`GET /estudante/servicos-extras/catalogo`) devolvem em `metodos_pagamento` e `metodos_pagamento_taxa_inscricao` só os métodos que o provedor ativo da academia suporta (lista vazia sem provedor). Quando a lista de um serviço pago (ou da taxa de inscrição) fica vazia, o item traz `metodos_pagamento_aviso` / `metodos_pagamento_taxa_inscricao_aviso` com `{ "codigo", "mensagem" }` (códigos em 19.17). Serviços gratuitos não trazem aviso. As rotas da **academia** (`GET /academia/servicos-extras`, `/:id`) continuam mostrando exatamente o que foi configurado, para a academia poder corrigir.
 
 ### 23.6 Categorias de serviço
 **Proteção:** todas exigem academia autenticada e ativa; as rotas de escrita (atualizar/desativar/reativar/deletar) exigem que a categoria pertença à academia autenticada — `403` caso contrário (`404` se o ID não existir).
@@ -9512,6 +9567,8 @@ Exemplo (`Natação`):
 
 ### 23.8 Inscrições em serviços extras
 Estudantes podem criar solicitações em `POST /estudante/servicos-extras/:id/solicitacao`, consultar `GET /estudante/servicos-extras/minhas-inscricoes` e cancelar vínculos próprios. Academias listam, aprovam, reprovam ou cancelam solicitações em `/academia/servicos-extras/solicitacoes` e `/academia/servicos-extras/inscricoes/:id/cancelar`. As listagens financeiras aceitam `origem=servico_extra` para filtrar exclusivamente taxas de inscrição de serviços extras. Uma inscrição pode ter cobranças de `taxa_inscricao`, `mensalidade` ou `preco_unico`, sempre com `origem=servico_extra`.
+
+Em `GET /estudante/servicos-extras/minhas-inscricoes`, `metodos_pagamento_taxa_inscricao` de cada inscrição com taxa traz só os métodos que o provedor ativo da academia suporta, acompanhado de `metodos_pagamento_taxa_inscricao_aviso` quando fica vazio (2.9.0).
 
 ### 23.9 Pendências e pagamento
 - `GET /estudante/servicos-extras/minhas-inscricoes/:id/pendencias` lista as pendências da própria inscrição.

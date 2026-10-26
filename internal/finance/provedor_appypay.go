@@ -7,6 +7,8 @@ package finance
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,8 +20,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type Endpoints struct{ TokenURL, APIBaseURL string }
@@ -105,9 +105,18 @@ func (p *appyPayProvider) callJSON(ctx context.Context, cred credencialProvedor,
 	return out, nil
 }
 
+// chaveTokenAppyPay é a chave do cache de token: o ID da credencial MAIS um
+// resumo dos valores com que o token foi emitido. Assim, editar o client_id ou
+// o client_secret de uma credencial (que mantém o mesmo ID) invalida o token em
+// cache em vez de continuar usando, por até uma hora, o token do cliente antigo.
+func chaveTokenAppyPay(cred credencialProvedor) string {
+	soma := sha256.Sum256([]byte(cred.Valores["client_id"] + "\x00" + cred.Valores["client_secret"]))
+	return cred.ID.String() + ":" + hex.EncodeToString(soma[:8])
+}
+
 func (p *appyPayProvider) token(ctx context.Context, cred credencialProvedor) (string, error) {
 	p.mu.Lock()
-	cached, ok := p.tokens[cred.ID]
+	cached, ok := p.tokens[chaveTokenAppyPay(cred)]
 	p.mu.Unlock()
 	if ok && time.Until(cached.expiresAt) > time.Minute {
 		return cached.value, nil
@@ -145,7 +154,7 @@ func (p *appyPayProvider) token(ctx context.Context, cred credencialProvedor) (s
 		out.ExpiresIn = 3600
 	}
 	p.mu.Lock()
-	p.tokens[cred.ID] = tokenEntry{out.AccessToken, time.Now().Add(time.Duration(out.ExpiresIn) * time.Second)}
+	p.tokens[chaveTokenAppyPay(cred)] = tokenEntry{out.AccessToken, time.Now().Add(time.Duration(out.ExpiresIn) * time.Second)}
 	p.mu.Unlock()
 	return out.AccessToken, nil
 }
@@ -324,14 +333,14 @@ const asyncAccept = "application/vnd.appypay.asyncapi+json"
 type appyPayProvider struct {
 	httpClient *http.Client
 	mu         sync.Mutex
-	tokens     map[uuid.UUID]tokenEntry
+	tokens     map[string]tokenEntry
 }
 
 func novoProvedorAppyPay(client *http.Client) Provedor {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
-	return &appyPayProvider{httpClient: client, tokens: map[uuid.UUID]tokenEntry{}}
+	return &appyPayProvider{httpClient: client, tokens: map[string]tokenEntry{}}
 }
 
 func (p *appyPayProvider) ID() string   { return ProvedorAppyPay }

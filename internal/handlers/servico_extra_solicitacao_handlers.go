@@ -448,13 +448,16 @@ func ListarMinhasInscricoesServicoExtra(c *gin.Context) {
 	}
 	defer rows.Close()
 	out := []gin.H{}
+	disps := map[string]finance.PagamentoDisponivel{}
 	for rows.Next() {
 		var sid uuid.UUID
 		if rows.Scan(&sid) != nil {
 			continue
 		}
 		if s, ok := loadSolicitacaoServicoExtra(c, sid); ok {
-			out = append(out, solicitacaoServicoExtraToJSON(s))
+			// Os métodos da taxa de inscrição que o estudante pode usar
+			// dependem do provedor ativo da academia (Tarefa 121).
+			out = append(out, solicitacaoServicoExtraParaPagador(c.Request.Context(), disps, s, solicitacaoServicoExtraToJSON(s)))
 		}
 	}
 	c.JSON(200, gin.H{"inscricoes": out, "total": len(out)})

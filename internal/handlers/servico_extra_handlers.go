@@ -250,6 +250,19 @@ func CriarServicoExtra(c *gin.Context) {
 		utils.RespondWithValidationError(c, e)
 		return
 	}
+	// Os métodos precisam ser suportados pelo provedor ativo da academia
+	// (Tarefa 121); a geração da cobrança já recusava, agora a configuração também.
+	var metodosNovos []string
+	if r.Pago {
+		metodosNovos = append(metodosNovos, r.MetodosPagamento...)
+	}
+	if r.TemTaxaInscricao {
+		metodosNovos = append(metodosNovos, r.MetodosPagamentoTaxaInscricao...)
+	}
+	if e := FinanceiroService.ValidarMetodosSeHouverProvedor(c.Request.Context(), codigo, metodosNovos); e != nil {
+		financeError(c, e)
+		return
+	}
 	s := aggregates.NewServicoExtra()
 	if e := s.Criar(codigo, r.Nome, r.Descricao, r.CategoriaServicoID, r.Pago, r.Preco, r.TipoCobranca, r.MetodosPagamento, r.TemTaxaInscricao, r.ValorTaxaInscricao, r.MetodosPagamentoTaxaInscricao, r.AnosAcademicosDisponiveis, r.CursosDisponiveis, r.DocumentoObrigatorio, r.DocumentoInstrucoes, r.DetalhesPersonalizados, id); e != nil {
 		utils.RespondWithValidationError(c, e)
@@ -311,6 +324,20 @@ func AtualizarServicoExtra(c *gin.Context) {
 			utils.RespondWithValidationError(c, fmt.Errorf("não é possível configurar cobrança sem um provedor de pagamento configurado (com credenciais)"))
 			return
 		}
+	}
+	// Só as listas de métodos enviadas são validadas contra o provedor ativo
+	// (Tarefa 121): editar outro campo de um serviço com método legado
+	// não suportado não pode ser bloqueado por isso.
+	var metodosNovos []string
+	if r.informado["metodos_pagamento"] && pago {
+		metodosNovos = append(metodosNovos, r.MetodosPagamento...)
+	}
+	if r.informado["metodos_pagamento_taxa_inscricao"] && taxa {
+		metodosNovos = append(metodosNovos, r.MetodosPagamentoTaxaInscricao...)
+	}
+	if e := FinanceiroService.ValidarMetodosSeHouverProvedor(c.Request.Context(), s.CodigoAcademia, metodosNovos); e != nil {
+		financeError(c, e)
+		return
 	}
 	if r.informado["categoria_servico_id"] {
 		if e := validarCategoriaServico(c, s.CodigoAcademia, r.CategoriaServicoID); e != nil {
@@ -450,7 +477,10 @@ func ListarServicosExtrasPublico(c *gin.Context) {
 		utils.RespondWithInternalError(c, e)
 		return
 	}
-	c.JSON(200, gin.H{"servicos_extras": x, "total": len(x)})
+	// Para quem paga, só os métodos que o provedor ativo da academia suporta,
+	// com aviso quando não sobra nenhum (Tarefa 121). A visão da academia
+	// (ListarServicosExtrasAcademia) continua mostrando o que foi configurado.
+	c.JSON(200, gin.H{"servicos_extras": servicosExtrasParaPagador(c.Request.Context(), c.Param("codigo_academia"), x), "total": len(x)})
 }
 
 // ListarServicosExtrasCatalogoEstudante é o catálogo que o estudante
@@ -494,5 +524,5 @@ func ListarServicosExtrasCatalogoEstudante(c *gin.Context) {
 		utils.RespondWithInternalError(c, e)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"servicos_extras": disponiveis, "categorias_servico": categorias, "total": len(disponiveis)})
+	c.JSON(http.StatusOK, gin.H{"servicos_extras": servicosExtrasParaPagador(c.Request.Context(), *est.CodigoAcademia, disponiveis), "categorias_servico": categorias, "total": len(disponiveis)})
 }

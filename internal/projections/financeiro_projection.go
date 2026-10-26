@@ -305,6 +305,32 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
 		// Um provedor sem credenciais ativas não pode continuar ativo.
 		_, err = p.client.DB().Exec(`DELETE FROM financeiro_provedores_pagamento WHERE contexto_tipo=$1 AND COALESCE(codigo_academia,'')=$2 AND provedor=$3`, contexto, academia.String, provedor)
 		return err
+	case aggregates.CredenciaisProvedorSnapshotPorEdicao:
+		// Credenciais editadas com cobranças pendentes (Tarefa 121): o estado
+		// anterior vira um snapshot (AggregateID do evento) e as cobranças
+		// pendentes do contexto + provedor que dependiam da credencial editada
+		// passam a apontar para ele, de modo que continuam sendo concluídas
+		// com os segredos com que foram emitidas. A credencial ativa mantém o
+		// mesmo ID; o cofre (fora do replay) já foi copiado pelo Service.
+		contexto, _ := v["contexto_tipo"].(string)
+		academia, _ := v["codigo_academia"].(string)
+		ambiente, _ := v["ambiente"].(string)
+		provedor := provedorDoPayload(v)
+		origem, _ := v["credential_id_origem"].(string)
+		editadaPor, _ := v["editada_por"].(string)
+		pendentes, _ := v["cobrancas_pendentes"].(float64)
+		if _, err := uuid.Parse(origem); err != nil || (contexto != "spuri" && contexto != "academia") {
+			return fmt.Errorf("evento de snapshot por edição inválido")
+		}
+		snapshot, _ := json.Marshal(map[string]any{"credenciais_mascaradas": v["credenciais_mascaradas"], "editada_por": editadaPor, "cobrancas_pendentes": int(pendentes)})
+		if _, err := p.client.DB().Exec(`INSERT INTO financeiro_credenciais_arquivadas (credential_id,contexto_tipo,codigo_academia,ambiente,provedor,payload,cobrancas_pendentes,arquivada_por,arquivada_em,motivo) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,'editada') ON CONFLICT (credential_id) DO NOTHING`, e.AggregateID, contexto, academia, ambiente, provedor, snapshot, int(pendentes), editadaPor, e.OccurredAt); err != nil {
+			return err
+		}
+		_, err := p.client.DB().Exec(`UPDATE financeiro_cobrancas SET credencial_id=$1
+			WHERE provedor=$2 AND contexto_tipo=$3 AND codigo_academia IS NOT DISTINCT FROM NULLIF($4,'')
+			AND (credencial_id=$5 OR credencial_id IS NULL)
+			AND lower(COALESCE(payload->>'status','')) NOT IN ('success','cancelada','falhada','failed','cancelled','expired')`, e.AggregateID, provedor, contexto, academia, origem)
+		return err
 	case aggregates.CredenciaisArquivadasPurgadas:
 		// A última cobrança pendente que dependia do snapshot foi resolvida:
 		// o snapshot é descartado (o Service já limpou o cofre).
@@ -334,7 +360,7 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
 		// O provedor é gravado na criação e nunca muda: é ele que garante que
 		// a cobrança continue sendo consultada/cancelada/confirmada pelo
 		// provedor que a emitiu mesmo depois de o contexto trocar de provedor.
-		_, err := p.client.DB().Exec(`INSERT INTO financeiro_cobrancas (id,provider_charge_id,merchant_transaction_id,contexto_tipo,codigo_academia,provedor,credencial_id,payload,updated_at) VALUES ($1,NULLIF($2,''),$3,$4,NULLIF($5,''),$6,$7,$8,CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET provider_charge_id=COALESCE(EXCLUDED.provider_charge_id,financeiro_cobrancas.provider_charge_id),credencial_id=COALESCE(financeiro_cobrancas.credencial_id,EXCLUDED.credencial_id),payload=EXCLUDED.payload,updated_at=CURRENT_TIMESTAMP`, e.AggregateID, provider, merchant, contexto, academia, provedorDoPayload(v), credencialDoPayload(v), e.Payload)
+		_, err := p.client.DB().Exec(`INSERT INTO financeiro_cobrancas (id,provider_charge_id,merchant_transaction_id,contexto_tipo,codigo_academia,provedor,credencial_id,payload,emitida_em,updated_at) VALUES ($1,NULLIF($2,''),$3,$4,NULLIF($5,''),$6,$7,$8,$9,CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET provider_charge_id=COALESCE(EXCLUDED.provider_charge_id,financeiro_cobrancas.provider_charge_id),credencial_id=COALESCE(financeiro_cobrancas.credencial_id,EXCLUDED.credencial_id),emitida_em=COALESCE(financeiro_cobrancas.emitida_em,EXCLUDED.emitida_em),payload=EXCLUDED.payload,updated_at=CURRENT_TIMESTAMP`, e.AggregateID, provider, merchant, contexto, academia, provedorDoPayload(v), credencialDoPayload(v), e.Payload, e.OccurredAt)
 		if err != nil {
 			return err
 		}

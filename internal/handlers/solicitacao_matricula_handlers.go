@@ -446,7 +446,15 @@ func ConsultarStatusSolicitacaoMatricula(c *gin.Context) {
 	}
 	// Só os métodos habilitados pela academia que o provedor de pagamento ativo
 	// dela suporta (Tarefa 120).
-	c.JSON(http.StatusOK, gin.H{"status": status, "codigo_academia": academia, "valor_matricula": valor.Float64, "metodos_pagamento": FinanceiroService.FiltrarMetodosPorProvedor(c.Request.Context(), academia, metodos)})
+	// Quando a lista fica vazia, "metodos_pagamento_aviso" explica o motivo
+	// (provedor não configurado, métodos não suportados...) (Tarefa 121).
+	disp := FinanceiroService.PagamentoDisponivel(c.Request.Context(), academia)
+	disponiveis := disp.Filtrar(metodos)
+	resposta := gin.H{"status": status, "codigo_academia": academia, "valor_matricula": valor.Float64, "metodos_pagamento": disponiveis}
+	if aviso := disp.Aviso(metodos, disponiveis); aviso != nil {
+		resposta["metodos_pagamento_aviso"] = aviso
+	}
+	c.JSON(http.StatusOK, resposta)
 }
 
 func BuscarSolicitacoesMatricula(c *gin.Context) {

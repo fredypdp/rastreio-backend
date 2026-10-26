@@ -40,6 +40,11 @@ type CredentialView struct {
 	Ativo             bool      `json:"ativo"`
 	WebhookHeaderName string    `json:"webhook_header_name,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at"`
+	// SnapshotCriado e CobrancasPendentes só vêm preenchidos na resposta de uma
+	// edição (Tarefa 121): informam que as credenciais anteriores foram
+	// arquivadas para concluir as cobranças pendentes e quantas eram.
+	SnapshotCriado     bool `json:"snapshot_criado,omitempty"`
+	CobrancasPendentes int  `json:"cobrancas_pendentes,omitempty"`
 }
 
 // mask devolve a versão mascarada de um valor, deixando visíveis só os quatro
@@ -122,13 +127,16 @@ func (s *Service) ConfigureCredential(ctx context.Context, id *uuid.UUID, in Cre
 		return CredentialView{}, "", err
 	}
 	credentialID := uuid.New()
+	existed := false
 	if id != nil {
+		existed = true
 		credentialID = *id
 		if err := s.credentialBelongsToScope(ctx, credentialID, in.ContextoTipo, in.CodigoAcademia, in.Ambiente, prov.ID()); err != nil {
 			return CredentialView{}, "", err
 		}
 	} else if found, err := s.findCredentialID(ctx, in.ContextoTipo, in.CodigoAcademia, in.Ambiente, prov.ID()); err == nil {
 		credentialID = found
+		existed = true
 	}
 	secretsToSave := make(map[string]string, len(valores)+1)
 	for k, v := range valores {
@@ -155,12 +163,23 @@ func (s *Service) ConfigureCredential(ctx context.Context, id *uuid.UUID, in Cre
 		view.WebhookHeaderName = WebhookHeaderName
 	}
 	payload := map[string]any{"credential_id": credentialID.String(), "contexto_tipo": view.ContextoTipo, "codigo_academia": view.CodigoAcademia, "ambiente": view.Ambiente, "provedor": view.Provedor, "credenciais_mascaradas": view.CredenciaisMascaradas, "updated_at": view.UpdatedAt}
+	var snapshot resultadoSnapshotEdicao
+	if existed {
+		// Editar com cobranças pendentes: preserva as credenciais anteriores
+		// antes de sobrescrevê-las (ver credenciais_snapshot.go).
+		if snapshot, err = s.snapshotAntesDeEditar(ctx, prov, credentialID, in, valores, userID, userType, ip); err != nil {
+			return CredentialView{}, "", err
+		}
+	}
 	if err := s.record(ctx, credentialID, "CredenciaisProvedorConfiguradas", payload, userID, userType, ip); err != nil {
 		return CredentialView{}, "", err
 	}
 	if err := s.saveSecrets(ctx, credentialID, secretsToSave); err != nil {
 		return CredentialView{}, "", err
 	}
+	s.reconc.credenciaisAlteradas()
+	view.SnapshotCriado = snapshot.SnapshotID != uuid.Nil
+	view.CobrancasPendentes = snapshot.CobrancasPendentes
 	if ativo, err := s.ProvedorAtivo(ctx, in.ContextoTipo, in.CodigoAcademia); err == nil && ativo == view.Provedor {
 		view.Ativo = true
 	}
@@ -276,6 +295,7 @@ type RemocaoCredencialResultado struct {
 // (financeiro_segredos_provedor) vive fora do replay do ledger e por isso é
 // tratado neste mesmo comando.
 func (s *Service) RemoveCredential(ctx context.Context, contextoTipo, codigoAcademia, provedor, userID, userType, ip string) (RemocaoCredencialResultado, error) {
+	defer s.reconc.credenciaisAlteradas()
 	if s.client == nil {
 		return RemocaoCredencialResultado{}, errors.New("serviço financeiro não inicializado")
 	}
@@ -692,6 +712,10 @@ func (s *Service) purgarArquivadasSemPendentes(ctx context.Context, contexto, ac
 		if _, err := s.client.DB().ExecContext(ctx, `DELETE FROM financeiro_segredos_provedor WHERE credential_id=$1`, id); err != nil {
 			return err
 		}
+		// Só a entrada deste snapshot: esta função roda a cada cobrança que
+		// chega a estado terminal, e esvaziar o cache inteiro a cada pagamento
+		// anularia o ganho de não reler o cofre.
+		s.reconc.creds.remover(id.String())
 	}
 	return nil
 }

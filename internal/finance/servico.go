@@ -232,6 +232,9 @@ type Service struct {
 	// provedores são os provedores de pagamento implementados, por ID. O
 	// núcleo nunca fala com um PSP diretamente: sempre através de Provedor.
 	provedores map[string]Provedor
+	// reconc é a reconciliação automática de cobranças pendentes. Só trabalha
+	// depois de IniciarReconciliacao; antes disso observar eventos é um no-op.
+	reconc *reconciliador
 }
 
 func NewService(client *db.Client) *Service {
@@ -241,7 +244,9 @@ func NewService(client *db.Client) *Service {
 		repo = db.NewAggregateRepository(client)
 		projection = projections.NewFinanceiroProjection(client)
 	}
-	return &Service{client: client, repository: repo, projection: projection, provedores: novosProvedores(nil)}
+	s := &Service{client: client, repository: repo, projection: projection, provedores: novosProvedores(nil)}
+	s.reconc = novoReconciliador(s)
+	return s
 }
 
 // SetHTTPClient overrides the HTTP client used by every payment provider. It
@@ -909,6 +914,20 @@ func (s *Service) consultCharge(ctx context.Context, row chargeRow, actorID, act
 	if err != nil {
 		return ChargeResult{}, err
 	}
+	return s.aplicarConsulta(ctx, row, resp, actorID, actorType, ip)
+}
+
+// aplicarConsulta aplica à cobrança a resposta de uma consulta ao provedor:
+// normaliza o estado, trata o conflito pós-cancelamento e grava o evento
+// CobrancaConsultada quando algo mudou. Está separada de consultCharge para que
+// a reconciliação automática, que já consultou o provedor com credenciais em
+// cache, aplique a mesma resposta pelo mesmo caminho sem consultar duas vezes.
+func (s *Service) aplicarConsulta(ctx context.Context, row chargeRow, resp respostaProvedor, actorID, actorType, ip string) (ChargeResult, error) {
+	var err error
+	// Pagamento registado manualmente pela academia: nunca é rebaixado.
+	if externo, _ := row.Payload["pagamento_externo"].(bool); externo && isSuccessfulChargeStatus(row.Status) {
+		return ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}, nil
+	}
 	response, outcome := resp.Bruta, resp.Outcome
 	status := normalizeChargeStatus(outcome.Status)
 	if status == "" {
@@ -968,6 +987,7 @@ func (s *Service) record(ctx context.Context, id uuid.UUID, event string, payloa
 		return err
 	}
 	s.liberarSnapshotsSeCobrancaTerminal(ctx, event, clean)
+	s.observarReconciliacao(event, clean, id)
 	return nil
 }
 
@@ -1143,6 +1163,11 @@ func (s *Service) loadCharge(ctx context.Context, identifier string) (chargeRow,
 
 // loadChargeDoProvedor localiza uma cobrança dentro de um provedor — os
 // identificadores do provedor só são únicos dentro dele.
+// loadChargeByID localiza uma cobrança pelo seu id interno.
+func (s *Service) loadChargeByID(ctx context.Context, id uuid.UUID) (chargeRow, error) {
+	return s.loadChargeWhere(ctx, id.String(), "")
+}
+
 func (s *Service) loadChargeDoProvedor(ctx context.Context, provedor, identifier string) (chargeRow, error) {
 	return s.loadChargeWhere(ctx, identifier, provedor)
 }

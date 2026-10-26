@@ -157,26 +157,3 @@ func (s *Service) validarMetodosDoProvedor(ctx context.Context, academia, objeto
 }
 
 func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
-
-// FiltrarMetodosPorProvedor devolve, na ordem recebida, apenas os métodos que o
-// provedor ATIVO da academia suporta — é o que o pagador (estudante) pode
-// realmente usar. Sem provedor ativo com credenciais devolve lista vazia (não
-// há como pagar). Numa falha de infraestrutura devolve os métodos recebidos: uma
-// falha transitória não esconde opções, e a geração da cobrança continua
-// validando o método.
-func (s *Service) FiltrarMetodosPorProvedor(ctx context.Context, academia string, metodos []string) []string {
-	prov, _, err := s.loadCredentialAtiva(ctx, ContextoAcademia, academia)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return []string{}
-		}
-		return metodos
-	}
-	out := make([]string, 0, len(metodos))
-	for _, m := range metodos {
-		if suportaMetodo(prov, m) {
-			out = append(out, m)
-		}
-	}
-	return out
-}

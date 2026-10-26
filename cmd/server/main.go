@@ -68,6 +68,7 @@ func main() {
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	defer ctxCancel()
 	initJobs(ctx)
+	initReconciliacao(ctx)
 
 	if env == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -240,6 +241,23 @@ func initJobs(ctx context.Context) {
 
 	jobWorker.Start(ctx)
 	log.Println("[INFO] Job worker iniciado com 4 goroutines")
+}
+
+// initReconciliacao inicia o job que reconcilia cobranças pendentes com o
+// provedor (rede de segurança dos webhooks). Uma falha aqui não impede a API de
+// subir: o webhook e a consulta manual continuam funcionando.
+func initReconciliacao(ctx context.Context) {
+	handlers.FinanceiroService.SetEfeitosPagamento(handlers.NovosEfeitosPagamento(dbClient, repository))
+	cfg := finance.ConfigReconciliacaoDoAmbiente()
+	if !cfg.Ativa {
+		log.Println("[INFO] Reconciliação de cobranças desativada (RECONCILIACAO_ATIVA=false)")
+		return
+	}
+	if err := handlers.FinanceiroService.IniciarReconciliacao(ctx, cfg); err != nil {
+		log.Printf("[ERROR] Reconciliação de cobranças não iniciou: %v", err)
+		return
+	}
+	log.Println("[INFO] Reconciliação de cobranças iniciada")
 }
 
 func setupRouter() *gin.Engine {

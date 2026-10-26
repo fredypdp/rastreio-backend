@@ -187,22 +187,9 @@ func ConsultarCobranca(c *gin.Context) {
 	// normal para GPO/REF, que nunca retornam "success" na criação) nunca
 	// efetiva a matrícula.
 	if strings.EqualFold(strings.TrimSpace(out.Status), "success") {
-		if codigo, err := FinanceiroService.CodigoSolicitacaoDaCobranca(c.Request.Context(), c.Param("id")); err == nil && codigo != "" {
-			if err := efetivarVinculoMatriculaPaga(c, codigo); err != nil {
-				utils.RespondWithInternalError(c, err)
-				return
-			}
-		}
-		if codigo, tipo, mes, ano, err := FinanceiroService.DadosServicoExtraDaCobranca(c.Request.Context(), c.Param("id")); err == nil && codigo != "" {
-			switch tipo {
-			case "taxa_inscricao":
-				if err := efetivarVinculoServicoExtraPago(c, codigo); err != nil {
-					utils.RespondWithInternalError(c, err)
-					return
-				}
-			case "mensalidade", "preco_unico":
-				_ = FinanceiroService.ConfirmarLancamentoServicoExtraPago(c.Request.Context(), codigo, tipo, ano, mes, id.String(), t, c.ClientIP())
-			}
+		if err := aplicarEfeitosPagamento(c, c.Param("id"), id.String(), t, c.ClientIP()); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
 		}
 	}
 	c.JSON(http.StatusOK, out)
@@ -486,22 +473,9 @@ func ReceberWebhook(provedorID, metodo string) gin.HandlerFunc {
 			return
 		}
 		if confirmedSuccess {
-			if codigo, err := FinanceiroService.CodigoSolicitacaoDaCobranca(c.Request.Context(), eventID); err == nil && codigo != "" {
-				if err := efetivarVinculoMatriculaPaga(c, codigo); err != nil {
-					c.Status(http.StatusInternalServerError)
-					return
-				}
-			}
-			if codigo, tipo, mes, ano, err := FinanceiroService.DadosServicoExtraDaCobranca(c.Request.Context(), eventID); err == nil && codigo != "" {
-				switch tipo {
-				case "taxa_inscricao":
-					if err := efetivarVinculoServicoExtraPago(c, codigo); err != nil {
-						c.Status(http.StatusInternalServerError)
-						return
-					}
-				case "mensalidade", "preco_unico":
-					_ = FinanceiroService.ConfirmarLancamentoServicoExtraPago(c.Request.Context(), codigo, tipo, ano, mes, "pagamento:servico_extra", "sistema", c.ClientIP())
-				}
+			if err := aplicarEfeitosPagamento(c, eventID, "pagamento:servico_extra", "sistema", c.ClientIP()); err != nil {
+				c.Status(http.StatusInternalServerError)
+				return
 			}
 		}
 		status, contentType, resposta := prov.RespostaWebhook(true)
