@@ -56,6 +56,9 @@ var validEventTypes = map[string]bool{
 	"AcademiaDocumentosObrigatoriosAtualizados": true,
 	// ── Email Academia / Admin (compartilhado) ───────────────────────────────
 	"EmailVerificado": true,
+	// ── Verificação em duas etapas (compartilhado: Admin, Academia, Estudante) ─
+	"DoisFatoresAtivados":    true,
+	"DoisFatoresDesativados": true,
 	// ── Admin ────────────────────────────────────────────────────────────────
 	"AdminCriado":           true,
 	"AdminAtivado":          true,

@@ -1,6 +1,6 @@
 # Tarefa 120 — Snapshot de credenciais removidas, métodos por provedor e remoção dos aliases deprecados (backend)
 
-**Estado:** pendente
+**Estado:** feito
 **Repositório:** https://github.com/fredypdp/rastreio-backend
 **Gerado sobre:** `main` @ `758e714` (commit completo `758e7143a67e710bd00a052e9d0898ae74e735cd`, "feat(financeiro): módulo de pagamentos dividido por provedores (PSP) - tarefa 119"). Conferi que o `main` aplicado contém exatamente os arquivos entregues na Tarefa 119 (0 divergências).
 **Entrega:** arquivos completos e atualizados na pasta `rastreio-backend/`, com os mesmos caminhos do repositório

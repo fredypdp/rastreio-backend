@@ -30,8 +30,10 @@ type Academia struct {
 	TelefoneVerificado bool
 	Email              *string
 	EmailVerificado    bool
-	Website            *string
-	NivelEscolar       *string
+	// DoisFatoresAtivo (tarefa 122): verificação em duas etapas por e-mail ativa.
+	DoisFatoresAtivo bool
+	Website          *string
+	NivelEscolar     *string
 	// AnosAcademicos define os anos do ensino fundamental que esta academia oferece.
 	AnosAcademicos []string
 	Status         string
@@ -107,6 +109,12 @@ func (a *Academia) Apply(event DomainEvent) error {
 		return a.applyAcademiaDadosAtualizados(event)
 	case "EmailVerificado":
 		return a.applyEmailVerificado(event)
+	case "DoisFatoresAtivados":
+		a.DoisFatoresAtivo = true
+		return nil
+	case "DoisFatoresDesativados":
+		a.DoisFatoresAtivo = false
+		return nil
 	case "AcademiaSenhaAlterada":
 		return a.applyAcademiaSenhaAlterada(event)
 	case "CategoriaNotaAdicionada":
@@ -212,6 +220,35 @@ func (a *Academia) Criar(
 		CreatedAt:      time.Now(),
 	}
 
+	a.RaiseEvent(event)
+	return a.Apply(event)
+}
+
+// AtivarDoisFatores ativa a verificação em duas etapas por e-mail.
+// Exige e-mail verificado (o e-mail é o canal do código).
+func (a *Academia) AtivarDoisFatores() error {
+	if err := validarAtivacaoDoisFatores(a.DoisFatoresAtivo, a.Email != nil && *a.Email != "", a.EmailVerificado); err != nil {
+		return err
+	}
+	event := &DoisFatoresAtivadosEvent{
+		BaseEvent: BaseEvent{EventType: "DoisFatoresAtivados", AggregateID: a.ID},
+		Metodo:    MetodoDoisFatoresEmail,
+		AtivadoEm: time.Now(),
+	}
+	a.RaiseEvent(event)
+	return a.Apply(event)
+}
+
+// DesativarDoisFatores desativa a verificação em duas etapas (exige estar ativa).
+func (a *Academia) DesativarDoisFatores() error {
+	if err := validarDesativacaoDoisFatores(a.DoisFatoresAtivo); err != nil {
+		return err
+	}
+	event := &DoisFatoresDesativadosEvent{
+		BaseEvent:    BaseEvent{EventType: "DoisFatoresDesativados", AggregateID: a.ID},
+		Metodo:       MetodoDoisFatoresEmail,
+		DesativadoEm: time.Now(),
+	}
 	a.RaiseEvent(event)
 	return a.Apply(event)
 }
@@ -359,6 +396,9 @@ func (a *Academia) AtualizarDados(
 	}
 
 	emailAlterado := email != nil && (a.Email == nil || *a.Email != *email)
+	if emailAlterado && a.DoisFatoresAtivo {
+		return ErrEmailBloqueadoPorDoisFatores
+	}
 	telefoneAlterado := telefone != nil && (a.Telefone == nil || *a.Telefone != *telefone)
 
 	event := &AcademiaDadosAtualizadosEvent{

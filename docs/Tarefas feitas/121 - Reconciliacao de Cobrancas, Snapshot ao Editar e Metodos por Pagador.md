@@ -1,6 +1,6 @@
 # Tarefa 121 — Job de reconciliação de cobranças, snapshot ao editar credenciais e métodos por pagador (backend)
 
-**Estado:** pendente
+**Estado:** feito
 **Repositório:** https://github.com/fredypdp/rastreio-backend
 **Gerado sobre:** `main` @ `07f0617` (commit completo `07f06173660d486cef8964d1517c72c90fef2d45`, "feat(financeiro): snapshot de credenciais removidas e métodos por provedor - tarefa 120"). A Tarefa 120 já está aplicada nessa base. Conferido antes de entregar: `origin/main` continuava em `07f0617`.
 **Entrega:** arquivos completos e atualizados na pasta `rastreio-backend/`, com os mesmos caminhos do repositório (15 alterados, 16 novos, incluindo este documento). Nenhum arquivo é apagado, renomeado ou movido de diretório.

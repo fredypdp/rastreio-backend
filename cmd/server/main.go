@@ -306,6 +306,10 @@ func setupRouter() *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 	router.POST("/login", middleware.LoginRateLimit(), handlers.Login)
+	// Segunda etapa do login com verificação em duas etapas (tarefa 122). Públicas:
+	// o desafio_id devolvido por POST /login é a prova de que a senha estava correta.
+	router.POST("/login/dois-fatores/verificar", middleware.LoginRateLimit(), handlers.VerificarLoginDoisFatores)
+	router.POST("/login/dois-fatores/reenviar", middleware.LoginRateLimit(), handlers.ReenviarLoginDoisFatores)
 	router.POST("/bootstrap", middleware.LoginRateLimit(), handlers.BootstrapAdminFPP)
 	router.POST("/solicitacao-matricula", handlers.CriarSolicitacaoMatricula)
 	router.POST("/academia/cadastro", handlers.RegisterAcademiaPublica)
@@ -409,6 +413,12 @@ func setupRouter() *gin.Engine {
 		protected.GET("/meu-perfil", handlers.GetMeuPerfil)
 		protected.PUT("/me/email", handlers.AtualizarMeuEmail)
 		protected.PUT("/me/telefone", handlers.AtualizarMeuTelefone)
+		// Verificação em duas etapas por e-mail (tarefa 122)
+		protected.GET("/dois-fatores", handlers.ObterDoisFatores)
+		protected.POST("/dois-fatores/ativacao/solicitar", handlers.SolicitarAtivacaoDoisFatores)
+		protected.POST("/dois-fatores/ativacao/confirmar", handlers.ConfirmarAtivacaoDoisFatores)
+		protected.POST("/dois-fatores/desativacao/solicitar", handlers.SolicitarDesativacaoDoisFatores)
+		protected.POST("/dois-fatores/desativacao/confirmar", handlers.ConfirmarDesativacaoDoisFatores)
 		protected.GET("/eventos-estudante/:codigo", handlers.GetEventosEstudante)
 		protected.GET("/eventos/:event_id", handlers.GetEventoAuditoria)
 		protected.GET("/verificar-integridade/:codigo", handlers.VerificarIntegridade)

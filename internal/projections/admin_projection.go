@@ -55,15 +55,17 @@ func (p *AdminProjection) Handle(event db.Event) error {
 		return nil
 	}
 	handlers := map[string]func(db.Event) error{
-		"AdminCriado":           p.handleAdminCriado,
-		"AdminAtivado":          p.handleStatusChange("ativo"),
-		"AdminDesativado":       p.handleStatusChange("inativo"),
-		"AcaoAdminRegistrada":   p.handleAcaoAdminRegistrada,
-		"AdminDadosAtualizados": p.handleAdminDadosAtualizados,
-		"AdminRoleAtualizado":   p.handleAdminRoleAtualizado,
-		"EmailVerificado":       p.handleEmailVerificado,
-		"AdminSenhaAlterada":    p.handleAdminSenhaAlterada,
-		"AdminDeletado":         p.handleAdminDeletado,
+		"AdminCriado":            p.handleAdminCriado,
+		"AdminAtivado":           p.handleStatusChange("ativo"),
+		"AdminDesativado":        p.handleStatusChange("inativo"),
+		"AcaoAdminRegistrada":    p.handleAcaoAdminRegistrada,
+		"AdminDadosAtualizados":  p.handleAdminDadosAtualizados,
+		"AdminRoleAtualizado":    p.handleAdminRoleAtualizado,
+		"EmailVerificado":        p.handleEmailVerificado,
+		"DoisFatoresAtivados":    p.handleDoisFatoresAtivados,
+		"DoisFatoresDesativados": p.handleDoisFatoresDesativados,
+		"AdminSenhaAlterada":     p.handleAdminSenhaAlterada,
+		"AdminDeletado":          p.handleAdminDeletado,
 	}
 	if handler, ok := handlers[event.EventType]; ok {
 		return handler(event)
@@ -320,6 +322,17 @@ func (p *AdminProjection) handleEmailVerificado(event db.Event) error {
 		WHERE id = $3
 	`, event.EventVersion, event.EventID, event.AggregateID)
 	return err
+}
+
+// handleDoisFatoresAtivados / handleDoisFatoresDesativados (tarefa 122) refletem
+// o estado da verificação em duas etapas na projeção. Idempotentes: repetir o
+// evento grava o mesmo valor.
+func (p *AdminProjection) handleDoisFatoresAtivados(event db.Event) error {
+	return setDoisFatoresAtivo(p.client.DB(), "projection_admins", true, event)
+}
+
+func (p *AdminProjection) handleDoisFatoresDesativados(event db.Event) error {
+	return setDoisFatoresAtivo(p.client.DB(), "projection_admins", false, event)
 }
 
 // handleAdminSenhaAlterada aplica a nova senha_hash na projeção.

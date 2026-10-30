@@ -43,7 +43,9 @@ type Estudante struct {
 	CursoSuperiorID               *uuid.UUID
 	CreatedAt                     time.Time
 	EmailVerificado               bool
-	Documentos                    map[string]DocumentoMatricula
+	// DoisFatoresAtivo (tarefa 122): verificação em duas etapas por e-mail ativa.
+	DoisFatoresAtivo bool
+	Documentos       map[string]DocumentoMatricula
 
 	// AvaliacoesPorAno previne double-submit de avaliações finais.
 	// Chaves: "ano_letivo:<anoLectivo>" e "nivel:<escolar|superior>:<anoLectivo>:<anoAcademicoAtual>"
@@ -129,6 +131,12 @@ func (e *Estudante) Apply(event DomainEvent) error {
 		return e.applySenhaAlterada(event)
 	case "EmailVerificadoEstudante":
 		return e.applyEmailVerificado(event)
+	case "DoisFatoresAtivados":
+		e.DoisFatoresAtivo = true
+		return nil
+	case "DoisFatoresDesativados":
+		e.DoisFatoresAtivo = false
+		return nil
 	case "EstudanteDeletado":
 		return e.applyEstudanteDeletado(event)
 	default:
@@ -580,6 +588,35 @@ func (e *Estudante) criarComVinculoComStatus(
 	return e.Apply(event)
 }
 
+// AtivarDoisFatores ativa a verificação em duas etapas por e-mail.
+// Exige e-mail verificado (o e-mail é o canal do código).
+func (e *Estudante) AtivarDoisFatores() error {
+	if err := validarAtivacaoDoisFatores(e.DoisFatoresAtivo, e.Email != nil && *e.Email != "", e.EmailVerificado); err != nil {
+		return err
+	}
+	event := &DoisFatoresAtivadosEvent{
+		BaseEvent: BaseEvent{EventType: "DoisFatoresAtivados", AggregateID: e.ID},
+		Metodo:    MetodoDoisFatoresEmail,
+		AtivadoEm: time.Now(),
+	}
+	e.RaiseEvent(event)
+	return e.Apply(event)
+}
+
+// DesativarDoisFatores desativa a verificação em duas etapas (exige estar ativa).
+func (e *Estudante) DesativarDoisFatores() error {
+	if err := validarDesativacaoDoisFatores(e.DoisFatoresAtivo); err != nil {
+		return err
+	}
+	event := &DoisFatoresDesativadosEvent{
+		BaseEvent:    BaseEvent{EventType: "DoisFatoresDesativados", AggregateID: e.ID},
+		Metodo:       MetodoDoisFatoresEmail,
+		DesativadoEm: time.Now(),
+	}
+	e.RaiseEvent(event)
+	return e.Apply(event)
+}
+
 func (e *Estudante) VerificarEmail() error {
 	if e.EmailVerificado {
 		return fmt.Errorf("email já verificado")
@@ -673,6 +710,9 @@ func (e *Estudante) AtualizarDadosPessoais(
 	}
 
 	emailAlterado := email != nil && (e.Email == nil || *e.Email != *email)
+	if emailAlterado && e.DoisFatoresAtivo {
+		return ErrEmailBloqueadoPorDoisFatores
+	}
 	telefoneAlterado := telefone != nil && (e.Telefone == nil || *e.Telefone != *telefone)
 	telefoneEncAlterado := telefoneEncarregado != nil && (e.TelefoneEncarregado == nil || *e.TelefoneEncarregado != *telefoneEncarregado)
 	event := &DadosPessoaisAtualizadosEvent{

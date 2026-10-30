@@ -91,6 +91,10 @@ func (p *EstudanteProjection) Handle(event db.Event) error {
 		return p.handleDadosAcademicosAtualizados(event)
 	case "EmailVerificadoEstudante":
 		return p.handleEmailVerificadoEstudante(event)
+	case "DoisFatoresAtivados":
+		return setDoisFatoresAtivo(p.client.DB(), "projection_estudantes", true, event)
+	case "DoisFatoresDesativados":
+		return setDoisFatoresAtivo(p.client.DB(), "projection_estudantes", false, event)
 	case "CursoAlterado":
 		return p.handleCursoAlterado(event)
 	case "SenhaAlterada":

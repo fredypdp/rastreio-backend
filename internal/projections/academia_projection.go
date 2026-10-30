@@ -46,6 +46,8 @@ func (p *AcademiaProjection) Handle(event db.Event) error {
 			"AcademiaDadosAtualizados":                  p.handleAcademiaDadosAtualizados,
 			"AcademiaNIFAlteradoPorSolicitacao":         p.handleAcademiaDadosAtualizados,
 			"EmailVerificado":                           p.handleEmailVerificado,
+			"DoisFatoresAtivados":                       p.handleDoisFatoresAtivados,
+			"DoisFatoresDesativados":                    p.handleDoisFatoresDesativados,
 			"AcademiaSenhaAlterada":                     p.handleAcademiaSenhaAlterada,
 			"AnoLetivoAcademiaDefinido":                 p.handleAnoLetivoAcademiaDefinido,
 			"AnoLetivoAcademiaFinalizado":               p.handleAnoLetivoAcademiaFinalizado,
@@ -79,6 +81,8 @@ func (p *AcademiaProjection) HandleTx(tx *sql.Tx, event db.Event) error {
 			"AcademiaDadosAtualizados":                  p.handleAcademiaDadosAtualizadosTx,
 			"AcademiaNIFAlteradoPorSolicitacao":         p.handleAcademiaDadosAtualizadosTx,
 			"EmailVerificado":                           p.handleEmailVerificadoTx,
+			"DoisFatoresAtivados":                       p.handleDoisFatoresAtivadosTx,
+			"DoisFatoresDesativados":                    p.handleDoisFatoresDesativadosTx,
 			"AcademiaSenhaAlterada":                     p.handleAcademiaSenhaAlteradaTx,
 			"AnoLetivoAcademiaDefinido":                 p.handleAnoLetivoAcademiaDefinidoTx,
 			"AnoLetivoAcademiaFinalizado":               p.handleAnoLetivoAcademiaFinalizadoTx,
@@ -718,6 +722,24 @@ func (p *AcademiaProjection) handleEmailVerificado(event db.Event) error {
 		WHERE id = $3
 	`, event.EventVersion, event.EventID, event.AggregateID)
 	return err
+}
+
+// handleDoisFatoresAtivados / handleDoisFatoresDesativados (tarefa 122) refletem
+// o estado da verificação em duas etapas na projeção (idempotentes).
+func (p *AcademiaProjection) handleDoisFatoresAtivados(event db.Event) error {
+	return setDoisFatoresAtivo(p.client.DB(), "projection_academias", true, event)
+}
+
+func (p *AcademiaProjection) handleDoisFatoresDesativados(event db.Event) error {
+	return setDoisFatoresAtivo(p.client.DB(), "projection_academias", false, event)
+}
+
+func (p *AcademiaProjection) handleDoisFatoresAtivadosTx(_ *sql.Tx, event db.Event) error {
+	return p.handleDoisFatoresAtivados(event)
+}
+
+func (p *AcademiaProjection) handleDoisFatoresDesativadosTx(_ *sql.Tx, event db.Event) error {
+	return p.handleDoisFatoresDesativados(event)
 }
 
 // handleAcademiaSenhaAlterada atualiza o hash de senha na projeção.

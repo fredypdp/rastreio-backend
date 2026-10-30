@@ -1,6 +1,6 @@
 # Tarefa 119 — Módulo de pagamentos dividido por provedores (PSP) (backend)
 
-**Estado:** pendente
+**Estado:** feito
 **Repositório:** https://github.com/fredypdp/rastreio-backend
 **Gerado sobre:** `main` @ `0e909c8` (commit completo `0e909c85d6b89e1e93108776935c9378d7246214`, "Add files via upload" — só acrescentou `docs/Integrações/PayPay API.md`; o código é o do `3e26af8`)
 **Entrega:** arquivos completos e atualizados na pasta `rastreio-backend/`, com os mesmos caminhos do repositório

@@ -678,11 +678,30 @@ Login unificado para todos os tipos de usuário. O tipo é inferido automaticame
 }
 ```
 
+**Response 200 — conta com verificação em duas etapas ativa** (nenhum token é emitido nesta etapa; o código de 6 dígitos foi enviado ao e-mail do usuário):
+
+```json
+{
+  "requer_dois_fatores": true,
+  "desafio_id": "uuid",
+  "metodo": "email",
+  "email_mascarado": "a***a@exemplo.com",
+  "expira_em_segundos": 600,
+  "reenvio_em_segundos": 60,
+  "message": "Enviámos um código de 6 dígitos para a***a@exemplo.com."
+}
+```
+
+Para concluir o login, envie `desafio_id` e o código para [`POST /login/dois-fatores/verificar`](#post-logindois-fatoresverificar). Se o usuário repetir o login enquanto o código anterior ainda estiver vivo e enviado há menos de 60 s, a API reaproveita o mesmo desafio (sem novo e-mail) e acrescenta `"reutilizado": true`. A regra vale para todos os tipos de usuário, inclusive o estudante inativo que receberia o token restrito ao financeiro: nenhum token (restrito ou não) é emitido antes do código.
+
 **Erros:**
 
 - `400` — campos obrigatórios ausentes
 - `401` — credenciais inválidas ou conta inativa
 - `401` — email não verificado (quando login é feito por email e não por código)
+- `403` — verificação em duas etapas ativa, mas a conta não tem e-mail verificado para receber o código (login recusado; contate o suporte)
+- `429` — muitos códigos solicitados (ver regras abaixo); inclui `retry_after_segundos`
+- `503` — não foi possível enviar o código por e-mail (nenhum token é emitido)
 
 ---
 
@@ -751,6 +770,201 @@ Cria o primeiro admin FPP do sistema. Bloqueado após o primeiro uso (retorna 40
 - `409` — email já cadastrado
 
 ---
+
+---
+
+### Verificação em duas etapas (2FA por e-mail)
+
+Camada opcional de segurança para **admin, academia e estudante**. Funciona apenas por e-mail, com **código numérico de 6 dígitos**. As rotas de gestão exigem sessão; as duas de login são públicas (o `desafio_id` devolvido por `POST /login` prova que a senha estava correta).
+
+**Como o código é controlado (desafios)**
+
+- Cada envio cria um **desafio** com `desafio_id` próprio. O código nunca é usado como identificador e **não é guardado em texto puro** (guarda-se um HMAC-SHA256, com chave derivada de `JWT_SECRET`, amarrado ao `desafio_id`, ao usuário e à finalidade).
+- O código vale pelo **estado do desafio**, não pelo valor: dois códigos iguais sorteados em momentos diferentes são desafios distintos e um não interfere no outro.
+- **Uso único**: um desafio concluído não aceita mais nenhum código.
+- **Validade**: 10 minutos (`expira_em_segundos`).
+- **Substituição**: pedir um código novo invalida o anterior da mesma finalidade (`ativacao`, `desativacao` ou `login`).
+- **Tentativas**: no máximo 5 códigos errados por desafio; depois o desafio é bloqueado e é preciso pedir outro código. Código com formato inválido (não tem 6 dígitos) não consome tentativa.
+- **Envios**: intervalo mínimo de 60 s entre envios enquanto o desafio anterior ainda está vivo; no máximo 5 envios **não concluídos** por hora por usuário e finalidade (um código usado com sucesso não conta). Acima disso: `429` com `retry_after_segundos` e cabeçalho `Retry-After`.
+- **Reenvio no login**: só dentro de 30 minutos a contar da senha correta; depois disso o usuário digita a senha de novo.
+- O desafio é amarrado ao usuário: um desafio de outro usuário responde como inválido.
+
+**Regras de negócio**
+
+- **Ativação**: o e-mail precisa estar **verificado**. O usuário solicita o código, recebe no e-mail e, ao confirmar o código correto, o 2FA fica ativo.
+- **Desativação**: o 2FA precisa estar ativo. Exige a **senha atual** e o código enviado ao e-mail (a senha é conferida antes de consumir o código; 5 senhas erradas em 15 minutos bloqueiam novas tentativas, `429`, por usuário e em memória do processo).
+- **Login**: com credenciais corretas e 2FA ativo, nenhum token é emitido até o código ser confirmado; o status da conta é reavaliado na segunda etapa.
+- **E-mail**: com o 2FA ativo, a troca de e-mail é bloqueada (ver `PUT /me/email`).
+- **Falha fechada**: erro ao ler o estado do 2FA, falha no envio do e-mail ou ausência de e-mail verificado nunca resultam em token.
+- **Auditoria**: ativar/desativar grava os eventos `DoisFatoresAtivados` / `DoisFatoresDesativados` no ledger (a coluna `dois_fatores_ativo` das projeções é consequência desses eventos e é reconstruída em qualquer rebuild).
+- **Envio**: via Brevo (mesmo canal do e-mail de verificação). Sem Brevo configurado o envio falha (`503`). Somente em desenvolvimento, `DOIS_FATORES_LOG_CODIGO=true` registra o código no log do servidor; a opção é ignorada com `ENV=production`.
+
+**Formato dos erros específicos**
+
+- Código incorreto: `{ "error": "...", "message": "código incorreto. Restam 3 tentativas", "tentativas_restantes": 3 }`
+- `429`: `{ "error": "...", "message": "...", "retry_after_segundos": 42, "desafio_id": "uuid" }` (`desafio_id` e `expira_em_segundos` aparecem quando há um desafio vivo para reaproveitar).
+
+---
+
+#### POST /login/dois-fatores/verificar
+
+Conclui o login: confere o código do desafio e emite o JWT, com **exatamente a mesma resposta** do `POST /login` sem 2FA.
+
+**Proteção**: pública
+
+**Request:**
+
+```json
+{
+  "desafio_id": "uuid",
+  "codigo": "123456"
+}
+```
+
+**Response 200:** igual à do `POST /login` (`token`, `nome`, `type`, `codigo` ou `email`/`role`). Estudante inativo recebe o token restrito ao financeiro, como no login normal.
+
+**Erros:** `400` (campos ausentes ou código fora do formato de 6 dígitos), `401` (desafio inválido, código incorreto, expirado, já usado, substituído por um mais recente, tentativas esgotadas, conta inativa ou deletada).
+
+---
+
+#### POST /login/dois-fatores/reenviar
+
+Envia um código novo para um login pendente; o código anterior deixa de valer.
+
+**Proteção**: pública
+
+**Request:**
+
+```json
+{
+  "desafio_id": "uuid"
+}
+```
+
+**Response 200:**
+
+```json
+{
+  "requer_dois_fatores": true,
+  "desafio_id": "uuid-do-novo-desafio",
+  "metodo": "email",
+  "email_mascarado": "a***a@exemplo.com",
+  "expira_em_segundos": 600,
+  "reenvio_em_segundos": 60,
+  "message": "Enviámos um código de 6 dígitos para a***a@exemplo.com."
+}
+```
+
+**Erros:** `400`, `401` (desafio inválido, já concluído ou fora da janela de 30 min), `403` (sem e-mail verificado), `429` (intervalo mínimo ou teto por hora), `503` (falha no envio).
+
+---
+
+#### GET /dois-fatores
+
+Estado do 2FA do usuário autenticado.
+
+**Proteção**: autenticado (qualquer tipo). Tokens restritos ao financeiro não acessam esta rota.
+
+**Response 200:**
+
+```json
+{
+  "ativo": false,
+  "metodo": "email",
+  "email_verificado": true,
+  "pode_ativar": true,
+  "email_mascarado": "a***a@exemplo.com"
+}
+```
+
+`email_mascarado` é `null` quando a conta não tem e-mail. `pode_ativar` é `true` quando o 2FA está inativo e o e-mail está verificado. O estado vem da projeção (consistência eventual de milissegundos após ativar/desativar; a resposta das rotas de confirmação já traz o novo valor).
+
+---
+
+#### POST /dois-fatores/ativacao/solicitar
+
+Envia o código de ativação para o e-mail verificado do usuário.
+
+**Proteção**: autenticado. **Request:** sem payload.
+
+**Response 200:** `desafio_id`, `metodo`, `email_mascarado`, `expira_em_segundos`, `reenvio_em_segundos`, `message`.
+
+**Erros:** `400` (e-mail ausente ou não verificado), `409` (2FA já ativo), `429`, `503`.
+
+---
+
+#### POST /dois-fatores/ativacao/confirmar
+
+**Proteção**: autenticado.
+
+**Request:**
+
+```json
+{
+  "desafio_id": "uuid",
+  "codigo": "123456"
+}
+```
+
+**Response 200:**
+
+```json
+{
+  "message": "Verificação em duas etapas ativada com sucesso.",
+  "dois_fatores_ativo": true
+}
+```
+
+**Erros:** `400` (código/desafio inválido, expirado, usado, substituído, tentativas esgotadas ou formato inválido; códigos incorretos informam `tentativas_restantes`), `409` (2FA já ativo).
+
+---
+
+#### POST /dois-fatores/desativacao/solicitar
+
+Exige a senha atual; envia o código de desativação.
+
+**Proteção**: autenticado.
+
+**Request:**
+
+```json
+{
+  "senha": "senha atual"
+}
+```
+
+**Response 200:** igual a `POST /dois-fatores/ativacao/solicitar`.
+
+**Erros:** `400` (senha ausente), `401` (senha incorreta; nenhum código é enviado), `409` (2FA não está ativo), `429` (muitas senhas erradas, intervalo mínimo ou teto por hora), `503`.
+
+---
+
+#### POST /dois-fatores/desativacao/confirmar
+
+Exige senha atual **e** código.
+
+**Proteção**: autenticado.
+
+**Request:**
+
+```json
+{
+  "desafio_id": "uuid",
+  "codigo": "123456",
+  "senha": "senha atual"
+}
+```
+
+**Response 200:**
+
+```json
+{
+  "message": "Verificação em duas etapas desativada com sucesso.",
+  "dois_fatores_ativo": false
+}
+```
+
+**Erros:** `400` (senha ausente, código/desafio inválido, expirado, usado, substituído, tentativas esgotadas ou formato inválido), `401` (senha incorreta; o código **não** é consumido), `409` (2FA não está ativo), `429`.
 
 ---
 
@@ -906,7 +1120,7 @@ Atualiza o email do usuário autenticado (estudante, academia ou admin), identif
 }
 ```
 
-**Regras:** email válido e único no sistema. Se o valor mudar de fato, `email_verificado` volta para `false`; reenviar o mesmo email não altera a flag.
+**Regras:** email válido e único no sistema. Se o valor mudar de fato, `email_verificado` volta para `false`; reenviar o mesmo email não altera a flag. **Com a verificação em duas etapas ativa, a troca de e-mail é recusada (`400`)**: o e-mail é o canal do código, então o titular deve desativar o 2FA antes (ver [Verificação em duas etapas](#verificação-em-duas-etapas-2fa-por-e-mail)). A mesma regra vale para qualquer edição de e-mail da conta feita por outro caminho (ex.: admin editando outro admin).
 
 **Response 200:**
 
