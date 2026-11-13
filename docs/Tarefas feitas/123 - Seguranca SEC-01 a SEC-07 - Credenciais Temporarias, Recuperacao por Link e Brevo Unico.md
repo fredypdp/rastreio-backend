@@ -1,6 +1,6 @@
 # Tarefa 123 — Segurança SEC-01 a SEC-07: credenciais temporárias, recuperação por link e Brevo como único canal (backend)
 
-**Estado:** pendente
+**Estado:** feito
 **Repositório:** https://github.com/fredypdp/rastreio-backend
 **Gerado sobre:** `main` @ `4759474` (`4759474ed960f1db46683c7a5ecf88345aa318f0`, tarefa 122 já aplicada)
 **Entrega:** arquivos completos e atualizados na pasta `rastreio-backend/`, com os mesmos caminhos do repositório (mais a lista de 4 arquivos a apagar)
