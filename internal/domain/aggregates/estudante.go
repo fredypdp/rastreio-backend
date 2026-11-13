@@ -129,6 +129,9 @@ func (e *Estudante) Apply(event DomainEvent) error {
 		return e.applyDadosAcademicosAtualizados(event)
 	case "SenhaAlterada":
 		return e.applySenhaAlterada(event)
+	case "SenhaTemporariaDefinida":
+		// Estado vive na projeção (deve_alterar_senha); o agregado só aceita o evento.
+		return nil
 	case "EmailVerificadoEstudante":
 		return e.applyEmailVerificado(event)
 	case "DoisFatoresAtivados":
@@ -359,6 +362,10 @@ type SenhaAlteradaEvent struct {
 	BaseEvent
 	NovaSenhaHash string
 	AlteradaAt    time.Time
+	// Motivo é opcional (omitempty): eventos antigos não o têm e valem como
+	// alteracao_usuario. Mesmo nome de campo dos eventos de senha de Admin e
+	// Academia (SEC-04).
+	Motivo string `json:",omitempty"`
 }
 
 func (e *SenhaAlteradaEvent) GetPayload() interface{} { return e }
@@ -629,7 +636,16 @@ func (e *Estudante) VerificarEmail() error {
 	return e.Apply(event)
 }
 
+// AlterarSenha troca a senha pelo próprio titular (motivo alteracao_usuario).
+// A assinatura não mudou: delega para AlterarSenhaComMotivo.
 func (e *Estudante) AlterarSenha(novaSenhaHash string) error {
+	return e.AlterarSenhaComMotivo(novaSenhaHash, MotivoSenhaAlteracaoUsuario)
+}
+
+// AlterarSenhaComMotivo troca a senha registando o motivo no evento
+// (alteracao_usuario, reset_senha ou credenciais_reenviadas), que decide o que
+// a projeção faz com deve_alterar_senha e sessoes_validas_desde.
+func (e *Estudante) AlterarSenhaComMotivo(novaSenhaHash, motivo string) error {
 	if len(novaSenhaHash) < 60 {
 		return fmt.Errorf("senhaHash inválido: esperado hash bcrypt (mínimo 60 caracteres)")
 	}
@@ -637,6 +653,18 @@ func (e *Estudante) AlterarSenha(novaSenhaHash string) error {
 		BaseEvent:     BaseEvent{EventType: "SenhaAlterada", AggregateID: e.ID},
 		NovaSenhaHash: novaSenhaHash,
 		AlteradaAt:    time.Now(),
+		Motivo:        motivo,
+	}
+	e.RaiseEvent(event)
+	return e.Apply(event)
+}
+
+// DefinirSenhaTemporaria registra que a conta nasceu (ou foi redefinida) com
+// senha temporária de troca obrigatória (SEC-04).
+func (e *Estudante) DefinirSenhaTemporaria() error {
+	event := &SenhaTemporariaDefinidaEvent{
+		BaseEvent:  BaseEvent{EventType: "SenhaTemporariaDefinida", AggregateID: e.ID},
+		DefinidaEm: time.Now(),
 	}
 	e.RaiseEvent(event)
 	return e.Apply(event)

@@ -20,25 +20,23 @@ func TestLoadBrevoConfigMissingSenderDisabled(t *testing.T) {
 
 	_, ok := loadBrevoConfig()
 	if ok {
-		t.Fatal("esperava loadBrevoConfig desabilitado sem EMAIL_FROM/EMAIL_USER")
+		t.Fatal("esperava loadBrevoConfig desabilitado sem EMAIL_FROM")
 	}
 }
 
-func TestLoadBrevoConfigFallsBackToEmailUser(t *testing.T) {
+// Tarefa 123 (D7): EMAIL_USER era a variável do SMTP eliminado. Deixa de ser
+// remetente de fallback: sem EMAIL_FROM o Brevo fica desabilitado.
+func TestLoadBrevoConfigIgnoresEmailUser(t *testing.T) {
 	t.Setenv("BREVO_API_KEY", "xkeysib-teste")
 	t.Setenv("EMAIL_FROM", "")
 	t.Setenv("EMAIL_USER", "spuriartipan@gmail.com")
 
-	cfg, ok := loadBrevoConfig()
-	if !ok {
-		t.Fatal("esperava loadBrevoConfig habilitado com EMAIL_USER presente mesmo sem EMAIL_FROM")
-	}
-	if cfg.SenderEmail != "spuriartipan@gmail.com" {
-		t.Errorf("esperava remetente cair para EMAIL_USER, obteve %q", cfg.SenderEmail)
+	if cfg, ok := loadBrevoConfig(); ok {
+		t.Fatalf("EMAIL_USER não pode servir de remetente; obteve configuração ativa com %q", cfg.SenderEmail)
 	}
 }
 
-func TestLoadBrevoConfigPrefersEmailFrom(t *testing.T) {
+func TestLoadBrevoConfigUsesEmailFrom(t *testing.T) {
 	t.Setenv("BREVO_API_KEY", "xkeysib-teste")
 	t.Setenv("EMAIL_FROM", "avisos@spuri.co")
 	t.Setenv("EMAIL_USER", "spuriartipan@gmail.com")
@@ -48,7 +46,7 @@ func TestLoadBrevoConfigPrefersEmailFrom(t *testing.T) {
 		t.Fatal("esperava loadBrevoConfig habilitado")
 	}
 	if cfg.SenderEmail != "avisos@spuri.co" {
-		t.Errorf("esperava EMAIL_FROM ter prioridade sobre EMAIL_USER, obteve %q", cfg.SenderEmail)
+		t.Errorf("esperava o remetente de EMAIL_FROM, obteve %q", cfg.SenderEmail)
 	}
 }
 

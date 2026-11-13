@@ -82,6 +82,9 @@ func (a *Admin) Apply(event DomainEvent) error {
 	case "DoisFatoresDesativados":
 		a.DoisFatoresAtivo = false
 		return nil
+	case "SenhaTemporariaDefinida":
+		// Estado vive na projeção (deve_alterar_senha); o agregado só aceita o evento.
+		return nil
 	case "AdminAtivado":
 		return a.applyAdminAtivado(event)
 	case "AdminDesativado":
@@ -342,6 +345,17 @@ func (a *Admin) AtualizarRole(novoRole string, updatedBy uuid.UUID, updatedByRol
 		UpdatedAt:    time.Now(),
 	}
 
+	a.RaiseEvent(event)
+	return a.Apply(event)
+}
+
+// DefinirSenhaTemporaria registra que a conta nasceu (ou foi redefinida) com
+// senha temporária de troca obrigatória (SEC-04).
+func (a *Admin) DefinirSenhaTemporaria() error {
+	event := &SenhaTemporariaDefinidaEvent{
+		BaseEvent:  BaseEvent{EventType: "SenhaTemporariaDefinida", AggregateID: a.ID},
+		DefinidaEm: time.Now(),
+	}
 	a.RaiseEvent(event)
 	return a.Apply(event)
 }

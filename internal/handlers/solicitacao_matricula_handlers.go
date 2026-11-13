@@ -363,6 +363,14 @@ func AprovarSolicitacaoMatricula(c *gin.Context) {
 			return
 		}
 	}
+	// SEC-04: as credenciais seguem por SMS (agora, sem taxa, ou após o pagamento
+	// da matrícula). Valida-se o telefone de destino antes de aprovar, para não
+	// criar uma conta cujas credenciais não possam ser entregues.
+	telefoneDestinoCredenciais, err := TelefoneDestinoCredenciaisEstudante(agg.AnoEscolarFundamental, agg.AnoEscolarMedio, agg.AnoSuperior, agg.Telefone, agg.TelefoneEncarregado)
+	if err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
 	codigoEstudante, err := utils.GenerateUniqueCodigoEstudante(getDbClient(c).DB())
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
@@ -391,7 +399,12 @@ func AprovarSolicitacaoMatricula(c *gin.Context) {
 		utils.RespondWithInternalError(c, cfgErr)
 		return
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(services.GetDefaultPassword("estudante", codigoEstudante)), bcrypt.DefaultCost)
+	senhaTemporaria, err := services.GenerateTempPassword()
+	if err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(senhaTemporaria), bcrypt.DefaultCost)
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
 		return
@@ -399,6 +412,10 @@ func AprovarSolicitacaoMatricula(c *gin.Context) {
 	est := aggregates.NewEstudante()
 	if err := est.CriarComVinculo(agg.Nome, codigoEstudante, string(hash), agg.Email, utils.NormalizePhonePtr(agg.Telefone), utils.NormalizePhonePtr(agg.TelefoneEncarregado), agg.BilheteIdentidade, agg.BilheteIdentidadeEncarregado, agg.Genero, agg.DataNascimento, agg.AnoEscolarFundamental, agg.AnoEscolarMedio, agg.AnoSuperior, agg.CursoMedioID, agg.CursoSuperiorID, &academia.ID, academia.CodigoAcademia, agg.Documentos); err != nil {
 		utils.RespondWithValidationError(c, err)
+		return
+	}
+	if err := est.DefinirSenhaTemporaria(); err != nil {
+		utils.RespondWithInternalError(c, err)
 		return
 	}
 	repo := getRepository(c).WithContext(c.Request.Context())
@@ -423,7 +440,9 @@ func AprovarSolicitacaoMatricula(c *gin.Context) {
 		return
 	}
 	cancelarSolicitacoesConcorrentes(c, repo, audit, agg, codigoEstudante)
-	c.JSON(http.StatusOK, gin.H{"message": "solicitação aprovada e estudante registado com sucesso", "codigo_solicitacao": agg.CodigoSolicitacao, "codigo_estudante_gerado": codigoEstudante})
+	// SEC-04: credenciais por SMS depois do commit; falha de envio não desfaz a aprovação.
+	credenciais := enviarCredenciaisSMS(c.Request.Context(), c, atorComunicacao{ID: academia.ID, Tipo: "academia", CodigoAcademia: academia.CodigoAcademia}, audit, telefoneDestinoCredenciais, agg.Nome, codigoEstudante, senhaTemporaria, false)
+	c.JSON(http.StatusOK, gin.H{"message": "solicitação aprovada e estudante registado com sucesso", "codigo_solicitacao": agg.CodigoSolicitacao, "codigo_estudante_gerado": codigoEstudante, "credenciais": credenciais})
 }
 
 const solicitacaoPagamentoIndisponivel = "solicitação não disponível para pagamento de matrícula"
@@ -588,12 +607,19 @@ func efetivarVinculoMatriculaPaga(c *gin.Context, codigo string) error {
 	if err != nil || academia == nil {
 		return errors.New("academia não encontrada")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(services.GetDefaultPassword("estudante", *agg.CodigoEstudanteGerado)), bcrypt.DefaultCost)
+	senhaTemporaria, err := services.GenerateTempPassword()
+	if err != nil {
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(senhaTemporaria), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
 	est := aggregates.NewEstudante()
 	if err = est.CriarComVinculo(agg.Nome, *agg.CodigoEstudanteGerado, string(hash), agg.Email, utils.NormalizePhonePtr(agg.Telefone), utils.NormalizePhonePtr(agg.TelefoneEncarregado), agg.BilheteIdentidade, agg.BilheteIdentidadeEncarregado, agg.Genero, agg.DataNascimento, agg.AnoEscolarFundamental, agg.AnoEscolarMedio, agg.AnoSuperior, agg.CursoMedioID, agg.CursoSuperiorID, &academia.ID, academia.CodigoAcademia, agg.Documentos); err != nil {
+		return err
+	}
+	if err = est.DefinirSenhaTemporaria(); err != nil {
 		return err
 	}
 	repo := getRepository(c).WithContext(c.Request.Context())
@@ -610,7 +636,20 @@ func efetivarVinculoMatriculaPaga(c *gin.Context, codigo string) error {
 	if err = agg.VincularAposPagamento(); err != nil {
 		return err
 	}
-	return repo.SaveWithAudit(agg, audit)
+	if err = repo.SaveWithAudit(agg, audit); err != nil {
+		return err
+	}
+	// SEC-04: credenciais por SMS depois do commit, em nome da academia dona do
+	// vínculo (a mensagem é registada no histórico dela). Não há utilizador a quem
+	// mostrar aviso: falha de envio fica visível na lista e resolve-se com o reenvio.
+	// O telefone já foi validado na aprovação; se mesmo assim estiver inválido, a
+	// conta continua criada e as credenciais seguem pelo reenvio.
+	if telefone, telErr := TelefoneDestinoCredenciaisEstudante(agg.AnoEscolarFundamental, agg.AnoEscolarMedio, agg.AnoSuperior, agg.Telefone, agg.TelefoneEncarregado); telErr != nil {
+		log.Printf("[credenciais] matrícula paga: credenciais NÃO enviadas (telefone de destino inválido) — estudante %s; use o reenvio de credenciais", *agg.CodigoEstudanteGerado)
+	} else {
+		enviarCredenciaisSMS(c.Request.Context(), c, atorComunicacao{ID: academia.ID, Tipo: "academia", CodigoAcademia: academia.CodigoAcademia}, audit, telefone, agg.Nome, *agg.CodigoEstudanteGerado, senhaTemporaria, false)
+	}
+	return nil
 }
 
 func escopoMatriculaSolicitacao(s *aggregates.SolicitacaoMatricula) (nivel, ano string, curso *string) {

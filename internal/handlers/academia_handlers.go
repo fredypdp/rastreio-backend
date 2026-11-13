@@ -89,6 +89,14 @@ func RegisterAcademia(c *gin.Context) {
 		utils.RespondWithValidationError(c, err)
 		return
 	}
+	// SEC-04: o telefone é obrigatório — é para ele que as credenciais temporárias
+	// da academia seguem por SMS. Valida-se antes de criar a conta.
+	telefoneDestinoCredenciais, err := telefoneDestinoCredenciaisAcademia(req.Telefone)
+	if err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	req.Telefone = &telefoneDestinoCredenciais
 	// alvara é opcional no cadastro: pode ser enviado agora ou depois, via
 	// POST /documentos/academias/{codigo_academia}/alvara/upload.
 	var alvaraPDF uploadedPDF
@@ -144,8 +152,13 @@ func RegisterAcademia(c *gin.Context) {
 		return
 	}
 
-	defaultPassword := services.GetDefaultPassword("academia", codigoAcademia)
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(defaultPassword), bcrypt.DefaultCost)
+	// SEC-04: senha aleatória de 8 caracteres, de troca obrigatória no primeiro acesso.
+	senhaTemporaria, err := services.GenerateTempPassword()
+	if err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(senhaTemporaria), bcrypt.DefaultCost)
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
 		return
@@ -170,6 +183,10 @@ func RegisterAcademia(c *gin.Context) {
 		&userID,
 	); err != nil {
 		utils.RespondWithValidationError(c, err)
+		return
+	}
+	if err := academia.DefinirSenhaTemporaria(); err != nil {
+		utils.RespondWithInternalError(c, err)
 		return
 	}
 
@@ -212,9 +229,15 @@ func RegisterAcademia(c *gin.Context) {
 	}
 
 	log.Printf("Academia registada: %s (%s) por admin %s", req.Nome, codigoAcademia, userID)
+
+	// SEC-04: credenciais por SMS depois do commit, em nome do admin que cadastrou.
+	// Falha de envio nunca desfaz o cadastro; a conta fica elegível a reenvio.
+	credenciais := enviarCredenciaisSMS(c.Request.Context(), c, atorComunicacao{ID: userID, Tipo: "admin"}, audit, telefoneDestinoCredenciais, req.Nome, codigoAcademia, senhaTemporaria, false)
+
 	response := gin.H{
 		"message":         "academia registada com sucesso",
 		"codigo_academia": codigoAcademia,
+		"credenciais":     credenciais,
 		"data": gin.H{
 			"id":              academia.ID,
 			"nome":            req.Nome,
@@ -243,10 +266,10 @@ func RegisterAcademia(c *gin.Context) {
 // e o mesmo agregado, mas SEM exigir um admin executor autenticado.
 //
 // Diferença deliberada em relação a RegisterAcademia: como não há um admin
-// para comunicar a senha padrão à academia fora de banda, o cadastro
-// público exige o campo "senha" (multipart/form-data) definido pela própria
-// academia. RegisterAcademia (fluxo admin) permanece inalterado — continua
-// sempre usando a senha padrão baseada no código, sem aceitar senha customizada.
+// para enviar as credenciais temporárias à academia, o cadastro público exige
+// o campo "senha" (multipart/form-data) definido pela própria academia.
+// RegisterAcademia (fluxo admin) gera uma senha temporária aleatória, de troca
+// obrigatória, enviada por SMS, e não aceita senha customizada.
 //
 // Segurança:
 //   - academia.Criar() sempre inicia o status como "inativo" (ver
@@ -951,6 +974,10 @@ func ListarTodasAcademias(c *gin.Context) {
 
 	if academias == nil {
 		academias = []map[string]interface{}{}
+	}
+	// Só o admin vê o indicador de credenciais por confirmar (a rota é pública).
+	if userType == "admin" {
+		anexarDeveAlterarSenha(client, "projection_academias", "codigo_academia", "codigo_academia", academias)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

@@ -55,17 +55,18 @@ func (p *AdminProjection) Handle(event db.Event) error {
 		return nil
 	}
 	handlers := map[string]func(db.Event) error{
-		"AdminCriado":            p.handleAdminCriado,
-		"AdminAtivado":           p.handleStatusChange("ativo"),
-		"AdminDesativado":        p.handleStatusChange("inativo"),
-		"AcaoAdminRegistrada":    p.handleAcaoAdminRegistrada,
-		"AdminDadosAtualizados":  p.handleAdminDadosAtualizados,
-		"AdminRoleAtualizado":    p.handleAdminRoleAtualizado,
-		"EmailVerificado":        p.handleEmailVerificado,
-		"DoisFatoresAtivados":    p.handleDoisFatoresAtivados,
-		"DoisFatoresDesativados": p.handleDoisFatoresDesativados,
-		"AdminSenhaAlterada":     p.handleAdminSenhaAlterada,
-		"AdminDeletado":          p.handleAdminDeletado,
+		"AdminCriado":             p.handleAdminCriado,
+		"AdminAtivado":            p.handleStatusChange("ativo"),
+		"AdminDesativado":         p.handleStatusChange("inativo"),
+		"AcaoAdminRegistrada":     p.handleAcaoAdminRegistrada,
+		"AdminDadosAtualizados":   p.handleAdminDadosAtualizados,
+		"AdminRoleAtualizado":     p.handleAdminRoleAtualizado,
+		"EmailVerificado":         p.handleEmailVerificado,
+		"SenhaTemporariaDefinida": p.handleSenhaTemporariaDefinida,
+		"DoisFatoresAtivados":     p.handleDoisFatoresAtivados,
+		"DoisFatoresDesativados":  p.handleDoisFatoresDesativados,
+		"AdminSenhaAlterada":      p.handleAdminSenhaAlterada,
+		"AdminDeletado":           p.handleAdminDeletado,
 	}
 	if handler, ok := handlers[event.EventType]; ok {
 		return handler(event)
@@ -340,6 +341,7 @@ func (p *AdminProjection) handleDoisFatoresDesativados(event db.Event) error {
 func (p *AdminProjection) handleAdminSenhaAlterada(event db.Event) error {
 	var payload struct {
 		NovaSenhaHash string
+		Motivo        string
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return err
@@ -349,12 +351,13 @@ func (p *AdminProjection) handleAdminSenhaAlterada(event db.Event) error {
 		return fmt.Errorf("AdminSenhaAlterada: NovaSenhaHash vazio no payload")
 	}
 
-	_, err := p.client.DB().Exec(`
-		UPDATE projection_admins
-		SET senha_hash = $1, version = $2, updated_at = CURRENT_TIMESTAMP, last_event_id = $3
-		WHERE id = $4
-	`, payload.NovaSenhaHash, event.EventVersion, event.EventID, event.AggregateID)
-	return err
+	// O motivo decide deve_alterar_senha e sessoes_validas_desde (SEC-04/SEC-10).
+	return aplicarSenhaAlterada(p.client.DB(), "projection_admins", payload.NovaSenhaHash, payload.Motivo, event)
+}
+
+// handleSenhaTemporariaDefinida liga deve_alterar_senha (SEC-04).
+func (p *AdminProjection) handleSenhaTemporariaDefinida(event db.Event) error {
+	return setSenhaTemporaria(p.client.DB(), "projection_admins", event)
 }
 
 // ============================================================================

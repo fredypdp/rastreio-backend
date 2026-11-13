@@ -46,6 +46,7 @@ func (p *AcademiaProjection) Handle(event db.Event) error {
 			"AcademiaDadosAtualizados":                  p.handleAcademiaDadosAtualizados,
 			"AcademiaNIFAlteradoPorSolicitacao":         p.handleAcademiaDadosAtualizados,
 			"EmailVerificado":                           p.handleEmailVerificado,
+			"SenhaTemporariaDefinida":                   p.handleSenhaTemporariaDefinida,
 			"DoisFatoresAtivados":                       p.handleDoisFatoresAtivados,
 			"DoisFatoresDesativados":                    p.handleDoisFatoresDesativados,
 			"AcademiaSenhaAlterada":                     p.handleAcademiaSenhaAlterada,
@@ -81,6 +82,7 @@ func (p *AcademiaProjection) HandleTx(tx *sql.Tx, event db.Event) error {
 			"AcademiaDadosAtualizados":                  p.handleAcademiaDadosAtualizadosTx,
 			"AcademiaNIFAlteradoPorSolicitacao":         p.handleAcademiaDadosAtualizadosTx,
 			"EmailVerificado":                           p.handleEmailVerificadoTx,
+			"SenhaTemporariaDefinida":                   p.handleSenhaTemporariaDefinidaTx,
 			"DoisFatoresAtivados":                       p.handleDoisFatoresAtivadosTx,
 			"DoisFatoresDesativados":                    p.handleDoisFatoresDesativadosTx,
 			"AcademiaSenhaAlterada":                     p.handleAcademiaSenhaAlteradaTx,
@@ -746,6 +748,7 @@ func (p *AcademiaProjection) handleDoisFatoresDesativadosTx(_ *sql.Tx, event db.
 func (p *AcademiaProjection) handleAcademiaSenhaAlterada(event db.Event) error {
 	var payload struct {
 		NovaSenhaHash string `json:"NovaSenhaHash"`
+		Motivo        string `json:"Motivo"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return fmt.Errorf("handleAcademiaSenhaAlterada: parse error: %w", err)
@@ -754,15 +757,17 @@ func (p *AcademiaProjection) handleAcademiaSenhaAlterada(event db.Event) error {
 		return fmt.Errorf("handleAcademiaSenhaAlterada: NovaSenhaHash vazio no payload")
 	}
 
-	_, err := p.client.DB().Exec(`
-		UPDATE projection_academias
-		SET senha_hash    = $1,
-		    updated_at    = CURRENT_TIMESTAMP,
-		    version       = $2,
-		    last_event_id = $3
-		WHERE id = $4
-	`, payload.NovaSenhaHash, event.EventVersion, event.EventID, event.AggregateID)
-	return err
+	// O motivo decide deve_alterar_senha e sessoes_validas_desde (SEC-04/SEC-10).
+	return aplicarSenhaAlterada(p.client.DB(), "projection_academias", payload.NovaSenhaHash, payload.Motivo, event)
+}
+
+// handleSenhaTemporariaDefinida liga deve_alterar_senha (SEC-04).
+func (p *AcademiaProjection) handleSenhaTemporariaDefinida(event db.Event) error {
+	return setSenhaTemporaria(p.client.DB(), "projection_academias", event)
+}
+
+func (p *AcademiaProjection) handleSenhaTemporariaDefinidaTx(_ *sql.Tx, event db.Event) error {
+	return p.handleSenhaTemporariaDefinida(event)
 }
 
 // handleAnoLetivoAcademiaDefinido persiste o ano letivo ativo da academia.

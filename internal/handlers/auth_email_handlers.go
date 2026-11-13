@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -9,7 +10,6 @@ import (
 	"spuri/internal/middleware"
 	"spuri/internal/services"
 	"spuri/internal/utils"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -179,154 +179,6 @@ func VerificarEmail(c *gin.Context) {
 }
 
 // ============================================================================
-// Geração de tokens (retornam o token ao frontend — frontend envia o email)
-// ============================================================================
-
-// GerarTokenVerificacao gera o token de verificação e o RETORNA ao frontend.
-// O frontend (Next.js) é encarregado por enviar o email com o token.
-// Rota: POST /email/gerar-token/verificacao  (requer AuthMiddleware)
-func GerarTokenVerificacao(c *gin.Context) {
-	userID, _ := middleware.GetUserID(c)
-	userType, _ := middleware.GetUserType(c)
-
-	var email, nome string
-	client := getDbClient(c)
-
-	switch userType {
-	case "estudante":
-		if err := client.DB().QueryRow(
-			`SELECT COALESCE(email,''), nome FROM projection_estudantes WHERE id = $1`,
-			userID,
-		).Scan(&email, &nome); err != nil || email == "" {
-			utils.RespondWithValidationError(c, fmt.Errorf("estudante não possui email cadastrado"))
-			return
-		}
-	case "academia":
-		if err := client.DB().QueryRow(
-			`SELECT COALESCE(email,''), nome FROM projection_academias WHERE id = $1`,
-			userID,
-		).Scan(&email, &nome); err != nil || email == "" {
-			utils.RespondWithValidationError(c, fmt.Errorf("academia não possui email cadastrado"))
-			return
-		}
-	case "admin":
-		if err := client.DB().QueryRow(
-			`SELECT email, nome FROM projection_admins WHERE id = $1`,
-			userID,
-		).Scan(&email, &nome); err != nil {
-			utils.RespondWithNotFoundError(c, "administrador")
-			return
-		}
-	default:
-		utils.RespondWithValidationError(c, fmt.Errorf("tipo de usuário inválido"))
-		return
-	}
-
-	emailSvc := getEmailService(c)
-
-	// Apenas gera e persiste o token — NÃO envia email (frontend faz isso)
-	token, err := emailSvc.SaveToken(userID, userType, "verificacao_email", email, 24*time.Hour)
-	if err != nil {
-		utils.RespondWithInternalError(c, fmt.Errorf("erro ao gerar token: %w", err))
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":   true,
-		"token":     token,
-		"email":     email,
-		"nome":      nome,
-		"tipo":      userType,
-		"expira_em": "24 horas",
-	})
-}
-
-// GerarTokenRecuperacao gera o token de recuperação e o RETORNA ao frontend.
-// O frontend (Next.js) é encarregado por enviar o email com o token.
-// Rota: POST /email/gerar-token/recuperacao  (pública — usa identificador no body)
-func GerarTokenRecuperacao(c *gin.Context) {
-	var req struct {
-		Identificador string `json:"identificador" binding:"required"`
-		Tipo          string `json:"tipo" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		utils.RespondWithValidationError(c, fmt.Errorf("identificador e tipo são obrigatórios"))
-		return
-	}
-
-	client := getDbClient(c)
-
-	var userID uuid.UUID
-	var email, nome string
-	var emailVerificado bool
-	var idStr string
-	var err error
-
-	switch req.Tipo {
-	case "estudante":
-		err = client.DB().QueryRow(
-			`SELECT id, COALESCE(email,''), nome, COALESCE(email_verificado, FALSE)
-			 FROM projection_estudantes
-			 WHERE codigo_estudante = $1 OR email = $1`,
-			req.Identificador,
-		).Scan(&idStr, &email, &nome, &emailVerificado)
-	case "academia":
-		err = client.DB().QueryRow(
-			`SELECT id, COALESCE(email,''), nome, COALESCE(email_verificado, FALSE)
-			 FROM projection_academias
-			 WHERE codigo_academia = $1 OR email = $1`,
-			req.Identificador,
-		).Scan(&idStr, &email, &nome, &emailVerificado)
-	case "admin":
-		err = client.DB().QueryRow(
-			`SELECT id, email, nome, COALESCE(email_verificado, FALSE)
-			 FROM projection_admins WHERE email = $1`,
-			req.Identificador,
-		).Scan(&idStr, &email, &nome, &emailVerificado)
-	default:
-		utils.RespondWithValidationError(c, fmt.Errorf("tipo deve ser 'estudante', 'academia' ou 'admin'"))
-		return
-	}
-
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "usuário")
-		return
-	}
-
-	userID, _ = uuid.Parse(idStr)
-
-	if email == "" {
-		utils.RespondWithValidationError(c, fmt.Errorf("usuário não possui email cadastrado"))
-		return
-	}
-
-	if !emailVerificado {
-		utils.RespondWithForbiddenError(c, "Por favor, verifique seu email antes de solicitar recuperação de senha")
-		return
-	}
-
-	emailSvc := getEmailService(c)
-
-	// Apenas gera e persiste o token — NÃO envia email (frontend faz isso)
-	token, err := emailSvc.SaveToken(userID, req.Tipo, "recuperacao_senha", email, 1*time.Hour)
-	if err != nil {
-		utils.RespondWithInternalError(c, fmt.Errorf("erro ao gerar token: %w", err))
-		return
-	}
-
-	log.Printf("Token de recuperação gerado para: %s", email)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":   true,
-		"token":     token,
-		"email":     email,
-		"nome":      nome,
-		"tipo":      req.Tipo,
-		"expira_em": "1 hora",
-	})
-}
-
-// ============================================================================
 // Solicitar (backend gera token E envia email — sem passar token ao frontend)
 // ============================================================================
 
@@ -374,12 +226,18 @@ func SolicitarVerificacaoEmail(c *gin.Context) {
 
 	// Gera token e envia o email diretamente — token NÃO retornado ao frontend
 	if err := emailSvc.SendVerificationEmail(userID, userType, email, nome); err != nil {
+		if errors.Is(err, services.ErrEmailNaoConfigurado) {
+			// Canal de e-mail indisponível (Brevo não configurado): 503, sem
+			// afirmar que algo foi enviado (SEC-07 — falha fechada).
+			utils.RespondWithServiceUnavailable(c, fmt.Errorf("o envio de e-mail está temporariamente indisponível"))
+			return
+		}
 		log.Printf("Erro ao enviar email de verificação: %v", err)
 		utils.RespondWithInternalError(c, err)
 		return
 	}
 
-	log.Printf("Email de verificação enviado para: %s", email)
+	log.Printf("Email de verificação enviado (tipo %s)", userType)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -388,18 +246,31 @@ func SolicitarVerificacaoEmail(c *gin.Context) {
 	})
 }
 
-// SolicitarRecuperacaoSenha gera o token e envia o email de recuperação diretamente.
-// Usado por fluxos onde o backend controla o envio completo.
+// mensagemRecuperacaoSenha é a ÚNICA resposta pública de /recuperar-senha/solicitar
+// (SEC-06): a mesma exista ou não a conta, tenha ou não o e-mail verificado.
+const mensagemRecuperacaoSenha = "Se existir uma conta elegível, enviámos as instruções para o e-mail cadastrado."
+
+// executarEnvioRecuperacao corre o envio do e-mail fora do ciclo da requisição,
+// para que o tempo de resposta seja o mesmo com e sem conta. É uma variável
+// apenas para os testes a executarem de forma síncrona.
+var executarEnvioRecuperacao = func(f func()) { go f() }
+
+// SolicitarRecuperacaoSenha (SEC-03 / SEC-06) envia por e-mail um LINK de uso
+// único (1 hora) para o titular escolher a nova senha. NÃO altera a senha, não
+// gera senha e não confirma se a conta existe.
 // Rota: POST /email/recuperar-senha/solicitar  (pública — usa identificador no body)
 //
 // 'tipo' é OPCIONAL: quando omitido, tenta identificar o usuário como
-// estudante, depois academia, depois admin, nessa ordem, parando no
-// primeiro em que o identificador exista — replicando aqui a lógica que
-// antes só existia no frontend (src/app/api/recuperar-senha/route.ts,
-// removido nesta tarefa), usada pela página pública "/esqueci-senha" que
-// nunca pede ao usuário para escolher o tipo de conta. Se o identificador
-// existir num tipo mas o email não estiver verificado, a busca PARA ali
-// (não continua tentando os outros tipos) — mesmo comportamento de antes.
+// estudante, depois academia, depois admin, nessa ordem, parando no primeiro em
+// que o identificador exista (mesma ordem usada pelas páginas públicas
+// "/esqueci-senha", que nunca pedem o tipo de conta).
+//
+// Respostas:
+//   - 200 sempre, com a mesma mensagem, exista a conta ou não, tenha ou não
+//     e-mail verificado (não permite enumerar contas);
+//   - 503 quando o canal de e-mail (Brevo) não está configurado — independe da
+//     conta, logo não revela nada;
+//   - 422 apenas para corpo inválido (identificador ausente / tipo inválido).
 func SolicitarRecuperacaoSenha(c *gin.Context) {
 	var req struct {
 		Identificador string `json:"identificador" binding:"required"`
@@ -419,12 +290,16 @@ func SolicitarRecuperacaoSenha(c *gin.Context) {
 		tiposParaTentar = []string{req.Tipo}
 	}
 
+	if !services.BrevoConfigurado() {
+		utils.RespondWithServiceUnavailable(c, fmt.Errorf("o envio de e-mail está temporariamente indisponível"))
+		return
+	}
+
 	client := getDbClient(c)
 
 	var userID uuid.UUID
 	var email, nome, tipoEncontrado string
-	var emailVerificado bool
-	encontrado := false
+	var emailVerificado, encontrado bool
 
 	for _, tipo := range tiposParaTentar {
 		var idStr, e, n string
@@ -461,124 +336,21 @@ func SolicitarRecuperacaoSenha(c *gin.Context) {
 		break
 	}
 
-	if !encontrado {
-		utils.RespondWithNotFoundError(c, "usuário")
-		return
+	// Conta elegível = existe, tem e-mail cadastrado e esse e-mail foi verificado.
+	// Qualquer outro caso responde exatamente igual, sem enviar nada.
+	if encontrado && email != "" && emailVerificado {
+		emailSvc := getEmailService(c)
+		executarEnvioRecuperacao(func() {
+			if err := emailSvc.SendPasswordResetLinkEmail(userID, tipoEncontrado, email, nome); err != nil {
+				// Sem e-mail nem identificador no log: só a causa técnica.
+				log.Printf("[recuperacao-senha] falha ao enviar o link de recuperação (tipo %s): %v", tipoEncontrado, err)
+			}
+		})
 	}
-
-	if email == "" {
-		utils.RespondWithValidationError(c, fmt.Errorf("usuário não possui email cadastrado"))
-		return
-	}
-
-	if !emailVerificado {
-		utils.RespondWithForbiddenError(c, "Por favor, verifique seu email antes de solicitar recuperação de senha")
-		return
-	}
-
-	// A partir daqui o fluxo passa a ser inteiramente controlado pelo
-	// backend: gera-se uma senha temporária segura, aplica-se-a já à conta
-	// (mesmo mecanismo de event sourcing usado em ResetarSenha — carregado
-	// diretamente aqui, e não através de ResetarSenha, para não alterar o
-	// comportamento já existente e testado desse outro endpoint), e só
-	// então o email é enviado. Não existe mais token: a recuperação
-	// acontece de forma síncrona nesta única chamada, tal como já
-	// acontecia no frontend antes desta tarefa (gerarTokenRecuperacao +
-	// resetarSenha + envio do email, agora atômico e do lado do servidor).
-	senhaTemporaria, err := services.GenerateSecurePassword()
-	if err != nil {
-		utils.RespondWithInternalError(c, fmt.Errorf("erro ao gerar senha temporária: %w", err))
-		return
-	}
-
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(senhaTemporaria), bcrypt.DefaultCost)
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-
-	repository := getRepository(c)
-	audit := db.AuditContext{UserID: "sistema", UserType: "sistema", IP: c.ClientIP()}
-
-	switch tipoEncontrado {
-	case "admin":
-		adminAgg, loadErr := repository.Load(userID, "Admin")
-		if loadErr != nil {
-			utils.RespondWithNotFoundError(c, "administrador")
-			return
-		}
-		admin, ok := adminAgg.(*aggregates.Admin)
-		if !ok {
-			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado para admin"))
-			return
-		}
-		if err := admin.AlterarSenha(string(hashedPassword), uuid.Nil, "reset_senha"); err != nil {
-			utils.RespondWithInternalError(c, err)
-			return
-		}
-		if err := repository.SaveWithAudit(admin, audit); err != nil {
-			utils.RespondWithInternalError(c, err)
-			return
-		}
-	case "academia":
-		academiaAgg, loadErr := repository.Load(userID, "Academia")
-		if loadErr != nil {
-			utils.RespondWithNotFoundError(c, "academia")
-			return
-		}
-		academia, ok := academiaAgg.(*aggregates.Academia)
-		if !ok {
-			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado para academia"))
-			return
-		}
-		if err := academia.AlterarSenha(string(hashedPassword), uuid.Nil, "reset_senha"); err != nil {
-			utils.RespondWithInternalError(c, err)
-			return
-		}
-		if err := repository.SaveWithAudit(academia, audit); err != nil {
-			utils.RespondWithInternalError(c, err)
-			return
-		}
-	case "estudante":
-		estudanteAgg, loadErr := repository.Load(userID, "Estudante")
-		if loadErr != nil {
-			utils.RespondWithNotFoundError(c, "estudante")
-			return
-		}
-		estudante, ok := estudanteAgg.(*aggregates.Estudante)
-		if !ok {
-			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado para estudante"))
-			return
-		}
-		if err := estudante.AlterarSenha(string(hashedPassword)); err != nil {
-			utils.RespondWithInternalError(c, err)
-			return
-		}
-		if err := repository.SaveWithAudit(estudante, audit); err != nil {
-			utils.RespondWithInternalError(c, err)
-			return
-		}
-	}
-
-	log.Printf("Senha resetada (recuperação, event sourcing) para %s: %s", tipoEncontrado, email)
-
-	emailSvc := getEmailService(c)
-	if err := emailSvc.SendPasswordResetEmail(email, nome, senhaTemporaria); err != nil {
-		// A senha JÁ foi trocada neste ponto. Falhar em silêncio devolvendo
-		// sucesso seria pior (o usuário nunca saberia a senha nova); por
-		// isso o erro é reportado ao chamador. SendPasswordResetEmail já
-		// regista a senha temporária no log do servidor como salvaguarda
-		// antes de devolver este erro.
-		log.Printf("Erro ao enviar email de recuperação para %s: %v", email, err)
-		utils.RespondWithInternalError(c, fmt.Errorf("senha redefinida, mas houve falha ao enviar o email com a nova senha: %w", err))
-		return
-	}
-
-	log.Printf("Email de recuperação enviado para: %s", email)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"message": "Sua senha foi redefinida com sucesso. Enviamos a nova senha temporária para o seu email.",
+		"message": mensagemRecuperacaoSenha,
 	})
 }
 
@@ -736,7 +508,8 @@ func ResetarSenha(c *gin.Context) {
 			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
 			return
 		}
-		if err := estudante.AlterarSenha(string(hashedPassword)); err != nil {
+		// Motivo reset_senha: limpa deve_alterar_senha e encerra as sessões anteriores.
+		if err := estudante.AlterarSenhaComMotivo(string(hashedPassword), aggregates.MotivoSenhaResetSenha); err != nil {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
@@ -755,21 +528,3 @@ func ResetarSenha(c *gin.Context) {
 		utils.RespondWithValidationError(c, fmt.Errorf("tipo de usuário inválido no token: %s", tokenInfo.UserType))
 	}
 }
-
-// ============================================================================
-// Helpers internos
-// ============================================================================
-
-func gerarEEnviarTokenVerificacao(emailSvc interface {
-	SendVerificationEmail(uuid.UUID, string, string, string) error
-}, userID uuid.UUID, userType, email, nome string) error {
-	return emailSvc.SendVerificationEmail(userID, userType, email, nome)
-}
-
-func gerarEEnviarTokenRecuperacao(emailSvc interface {
-	SendPasswordResetEmail(uuid.UUID, string, string, string) error
-}, userID uuid.UUID, userType, email, nome string) error {
-	return emailSvc.SendPasswordResetEmail(userID, userType, email, nome)
-}
-
-var _ = time.Hour

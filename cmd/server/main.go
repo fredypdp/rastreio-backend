@@ -283,7 +283,6 @@ func setupRouter() *gin.Engine {
 	router.Use(corsMiddleware())
 	router.Use(requestIDMiddleware())
 	router.Use(middleware.MonitoringMiddleware())
-	router.Use(middleware.GlobalRateLimit())
 
 	// Injetar dependências no contexto de cada requisição
 	router.Use(func(c *gin.Context) {
@@ -305,12 +304,12 @@ func setupRouter() *gin.Engine {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
-	router.POST("/login", middleware.LoginRateLimit(), handlers.Login)
+	router.POST("/login", handlers.Login)
 	// Segunda etapa do login com verificação em duas etapas (tarefa 122). Públicas:
 	// o desafio_id devolvido por POST /login é a prova de que a senha estava correta.
-	router.POST("/login/dois-fatores/verificar", middleware.LoginRateLimit(), handlers.VerificarLoginDoisFatores)
-	router.POST("/login/dois-fatores/reenviar", middleware.LoginRateLimit(), handlers.ReenviarLoginDoisFatores)
-	router.POST("/bootstrap", middleware.LoginRateLimit(), handlers.BootstrapAdminFPP)
+	router.POST("/login/dois-fatores/verificar", handlers.VerificarLoginDoisFatores)
+	router.POST("/login/dois-fatores/reenviar", handlers.ReenviarLoginDoisFatores)
+	router.POST("/bootstrap", handlers.BootstrapAdminFPP)
 	router.POST("/solicitacao-matricula", handlers.CriarSolicitacaoMatricula)
 	router.POST("/academia/cadastro", handlers.RegisterAcademiaPublica)
 	// Search and payment have independent public financial rate limits so an
@@ -329,19 +328,21 @@ func setupRouter() *gin.Engine {
 		}
 	}
 
+	// E-mail: verificação e recuperação de senha. Tarefa 123: desapareceram as
+	// rotas gerar-token/* (devolviam o token em claro ao chamador) e o
+	// "limitador de e-mail" desativado. A recuperação é por LINK enviado ao e-mail
+	// (SEC-03); "/verificar-email/solicitar" passou a exigir autenticação (antes
+	// estava fora do grupo autenticado e falhava sempre no handler).
 	emailGroup := router.Group("/email")
-	emailGroup.Use(middleware.EmailRateLimit())
 	{
 		emailGroup.POST("/verificar-email/:token", handlers.VerificarEmail)
-		emailGroup.POST("/verificar-email/solicitar", handlers.SolicitarVerificacaoEmail)
 		emailGroup.POST("/recuperar-senha/solicitar", handlers.SolicitarRecuperacaoSenha)
 		emailGroup.POST("/recuperar-senha/:token", handlers.ResetarSenha)
-		emailGroup.POST("/gerar-token/recuperacao", handlers.GerarTokenRecuperacao)
 
 		emailAuthGroup := emailGroup.Group("/")
 		emailAuthGroup.Use(middleware.AuthMiddleware())
 		{
-			emailAuthGroup.POST("/gerar-token/verificacao", handlers.GerarTokenVerificacao)
+			emailAuthGroup.POST("/verificar-email/solicitar", handlers.SolicitarVerificacaoEmail)
 		}
 	}
 
@@ -424,6 +425,8 @@ func setupRouter() *gin.Engine {
 		protected.GET("/verificar-integridade/:codigo", handlers.VerificarIntegridade)
 		protected.GET("/consultar-estudante/:codigo", handlers.GetEstudantePorCodigo)
 		protected.GET("/estudantes", middleware.RequireAcademiaOuAdmin(), handlers.ListarEstudantes)
+		// Tarefa 123 (SEC-04): reenvio de credenciais temporárias (academia dona ou admin fpp).
+		protected.POST("/estudantes/:codigo/credenciais/reenviar", middleware.RequireAcademiaOuAdmin(), middleware.ValidarStatusAcademia(), handlers.ReenviarCredenciaisEstudante)
 		protected.GET("/avaliacoes", handlers.ListarAvaliacoes)
 		protected.GET("/aprovacoes", handlers.ListarAprovacoes)
 		protected.GET("/reprovacoes", handlers.ListarReprovacoes)
@@ -698,6 +701,9 @@ func setupRouter() *gin.Engine {
 	{
 		admin.POST("/register", middleware.RequireFPP(), handlers.RegisterAdmin)
 		admin.POST("/academia/cadastro", middleware.RequireFPP(), handlers.RegisterAcademia)
+		// Tarefa 123 (SEC-04): reenvio de credenciais temporárias (somente fpp).
+		admin.POST("/academias/:codigo/credenciais/reenviar", middleware.RequireFPP(), handlers.ReenviarCredenciaisAcademia)
+		admin.POST("/administradores/:id/credenciais/reenviar", middleware.RequireFPP(), handlers.ReenviarCredenciaisAdmin)
 		admin.PUT("/academia/:codigo/ativar", middleware.RequireAdm(), handlers.AtivarAcademia)
 		admin.PUT("/academia/:codigo/desativar", middleware.RequireAdm(), handlers.DesativarAcademia)
 		admin.DELETE("/academia/:codigo", middleware.RequireFPP(), handlers.DeletarAcademia)

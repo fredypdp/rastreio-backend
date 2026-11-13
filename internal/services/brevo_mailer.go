@@ -12,6 +12,11 @@ import (
 
 var brevoHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
+// BrevoAPIURL é o endpoint de envio. É uma variável apenas para que os testes
+// (inclusive os de handlers, noutro pacote) apontem para um servidor falso;
+// em produção nunca é alterada.
+var BrevoAPIURL = "https://api.brevo.com/v3/smtp/email"
+
 // BrevoConfig agrupa a configuração de envio via API do Brevo.
 type BrevoConfig struct {
 	APIKey      string
@@ -19,13 +24,20 @@ type BrevoConfig struct {
 	SenderName  string
 }
 
-// loadBrevoConfig lê a configuração do ambiente. Reaproveita EMAIL_FROM
-// (com fallback para EMAIL_USER) como remetente.
+// BrevoConfigurado diz se o canal de e-mail (Brevo) está utilizável. Os
+// handlers usam-no para responder 503 em vez de fingir que enviaram.
+func BrevoConfigurado() bool {
+	_, ok := loadBrevoConfig()
+	return ok
+}
+
+// loadBrevoConfig lê a configuração do ambiente: BREVO_API_KEY e o remetente
+// verificado em EMAIL_FROM. Não existe mais fallback para EMAIL_USER (variável
+// do SMTP, eliminado na Tarefa 123).
 func loadBrevoConfig() (BrevoConfig, bool) {
-	sender := getEnvOrDefault("EMAIL_FROM", os.Getenv("EMAIL_USER"))
 	cfg := BrevoConfig{
 		APIKey:      os.Getenv("BREVO_API_KEY"),
-		SenderEmail: sender,
+		SenderEmail: os.Getenv("EMAIL_FROM"),
 		SenderName:  "Spuri",
 	}
 	if cfg.APIKey == "" || cfg.SenderEmail == "" {
@@ -58,7 +70,7 @@ type brevoErrorResponse struct {
 
 // sendBrevoEmail envia um email via a API REST do Brevo.
 func sendBrevoEmail(cfg BrevoConfig, toEmail, toName, subject, textBody, htmlBody string) error {
-	return sendBrevoEmailToURL(cfg, "https://api.brevo.com/v3/smtp/email", toEmail, toName, subject, textBody, htmlBody)
+	return sendBrevoEmailToURL(cfg, BrevoAPIURL, toEmail, toName, subject, textBody, htmlBody)
 }
 
 // sendBrevoEmailToURL permite apontar para um servidor mock nos testes.

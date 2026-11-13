@@ -8,9 +8,12 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// RateLimiter keeps independent token buckets per source address.  Public
-// financial actions use dedicated instances rather than relying on the legacy
-// disabled global limiter.
+// RateLimiter keeps independent token buckets per source address. Só as ações
+// financeiras públicas o usam, com instâncias próprias. As funções
+// GlobalRateLimit, LoginRateLimit e EmailRateLimit eram no-ops e foram removidas
+// na Tarefa 123 (SEC-02): código morto que dava a falsa impressão de proteção.
+// O risco de não haver limite de taxa em login/e-mail continua declarado no
+// documento de segurança (decisão D1).
 type RateLimiter struct {
 	mu      sync.Mutex
 	limit   rate.Limit
@@ -41,27 +44,6 @@ func RateLimitMiddleware(l *RateLimiter) gin.HandlerFunc {
 			c.AbortWithStatus(429)
 			return
 		}
-		c.Next()
-	}
-}
-
-// GlobalRateLimit desativado.
-func GlobalRateLimit() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Next()
-	}
-}
-
-// LoginRateLimit desativado.
-func LoginRateLimit() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Next()
-	}
-}
-
-// EmailRateLimit desativado.
-func EmailRateLimit() gin.HandlerFunc {
-	return func(c *gin.Context) {
 		c.Next()
 	}
 }

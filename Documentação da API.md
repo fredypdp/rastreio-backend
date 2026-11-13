@@ -1,8 +1,8 @@
 ---
-modificado: 25-10-2026 00:00
+modificado: 12-11-2026 00:00
 criado: 05-04-2026 13:01
 ---
-Versão atual: 2.9.0
+Versão atual: 2.10.0
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -623,8 +623,11 @@ Quando a requisição envia `Authorization: Bearer <jwt_token>` válido, a API p
 ### 3.2 Senhas
 
 - Algoritmo: bcrypt com custo padrão
-- Senhas de admins: geradas com `crypto/rand` (segurança criptográfica), nunca hardcoded
-- Senhas de academia/estudante: código da entidade como senha inicial
+- Toda conta criada por terceiros (estudante, academia, administrador) nasce com uma **senha temporária** de 8 caracteres alfanuméricos sorteados com `crypto/rand` (sem os ambíguos `I l O o 0 1`), de **troca obrigatória** no primeiro acesso. Não existe senha padrão derivada do código nem senha fixa por perfil.
+- A senha temporária chega ao titular por **SMS** (estudante e academia, pelo envio padronizado de comunicação) ou por **e-mail** via Brevo (administrador). Só o hash é gravado no ledger; a senha em claro **nunca** aparece em resposta HTTP nem em log. O SMS só é enviado com `ENV=production`; fora disso nada é enviado nem registado (ver `CREDENCIAIS_LOG_DEV` em `.env.example`).
+- Enquanto a conta usa a senha temporária (`deve_alterar_senha = true`), o servidor responde `403` com `"code": "SENHA_TEMPORARIA"` em **todas** as rotas autenticadas, exceto `GET /meu-perfil`, `PUT /alterar-senha` e `POST /logout`. A flag é consequência do ledger (`SenhaTemporariaDefinida` liga; o evento de troca de senha desliga conforme o motivo) e é reconstruída em qualquer rebuild.
+- Motivos do evento de troca de senha: `alteracao_usuario` (o titular trocou; também é o valor assumido em eventos antigos sem motivo), `reset_senha` (recuperação por link; desliga a flag e invalida as sessões anteriores) e `credenciais_reenviadas` (reenvio; liga a flag e invalida as sessões anteriores).
+- `sessoes_validas_desde`: tokens emitidos antes deste instante (comparação em segundos) passam a receber `401 "sessão encerrada: faça login novamente"`. Só é atualizada por `reset_senha` e `credenciais_reenviadas`.
 - Todas as alterações de senha passam pelo ledger (evento)
 
 ### 3.3 Hash Chain do Ledger
@@ -654,7 +657,7 @@ Apenas eventos previamente autorizados podem ser gravados no ledger (`safe_queri
 
 Login unificado para todos os tipos de usuário. O tipo é inferido automaticamente.
 
-**Proteção**: pública | Rate limit ativo
+**Proteção**: pública. Não há limitação de taxa (os limitadores globais estavam desativados e foram removidos; ver decisão D1 do documento de segurança).
 
 **Request:**
 
@@ -672,6 +675,7 @@ Login unificado para todos os tipos de usuário. O tipo é inferido automaticame
   "token": "string",    // JWT
   "nome": "string",
   "type": "academia",   // 'admin' | 'academia' | 'estudante'
+  "deve_alterar_senha": false, // true enquanto a conta usa a senha temporária: ir direto para a troca obrigatória
   "codigo": "LDA20261", // apenas para academia/estudante
   "email": "x@y.com",  // apenas para admin
   "role": "fpp"         // apenas para admin
@@ -697,8 +701,9 @@ Para concluir o login, envie `desafio_id` e o código para [`POST /login/dois-fa
 **Erros:**
 
 - `400` — campos obrigatórios ausentes
-- `401` — credenciais inválidas ou conta inativa
-- `401` — email não verificado (quando login é feito por email e não por código)
+- `401` — `"credenciais inválidas"`: resposta **única** para usuário inexistente e para senha errada (não permite enumerar contas)
+- `401` — conta inativa (só depois de a senha estar correta)
+- `401` — email não verificado (quando login é feito por email e não por código) — **só depois de a senha estar correta**; com senha errada a resposta é a genérica acima
 - `403` — verificação em duas etapas ativa, mas a conta não tem e-mail verificado para receber o código (login recusado; contate o suporte)
 - `429` — muitos códigos solicitados (ver regras abaixo); inclui `retry_after_segundos`
 - `503` — não foi possível enviar o código por e-mail (nenhum token é emitido)
@@ -972,7 +977,7 @@ Exige senha atual **e** código.
 
 ### GET /meu-perfil
 
-Retorna os dados do usuário autenticado. O formato da resposta varia por tipo.
+Retorna os dados do usuário autenticado. O formato da resposta varia por tipo. Em qualquer tipo a resposta traz `deve_alterar_senha` (boolean) no nível raiz; esta rota continua acessível com a senha temporária.
 
 **Proteção**: autenticado (qualquer tipo)
 
@@ -1069,16 +1074,16 @@ Retorna os dados do usuário autenticado. O formato da resposta varia por tipo.
 
 ### PUT /alterar-senha
 
-Altera a senha do usuário autenticado.
+Altera a senha do usuário autenticado. É também a troca obrigatória da senha temporária: continua acessível enquanto `deve_alterar_senha` for `true` e, depois de aceite, a flag é desligada.
 
-**Proteção**: autenticado (qualquer tipo)
+**Proteção**: autenticado (qualquer tipo). Não exige estado `ativo` do estudante (um estudante recém-criado, pendente de documentos, precisa de trocar a senha temporária).
 
 **Request:**
 
 ```json
 {
   "senha_atual": "string",
-  "nova_senha": "string"   // mínimo 6 caracteres
+  "nova_senha": "string"   // 8 a 128 caracteres; diferente de senha_atual
 }
 ```
 
@@ -1092,7 +1097,8 @@ Altera a senha do usuário autenticado.
 
 **Erros:**
 
-- `400` — campos obrigatórios ausentes ou nova senha muito curta
+- `400` — campos obrigatórios ausentes
+- `422` — nova senha inválida (menos de 8 caracteres) ou igual à senha atual
 - `401` — senha atual incorreta
 
 ---
@@ -1101,9 +1107,52 @@ Altera a senha do usuário autenticado.
 
 ---
 
+### POST /estudantes/:codigo/credenciais/reenviar
+
+Redefine e reenvia as credenciais de um estudante: gera uma **nova senha temporária**, grava o evento de senha com motivo `credenciais_reenviadas` (liga `deve_alterar_senha` e invalida as sessões anteriores) e envia o SMS (texto "novas credenciais"). A senha em claro nunca volta na resposta.
+
+**Proteção**: autenticado + a **academia dona** do estudante ou admin `fpp`. Outra academia ou o próprio estudante recebem `403`.
+
+**Request:** sem payload
+
+**Response 200:**
+
+```json
+{
+  "message": "credenciais redefinidas",
+  "credenciais": { "canal": "sms", "enviada": true }
+}
+```
+
+**Regras:**
+
+- Intervalo mínimo de **10 minutos por conta**, medido por `sessoes_validas_desde` (sem tabela nova). Antes disso: `429` com `retry_after_segundos`.
+- O telefone de destino segue a regra do cadastro (superior: estudante; escolar: encarregado) e é validado antes de alterar a senha (`422` se inválido).
+- A ação é auditada com o executor real. Fora de `ENV=production` o SMS não é enviado (`credenciais.motivo = "ambiente_nao_producao"`), mas a senha é redefinida.
+
+**Erros:** `403`, `404` (estudante inexistente), `422`, `429`.
+
+---
+
+### POST /dominis/academias/:codigo/credenciais/reenviar
+
+Igual ao anterior para uma academia: nova senha temporária por SMS ao `telefone` da academia (em nome do admin).
+
+**Proteção**: autenticado + admin `fpp`. **Response 200:** igual ao anterior. **Erros:** `403` (admin sem role `fpp`), `404`, `422` (academia sem telefone móvel válido — atualize-o antes), `429` (intervalo de 10 minutos).
+
+---
+
+### POST /dominis/administradores/:id/credenciais/reenviar
+
+Igual para um administrador: nova senha temporária enviada por **e-mail** (Brevo).
+
+**Proteção**: autenticado + admin `fpp`. Um admin não pode reenviar para si próprio (`422`: use a alteração de senha). **Response 200:** `{ "message": "credenciais redefinidas", "credenciais": { "canal": "email", "enviada": true } }`. **Erros:** `403`, `404`, `422`, `429`, `503` (Brevo não configurado — nada é redefinido).
+
+---
+
 ## 5. Email
 
-Todos os endpoints de email têm rate limiting ativo.
+O **Brevo é o único canal de e-mail** (EmailJS e SMTP foram eliminados). Sem Brevo configurado (`BREVO_API_KEY` e `EMAIL_FROM`) os envios falham de forma explícita (`503`) — nada é "fingido" e nenhum token, link ou senha é escrito em log. Não há limitação de taxa nestes endpoints.
 
 
 ### PUT /me/email
@@ -1185,7 +1234,7 @@ Verifica o email usando o token recebido no email. Funciona para admin, academia
 
 Envia email de verificação para o usuário autenticado (backend envia o email diretamente).
 
-**Proteção**: autenticado (qualquer tipo)
+**Proteção**: autenticado (qualquer tipo) — exige `Authorization: Bearer <jwt>`; sem token a resposta é `401`.
 
 
 **Request:** sem payload
@@ -1199,70 +1248,13 @@ Envia email de verificação para o usuário autenticado (backend envia o email 
 }
 ```
 
----
-
-### POST /email/gerar-token/verificacao
-
-Gera e retorna o token de verificação ao frontend, que fica encarregado por enviar o email.
-
-**Proteção**: autenticado (qualquer tipo)
-
-
-**Request:** sem payload
-**Response 200:**
-
-```json
-{
-  "success": true,
-  "token": "hex64chars",
-  "email": "usuario@exemplo.com",
-  "nome": "string",
-  "tipo": "academia",
-  "expira_em": "24 horas"
-}
-```
-
----
-
-### POST /email/gerar-token/recuperacao
-
-Gera token de recuperação de senha e retorna ao frontend. O frontend envia o email.
-
-**Proteção**: pública
-
-**Request:**
-
-```json
-{
-  "identificador": "string",  // código, email ou código da academia
-  "tipo": "estudante"         // 'estudante' | 'academia' | 'admin'
-}
-```
-
-**Response 200:**
-
-```json
-{
-  "success": true,
-  "token": "hex64chars",
-  "email": "usuario@exemplo.com",
-  "nome": "string",
-  "tipo": "academia",
-  "expira_em": "1 hora"
-}
-```
-
-**Erros:**
-
-- `400` — campos obrigatórios ausentes
-- `403` — email não verificado (deve verificar antes de recuperar senha)
-- `404` — usuário não encontrado
+**Erros:** `503` — canal de e-mail (Brevo) não configurado; nenhum token é gravado.
 
 ---
 
 ### POST /email/recuperar-senha/solicitar
 
-Solicita recuperação de senha. O backend envia o email diretamente.
+Pede a recuperação de senha **por link**. O backend envia ao e-mail cadastrado e verificado um link de uso único, válido por 1 hora, para `{FRONTEND_URL}/recuperar-senha/<token>`. Este pedido **não altera a senha**, não gera senha e não confirma se a conta existe.
 
 **Proteção**: pública
 
@@ -1270,20 +1262,26 @@ Solicita recuperação de senha. O backend envia o email diretamente.
 
 ```json
 {
-  "identificador": "string",
-  "tipo": "estudante"
+  "identificador": "string",   // código ou e-mail
+  "tipo": "estudante"          // opcional: 'estudante' | 'academia' | 'admin'. Omitido → tenta estudante, academia, admin
 }
 ```
 
-**Response 200:**
+**Response 200** — sempre a mesma, exista a conta ou não, tenha ou não e-mail verificado:
 
 ```json
 {
   "success": true,
-  "message": "Email de recuperação enviado com sucesso. Verifique sua caixa de entrada.",
-  "expira_em": "1 hora"
+  "message": "Se existir uma conta elegível, enviámos as instruções para o e-mail cadastrado."
 }
 ```
+
+O e-mail só é enviado a contas com e-mail cadastrado e verificado, em segundo plano (o tempo de resposta não revela nada). A senha só muda quando o titular abre o link e escolhe a nova senha (`POST /email/recuperar-senha/:token`).
+
+**Erros:**
+
+- `422` — `identificador` ausente ou `tipo` inválido
+- `503` — canal de e-mail (Brevo) não configurado (independe da conta)
 
 ---
 
@@ -1301,7 +1299,7 @@ Define nova senha usando o token de recuperação.
 
 ```json
 {
-  "nova_senha": "string"  // mínimo 6 caracteres
+  "nova_senha": "string"  // 8 a 128 caracteres
 }
 ```
 
@@ -1313,6 +1311,8 @@ Define nova senha usando o token de recuperação.
   "email": "usuario@exemplo.com"
 }
 ```
+
+O evento de troca grava o motivo `reset_senha`: desliga `deve_alterar_senha` e invalida as sessões anteriores (`sessoes_validas_desde`). O token é de uso único.
 
 **Erros:**
 
@@ -1333,7 +1333,7 @@ Define nova senha usando o token de recuperação.
 
 1. Admin envia dados da academia (nivel, type, nome, província, endereço, nível escolar, etc.)
 2. Sistema gera o código único consultando o ledger (ex: `LDA20261`)
-3. Sistema gera a senha padrão = código da academia (ex: `LDA20261`)
+3. Sistema gera uma **senha temporária** aleatória de 8 caracteres e envia-a por SMS ao `telefone` da academia (obrigatório); a academia é obrigada a trocá-la no primeiro acesso
 4. Academia é criada com **status `inativo`**
 5. Um admin com role `adm` ou `fpp` deve ativar manualmente
 
@@ -1381,7 +1381,7 @@ Define nova senha usando o token de recuperação.
 | Sem ano letivo na academia, notas/faltas/avaliações são bloqueadas | Pré-condição para registos académicos               |
 | Histórico `anos_letivos_lista` não duplica `ano_letivo`       | Atualizações repetidas do mesmo ano são ignoradas       |
 | Histórico global `anos_letivos_lista` (admin) não duplica `ano_letivo` | Lista global de anos letivos mantém unicidade por ano |
-| Senha padrão = código da academia                             | Deve ser alterada após o primeiro login                |
+| Senha temporária aleatória enviada por SMS                    | Troca obrigatória no primeiro acesso (`deve_alterar_senha`) |
 | Desativação exige motivo                                      | Registado no ledger e na projeção para auditoria       |
 
 
@@ -1390,6 +1390,8 @@ Define nova senha usando o token de recuperação.
 Registra uma nova academia via `multipart/form-data`. Criada com status `inativo`. `nif` é obrigatório, string de exatamente 10 dígitos — **não é único**: a mesma entidade fiscal pode estar associada a mais de uma academia na plataforma (ver "Solicitações de alteração de NIF de academia" para como o NIF é alterado depois do cadastro). `alvara` é opcional: quando enviado, deve ser PDF válido com até 10MB e é armazenado em `{codigo_academia}/Documentação formal/`. Quando não for enviado no cadastro, envie-o depois por `POST /documentos/academias/{codigo_academia}/alvara/upload`. O front end pode ler esse documento pela rota autenticada `GET /documentos/academias/{codigo_academia}/alvara/download`.
 
 **Proteção**: autenticado + admin com role `fpp`
+
+**Credenciais temporárias:** `telefone` é **obrigatório** (móvel angolano de 9 dígitos iniciado por 9, aceita `+244` e espaços; é normalizado para `9XXXXXXXX`) porque é para ele que a senha temporária segue por SMS. A validação ocorre antes de criar a conta. O SMS sai depois do commit, em nome do admin que cadastrou; falha de envio nunca desfaz o cadastro.
 
 **Request — Escola:**
 
@@ -1444,12 +1446,16 @@ Quando o `alvara` não é enviado, a resposta também inclui `aviso` com a URL d
     "nif": "0012345678",
     "provincia": "LDA",
     "codigo_academia": "LDA20261"
-  }
+  },
+  "credenciais": { "canal": "sms", "enviada": true }
 }
 ```
 
+`credenciais.enviada = false` traz `motivo`: `ambiente_nao_producao`, `provedor_nao_configurado` ou `falha_envio`; nesses casos use [`POST /dominis/academias/:codigo/credenciais/reenviar`](#post-dominisacademiascodigocredenciaisreenviar).
+
 **Erros:**
 
+- `422` — `telefone` ausente ou inválido (precisa ser móvel de 9 dígitos iniciado por 9)
 - `400` — `nivel` inválido, `type` inválido (`public`/`private`) ou ausente, `nif` ausente/inválido, `alvara` não PDF/acima de 10MB quando enviado, campos obrigatórios ausentes ou anos_academicos inválidos
 
 ---
@@ -1460,7 +1466,7 @@ Permite que uma academia se autocadastre na plataforma **sem autenticação pré
 
 **Proteção**: nenhuma (rota pública)
 
-**Diferença em relação ao cadastro por admin**: exige o campo `senha` (string, 6–128 caracteres). Essa senha é definida como a senha de acesso da academia. Diferentemente do fluxo administrativo, este endpoint público não usa fallback para a senha padrão baseada no `codigo_academia`.
+**Diferença em relação ao cadastro por admin**: exige o campo `senha` (string, 6–128 caracteres). Essa senha é definida como a senha de acesso da academia. Diferentemente do fluxo administrativo (senha temporária aleatória por SMS, de troca obrigatória), aqui a senha é a escolhida pela própria academia e não há senha temporária.
 
 **Request:**
 
@@ -2039,7 +2045,7 @@ A deleção só é permitida quando **nenhum estudante estiver vinculado à acad
 
 ### GET /academias
 
-Lista todas as academias com paginação e filtro de status.
+Lista todas as academias com paginação e filtro de status. Quando o chamador é admin, cada item traz também `deve_alterar_senha` (boolean).
 
 **Proteção**: pública com autenticação opcional.
 
@@ -3210,7 +3216,7 @@ Para implementar o cliente de forma segura:
 3. Sistema valida que todos os arquivos enviados são PDF, respeitam o limite de 10MB e possuem assinatura `%PDF`.
 4. Sistema gera código único (`AAA1234`), verificando ledger e projeção.
 5. Quando enviados, os documentos são enviados ao storage definitivo em `{codigo_academia}/estudantes/{codigo_estudante}/documentos/`.
-6. Senha padrão = código do estudante (ex: `ABC1234`).
+6. Sistema gera uma **senha temporária** aleatória de 8 caracteres e envia-a por SMS: ao telefone do estudante (ensino superior) ou do encarregado (ensino escolar); sem nível definido, ao que existir. O telefone de destino é validado (móvel de 9 dígitos iniciado por 9) **antes** de criar a conta.
 7. Estudante é criado com **status `ativo`**, vinculado à academia e com o mapa `documentos` gravado no evento `EstudanteCriadoComVinculo` e na projeção.
 8. Opcionalmente, se `codigo_turma` for informado, a turma é pré-validada antes de uploads/gravações e o vínculo é tentado após a persistência do estudante.
 9. Se qualquer validação ou persistência falhar após upload parcial, o diretório de documentos do estudante é removido para evitar ficheiros órfãos.
@@ -3239,7 +3245,7 @@ Para implementar o cliente de forma segura:
 | Apenas academia pode cadastrar estudantes                     | Não existe auto-cadastro                |
 | `genero` e `data_nascimento` são obrigatórios                 | Não podem ser omitidos                  |
 | `data_nascimento` deve ser anterior a hoje                    | Validação no aggregate                  |
-| Senha padrão = código do estudante                            | Ex: `ABC1234` acede com senha `ABC1234` |
+| Senha temporária aleatória enviada por SMS                    | Troca obrigatória no primeiro acesso; o código já não é senha |
 | Status superior exige fundamntal e médio finalizados/inativos | Progressão lógica do ensino             |
 | Notas e faltas são imutáveis após criação                     | Só podem ser criadas e consultadas      |
 
@@ -3371,10 +3377,13 @@ curl -X POST https://api.exemplo.ao/academia/estudante/register \
         "file_url": "https://...",
         "download_url": "https://..."
       }
-    }
+    },
+    "credenciais": { "canal": "sms", "enviada": true }
   }
 }
 ```
+
+`data.credenciais` informa o envio do SMS com as credenciais temporárias, feito depois do commit: `{ canal: "sms", enviada: boolean, motivo?: "ambiente_nao_producao" | "provedor_nao_configurado" | "falha_envio" }`. Falha de envio nunca desfaz o cadastro; a conta fica elegível a [`POST /estudantes/:codigo/credenciais/reenviar`](#post-estudantescodigocredenciaisreenviar). No cadastro em lote assíncrono (`/register/async`) cada item envia o seu SMS dentro do worker.
 
 Quando `codigo_turma` é informado e a vinculação pós-criação falha por uma condição concorrente rara, a resposta continua `201` porque o estudante já foi persistido, mas `data.turma_vinculada` vem `false` e `data.turma_aviso` orienta tentar novamente via `POST /academia/turma/:codigo/estudante`. Se `codigo_turma` não for informado, os campos `codigo_turma`, `turma_vinculada` e `turma_aviso` não aparecem na resposta.
 
@@ -3386,6 +3395,7 @@ Quando `codigo_turma` é informado e a vinculação pós-criação falha por uma
 - `400` — ficheiro não PDF, sem assinatura `%PDF`, com extensão diferente de `.pdf` ou acima de 10MB
 - `400` — BI do estudante igual ao BI do encarregado, ou BI do estudante já cadastrado
 - `400` — turma informada está inativa/deletada ou é incompatível com ano/curso do estudante
+- `422` — não há telefone móvel válido para receber as credenciais (superior: telefone do estudante; escolar: telefone do encarregado)
 - `404` — `codigo_turma` informado não existe ou não pertence à academia autenticada
 
 ---
@@ -3458,7 +3468,7 @@ curl -X POST https://api.exemplo.ao/academia/estudante/ABC1234/documentos \
 
 ### GET /estudantes
 
-Lista estudantes. Retorna apenas os da academia (para academia) ou todos (para admin).
+Lista estudantes. Retorna apenas os da academia (para academia) ou todos (para admin). Cada item traz `deve_alterar_senha` (boolean): `true` enquanto o estudante ainda usa a senha temporária (indicador de "credenciais não confirmadas").
 
 **Proteção**: autenticado + academia ou admin
 
@@ -4372,7 +4382,8 @@ Authorization: Bearer <token>
 {
   "message": "solicitação aprovada e estudante registado com sucesso",
   "codigo_solicitacao": "AB12CD34EF5",
-  "codigo_estudante_gerado": "EST123456"
+  "codigo_estudante_gerado": "EST123456",
+  "credenciais": { "canal": "sms", "enviada": true }
 }
 ```
 
@@ -4386,6 +4397,8 @@ Authorization: Bearer <token>
   "status": "aprovada_pendente_pagamento_matricula"
 }
 ```
+
+**Credenciais:** o telefone de destino (estudante no superior, encarregado no escolar) é validado antes de aprovar; sem telefone móvel válido a aprovação é recusada com `422`. No caminho com taxa, a senha temporária é enviada quando o pagamento da matrícula é confirmado e o estudante nasce; falha desse SMS não desfaz o vínculo e resolve-se com o reenvio de credenciais.
 
 **Erros comuns:** `400` para revalidação inválida, `403` para solicitação de outra academia, `404` para código inexistente, `409` para solicitação não pendente ou BI em uso/em cadastro.
 
@@ -7238,7 +7251,8 @@ Cria um novo admin. A senha temporária é gerada automaticamente, persistida ap
 - O aggregate também valida hierarquia via `ValidatePermission(role)`.
 - Email duplicado retorna conflito.
 - A senha temporária não aparece na resposta.
-- Se o envio de email falhar, o admin continua criado e a resposta inclui `aviso="email_nao_enviado"`.
+- Se o envio de email falhar (inclusive Brevo não configurado), o admin continua criado e a resposta inclui `aviso="email_nao_enviado"`; use [`POST /dominis/administradores/:id/credenciais/reenviar`](#post-dominisadministradoresidcredenciaisreenviar).
+- O e-mail é enviado pelo Brevo, com o link `{FRONTEND_URL}/login`.
 
 **Response 201 — email enviado:**
 
@@ -7251,7 +7265,8 @@ Cria um novo admin. A senha temporária é gerada automaticamente, persistida ap
     "email": "admin.exemplo@dominio.com",
     "telefone": "923456789",
     "role": "gerente"
-  }
+  },
+  "credenciais": { "canal": "email", "enviada": true }
 }
 ```
 
@@ -7259,7 +7274,7 @@ Cria um novo admin. A senha temporária é gerada automaticamente, persistida ap
 
 ```json
 {
-  "message": "administrador criado com sucesso. ATENÇÃO: falha ao enviar email — solicite reset de senha via /recuperar-senha/solicitar.",
+  "message": "administrador criado com sucesso. ATENÇÃO: falha ao enviar o e-mail com as credenciais — use o reenvio de credenciais.",
   "data": {
     "id": "uuid",
     "nome": "string",
@@ -7267,13 +7282,14 @@ Cria um novo admin. A senha temporária é gerada automaticamente, persistida ap
     "telefone": "923456789",
     "role": "gerente"
   },
-  "aviso": "email_nao_enviado"
+  "aviso": "email_nao_enviado",
+  "credenciais": { "canal": "email", "enviada": false, "motivo": "canal_indisponivel" }
 }
 ```
 
 #### GET /dominis/admin-lista
 
-Lista todos os admins.
+Lista todos os admins. Cada item traz `deve_alterar_senha` (boolean).
 
 **Proteção real**: autenticado + admin; o handler exige permissão mínima `adm` (`adm` ou `fpp`).
 

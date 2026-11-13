@@ -2,17 +2,12 @@
 package services
 
 import (
-	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"html"
-	"io"
 	"log"
-	"math/big"
-	"net/http"
 	"os"
 	"time"
 
@@ -20,62 +15,23 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// EmailService guarda tokens de autenticação (verificação de e-mail e
+// recuperação de senha) e envia os e-mails transacionais.
+//
+// Tarefa 123 (D7): o Brevo é o ÚNICO canal de e-mail. EmailJS e SMTP foram
+// eliminados. Sem Brevo configurado nenhum envio "finge" que correu bem:
+// devolve-se ErrEmailNaoConfigurado (falha fechada) e nenhum segredo (token,
+// link ou senha) é escrito no log (SEC-07).
 type EmailService struct {
-	db             *sqlx.DB
-	serviceID      string
-	templateVerify string
-	templateReset  string
-	publicKey      string
-	privateKey     string
-	frontendURL    string
-	enabled        bool
-	httpClient     *http.Client
-}
-
-// EmailJS API Request
-type EmailJSRequest struct {
-	ServiceID      string            `json:"service_id"`
-	TemplateID     string            `json:"template_id"`
-	UserID         string            `json:"user_id"`
-	AccessToken    string            `json:"accessToken,omitempty"`
-	TemplateParams map[string]string `json:"template_params"`
+	db          *sqlx.DB
+	frontendURL string
 }
 
 func NewEmailService(db *sqlx.DB) *EmailService {
-	serviceID := os.Getenv("EMAILJS_SERVICE_ID")
-	templateVerify := os.Getenv("EMAILJS_TEMPLATE_VERIFICATION")
-	templateReset := os.Getenv("EMAILJS_TEMPLATE_RESET")
-	publicKey := os.Getenv("EMAILJS_PUBLIC_KEY")
-	privateKey := os.Getenv("EMAILJS_PRIVATE_KEY")
-
-	enabled := serviceID != "" && templateVerify != "" && templateReset != "" && publicKey != ""
-
-	if !enabled {
-		log.Println("[EMAIL] ⚠️  DESABILITADO - configure EMAILJS_* vars")
-		return &EmailService{
-			db:          db,
-			enabled:     false,
-			frontendURL: getEnvOrDefault("FRONTEND_URL", "http://localhost:3000"),
-		}
-	}
-
-	log.Printf("[EMAIL] ✅ EmailJS configurado - ServiceID: %s", serviceID)
-
 	return &EmailService{
-		db:             db,
-		serviceID:      serviceID,
-		templateVerify: templateVerify,
-		templateReset:  templateReset,
-		publicKey:      publicKey,
-		privateKey:     privateKey,
-		frontendURL:    getEnvOrDefault("FRONTEND_URL", "http://localhost:3000"),
-		enabled:        enabled,
-		httpClient:     &http.Client{Timeout: 30 * time.Second},
+		db:          db,
+		frontendURL: getEnvOrDefault("FRONTEND_URL", "http://localhost:3000"),
 	}
-}
-
-func (s *EmailService) IsEnabled() bool {
-	return s.enabled
 }
 
 // GenerateToken gera um token aleatório seguro de 32 bytes (64 chars hex).
@@ -85,56 +41,6 @@ func GenerateToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// GenerateSecurePassword gera uma senha temporária criptograficamente segura
-// com 14 caracteres, garantindo ao menos uma maiúscula, minúscula, dígito e símbolo.
-//
-// FIX E4-AA-04: substitui senhas hardcoded ("spuriadm", "spurifpp", "spurigerente")
-// que eram idênticas para todos os admins do mesmo role, públicas no repositório,
-// e tornavam todas as contas recém-criadas e pós-reset trivialmente comprometíveis.
-// Agora cada criação/reset produz uma senha única, desconhecida até mesmo pelo código.
-func GenerateSecurePassword() (string, error) {
-	const (
-		upper   = "ABCDEFGHJKLMNPQRSTUVWXYZ" // sem I, O para evitar confusão visual
-		lower   = "abcdefghjkmnpqrstuvwxyz"  // sem i, l, o
-		digits  = "23456789"                 // sem 0, 1
-		symbols = "@#$%&*!"
-		all     = upper + lower + digits + symbols
-		length  = 14
-	)
-
-	password := make([]byte, length)
-
-	// Garantir ao menos um de cada classe nos primeiros 4 slots.
-	charsets := []string{upper, lower, digits, symbols}
-	for i, charset := range charsets {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		if err != nil {
-			return "", fmt.Errorf("erro ao gerar senha: %w", err)
-		}
-		password[i] = charset[n.Int64()]
-	}
-
-	// Preencher restante com caracteres do conjunto completo.
-	for i := len(charsets); i < length; i++ {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(all))))
-		if err != nil {
-			return "", fmt.Errorf("erro ao gerar senha: %w", err)
-		}
-		password[i] = all[n.Int64()]
-	}
-
-	// Embaralhar para não fixar padrão nas primeiras posições.
-	for i := length - 1; i > 0; i-- {
-		j, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
-		if err != nil {
-			return "", fmt.Errorf("erro ao embaralhar senha: %w", err)
-		}
-		password[i], password[j.Int64()] = password[j.Int64()], password[i]
-	}
-
-	return string(password), nil
 }
 
 // SaveToken persiste um token de autenticação (verificação ou recuperação).
@@ -202,115 +108,19 @@ func (s *EmailService) VerifyToken(token, tipo string) (*TokenInfo, error) {
 	return &info, nil
 }
 
-func (s *EmailService) sendEmailViaEmailJS(to, nome, templateID string, params map[string]string) error {
-	if !s.enabled {
-		log.Printf("[EMAIL] ⚠️  Serviço desabilitado — email não enviado para: %s", to)
-		return fmt.Errorf("serviço de email desabilitado")
-	}
-
-	if to == "" {
-		return fmt.Errorf("destinatário vazio")
-	}
-
-	params["to_email"] = to
-	params["to_name"] = nome
-	params["from_name"] = "Spuri Sistema Acadêmico"
-
-	log.Printf("[EMAIL] 📧 Enviando para: %s via EmailJS", to)
-
-	emailReq := EmailJSRequest{
-		ServiceID:      s.serviceID,
-		TemplateID:     templateID,
-		UserID:         s.publicKey,
-		TemplateParams: params,
-	}
-
-	if s.privateKey != "" {
-		emailReq.AccessToken = s.privateKey
-	}
-
-	jsonData, err := json.Marshal(emailReq)
-	if err != nil {
-		return fmt.Errorf("erro ao serializar email: %w", err)
-	}
-
-	maxRetries := 2
-	var lastErr error
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		resp, err := s.httpClient.Post(
-			"https://api.emailjs.com/api/v1.0/email/send",
-			"application/json",
-			bytes.NewBuffer(jsonData),
-		)
-
-		if err != nil {
-			lastErr = fmt.Errorf("erro na requisição: %w", err)
-			log.Printf("[EMAIL] ❌ Tentativa %d falhou: %v", attempt, lastErr)
-			if attempt < maxRetries {
-				time.Sleep(time.Duration(attempt*2) * time.Second)
-			}
-			continue
-		}
-
-		defer resp.Body.Close()
-
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			lastErr = fmt.Errorf("erro ao ler resposta: %w", err)
-			log.Printf("[EMAIL] ❌ Tentativa %d falhou: %v", attempt, lastErr)
-			if attempt < maxRetries {
-				time.Sleep(time.Duration(attempt*2) * time.Second)
-			}
-			continue
-		}
-
-		bodyStr := string(bodyBytes)
-
-		if resp.StatusCode == 200 && (bodyStr == "OK" || bodyStr == "\"OK\"") {
-			log.Printf("[EMAIL] ✅ Enviado com sucesso (%d/%d)", attempt, maxRetries)
-			return nil
-		}
-
-		var errorMsg string
-		var jsonError map[string]interface{}
-		if err := json.Unmarshal(bodyBytes, &jsonError); err == nil {
-			if msg, ok := jsonError["message"].(string); ok {
-				errorMsg = msg
-			} else if text, ok := jsonError["text"].(string); ok {
-				errorMsg = text
-			} else {
-				errorMsg = bodyStr
-			}
-		} else {
-			errorMsg = bodyStr
-		}
-
-		lastErr = fmt.Errorf("EmailJS erro [%d]: %s", resp.StatusCode, errorMsg)
-		log.Printf("[EMAIL] ❌ Tentativa %d falhou: %v", attempt, lastErr)
-
-		if attempt < maxRetries {
-			time.Sleep(time.Duration(attempt*2) * time.Second)
-		}
-	}
-
-	return fmt.Errorf("falha após %d tentativas: %w", maxRetries, lastErr)
-}
-
-// SendVerificationEmail envia o email de verificação de endereço.
+// SendVerificationEmail envia o e-mail de verificação de endereço (Brevo).
 //
-// Historicamente este método enviava via EmailJS (sendEmailViaEmailJS,
-// controlado por s.enabled/s.templateVerify — configuração de um template
-// externo, editado fora deste repositório). Nesta tarefa passou a enviar
-// via Brevo, com o HTML de marca portado do frontend (ver
-// email_html_templates.go), para que o design do email deixe de depender
-// de um template externo e passe a ser o mesmo já usado/conhecido da
-// plataforma. A assinatura do método não mudou, então nenhum dos dois
-// chamadores existentes (SolicitarVerificacaoEmail e o helper interno não
-// utilizado gerarEEnviarTokenVerificacao) precisou de alteração.
+// Falha fechada: sem Brevo configurado devolve ErrEmailNaoConfigurado e NÃO
+// grava token nem escreve o link no log (o link contém o token).
 func (s *EmailService) SendVerificationEmail(userID uuid.UUID, userType, email, nome string) error {
 	if email == "" {
 		return fmt.Errorf("email vazio")
+	}
+
+	cfg, ok := loadBrevoConfig()
+	if !ok {
+		log.Printf("[EMAIL-BREVO] ⚠️  Brevo não configurado — verificação de e-mail NÃO enviada para %s", email)
+		return ErrEmailNaoConfigurado
 	}
 
 	token, err := s.SaveToken(userID, userType, "verificacao_email", email, 24*time.Hour)
@@ -319,14 +129,6 @@ func (s *EmailService) SendVerificationEmail(userID uuid.UUID, userType, email, 
 	}
 
 	verifyURL := fmt.Sprintf("%s/verificar-email/%s", s.frontendURL, token)
-
-	cfg, ok := loadBrevoConfig()
-	if !ok {
-		log.Printf("[EMAIL-BREVO] ⚠️  BREVO_API_KEY/EMAIL_FROM/EMAIL_USER não configurados — link de verificação de %s registado apenas no log do servidor.", email)
-		log.Printf("[EMAIL-BREVO] 🔗 Link de verificação para %s: %s", email, verifyURL)
-		return nil
-	}
-
 	subject := "Verificação de E-mail - Spuri"
 	htmlBody := renderVerificationEmailHTML(nome, verifyURL, s.frontendURL)
 	textBody := renderVerificationEmailText(nome, verifyURL)
@@ -337,89 +139,63 @@ func (s *EmailService) SendVerificationEmail(userID uuid.UUID, userType, email, 
 	return nil
 }
 
-// SendPasswordResetEmail envia ao usuário a senha temporária já aplicada à
-// sua conta.
+// SendPasswordResetLinkEmail (SEC-03) envia o link de recuperação de senha.
 //
-// ATENÇÃO — mudança de contrato nesta tarefa: esta função deixou de gerar
-// um token e enviar apenas um link de recuperação (o design antigo, via
-// EmailJS, apontava para "{FRONTEND_URL}/recuperar-senha/{token}", uma
-// página que nunca existiu no frontend). Agora ela só ENVIA o email —
-// quem chama (SolicitarRecuperacaoSenha, em auth_email_handlers.go) já
-// gerou a senha temporária e já a aplicou à conta antes de chamar esta
-// função, replicando no backend o procedimento que já era usado no
-// frontend (gerarTokenRecuperacao + resetarSenha + envio do email, os três
-// passos agora atômicos e do lado do servidor). É por isso que a
-// assinatura mudou de (userID, userType, email, nome) para
-// (email, nome, senhaTemporaria) — não há mais token nem link envolvidos
-// neste fluxo.
-//
-// O único chamador real desta função (SolicitarRecuperacaoSenha) foi
-// atualizado nesta mesma tarefa. O helper interno não utilizado
-// gerarEEnviarTokenRecuperacao (final deste arquivo) referencia a
-// assinatura antiga através de uma interface anônima própria — como nunca
-// é chamado em lugar nenhum, continua compilando sem qualquer alteração.
-func (s *EmailService) SendPasswordResetEmail(email, nome, senhaTemporaria string) error {
+// A senha NÃO muda aqui nem viaja por e-mail: o titular abre o link (token de
+// uso único, 1 hora), escolhe a nova senha e só então ela é gravada
+// (POST /email/recuperar-senha/:token).
+func (s *EmailService) SendPasswordResetLinkEmail(userID uuid.UUID, userType, email, nome string) error {
 	if email == "" {
 		return fmt.Errorf("email vazio")
 	}
-
-	loginURL := fmt.Sprintf("%s/login", s.frontendURL)
-
 	cfg, ok := loadBrevoConfig()
 	if !ok {
-		log.Printf("[EMAIL-BREVO] ⚠️  BREVO_API_KEY/EMAIL_FROM/EMAIL_USER não configurados — senha temporária de %s registada apenas no log do servidor.", email)
-		log.Printf("[EMAIL-BREVO] 🔑 Senha temporária para %s: %s", email, senhaTemporaria)
-		return nil
+		return ErrEmailNaoConfigurado
 	}
-
-	subject := "Senha Resetada - Spuri"
-	htmlBody := renderPasswordResetEmailHTML(nome, senhaTemporaria, loginURL, s.frontendURL)
-	textBody := renderPasswordResetEmailText(nome, senhaTemporaria, loginURL)
-
-	if err := sendBrevoEmail(cfg, email, nome, subject, textBody, htmlBody); err != nil {
-		log.Printf("[EMAIL-BREVO] ⚠️  Falha ao enviar email de recuperação para %s — senha temporária registada no log do servidor como salvaguarda.", email)
-		log.Printf("[EMAIL-BREVO] 🔑 Senha temporária para %s: %s", email, senhaTemporaria)
+	token, err := s.SaveToken(userID, userType, "recuperacao_senha", email, 1*time.Hour)
+	if err != nil {
+		return fmt.Errorf("falha ao guardar token de recuperação: %w", err)
+	}
+	resetURL := fmt.Sprintf("%s/recuperar-senha/%s", s.frontendURL, token)
+	subject := "Spuri - Redefinição de senha"
+	if err := sendBrevoEmail(cfg, email, nome, subject,
+		renderPasswordResetLinkEmailText(nome, resetURL),
+		renderPasswordResetLinkEmailHTML(nome, resetURL, s.frontendURL)); err != nil {
 		return fmt.Errorf("brevo: %w", err)
 	}
 	return nil
 }
 
-// SendAdminWelcomeEmail envia a senha temporária ao admin recém-criado.
+// SendAdminWelcomeEmail envia ao admin criado por outro admin as credenciais
+// temporárias, via Brevo. É o único canal pelo qual a senha chega ao admin: a
+// resposta HTTP da criação nunca a inclui.
 //
-// FIX E4-AA-03: este é o único canal pelo qual a senha chega ao admin —
-// a resposta HTTP da criação nunca inclui a senha, tornando a afirmação
-// "enviada por email" factualmente verdadeira.
-//
-// Quando o serviço de email está desabilitado (desenvolvimento), a senha é
-// registada no log do servidor — visível apenas a operadores com acesso ao
-// sistema — para não bloquear o fluxo em ambientes sem SMTP configurado.
+// Falha de forma explícita se o Brevo não estiver configurado
+// (ErrEmailNaoConfigurado): RegisterAdmin trata o erro com o aviso
+// "email_nao_enviado". Única exceção, só para testes locais:
+// CREDENCIAIS_LOG_DEV=true com ENV != production escreve as credenciais no log.
 func (s *EmailService) SendAdminWelcomeEmail(email, nome, senhaTemporaria, role string) error {
-	if !s.enabled {
-		log.Printf("[EMAIL] ⚠️  Serviço desabilitado — senha temporária do admin %s (%s) registada no log do servidor.",
-			email, role)
-		log.Printf("[EMAIL] 🔑 Senha temporária para %s: %s", email, senhaTemporaria)
-		return nil // não é erro: funciona em modo degradado
-	}
-
 	if email == "" {
 		return fmt.Errorf("email vazio")
 	}
-
-	templateAdmin := os.Getenv("EMAILJS_TEMPLATE_ADMIN_WELCOME")
-	if templateAdmin == "" {
-		// Fallback: reutiliza o template de reset de senha se não houver template dedicado.
-		templateAdmin = s.templateReset
-		log.Printf("[EMAIL] ⚠️  EMAILJS_TEMPLATE_ADMIN_WELCOME não configurado — usando templateReset como fallback")
+	cfg, ok := loadBrevoConfig()
+	if !ok {
+		if LogCredenciaisDev(email, senhaTemporaria) {
+			return nil
+		}
+		log.Printf("[EMAIL-BREVO] ⚠️  Brevo não configurado — credenciais NÃO enviadas ao admin %s (%s): canal indisponível", email, role)
+		return ErrEmailNaoConfigurado
 	}
 
-	params := map[string]string{
-		"user_name":     nome,
-		"user_role":     role,
-		"temp_password": senhaTemporaria,
-		"login_url":     fmt.Sprintf("%s/admin/login", s.frontendURL),
-	}
+	loginURL := fmt.Sprintf("%s/login", s.frontendURL)
+	subject := "Bem-vindo ao Spuri - Acesso de Administrador"
+	htmlBody := renderAdminWelcomeEmailHTML(nome, email, role, senhaTemporaria, loginURL, s.frontendURL)
+	textBody := renderAdminWelcomeEmailText(nome, email, role, senhaTemporaria, loginURL)
 
-	return s.sendEmailViaEmailJS(email, nome, templateAdmin, params)
+	if err := sendBrevoEmail(cfg, email, nome, subject, textBody, htmlBody); err != nil {
+		return fmt.Errorf("brevo: %w", err)
+	}
+	return nil
 }
 
 // AcademiaCadastradaInfo agrupa os dados (não sensíveis) da academia recém
@@ -435,81 +211,6 @@ type AcademiaCadastradaInfo struct {
 	Provincia      string // código de 3 letras, ex: "LDA"
 }
 
-// SendAcademiaCadastradaEmail avisa um administrador (role 'adm' ou 'fpp',
-// email verificado — ver AdminProjection.GetAdminsParaNotificarNovaAcademia)
-// que uma nova academia se autocadastrou via POST /academia/cadastro e está
-// pendente de análise/ativação no painel.
-//
-// Assim como as demais notificações deste serviço, falha aqui NUNCA deve
-// bloquear o fluxo que a originou — é responsabilidade do chamador apenas
-// logar o erro e seguir (ver uso em internal/handlers/academia_handlers.go).
-//
-// Diferente de SendAdminWelcomeEmail, esta função NÃO cai para
-// templateReset como fallback quando EMAILJS_TEMPLATE_ACADEMIA_CADASTRADA
-// não está configurado: o conteúdo de um email de "redefinir senha" não faz
-// sentido nenhum para um aviso de "academia pendente de análise" — enviar
-// com o template errado confundiria o admin em vez de ajudar. Sem o
-// template dedicado configurado, o aviso apenas é logado no servidor.
-func (s *EmailService) SendAcademiaCadastradaEmail(adminEmail, adminNome string, info AcademiaCadastradaInfo) error {
-	if !s.enabled {
-		log.Printf("[EMAIL] ⚠️  Serviço desabilitado — aviso de nova academia %s (%s) não enviado para admin %s",
-			info.Nome, info.CodigoAcademia, adminEmail)
-		return nil // não é erro: mesmo modo degradado usado em SendAdminWelcomeEmail
-	}
-
-	if adminEmail == "" {
-		return fmt.Errorf("email do admin vazio")
-	}
-
-	templateID := os.Getenv("EMAILJS_TEMPLATE_ACADEMIA_CADASTRADA")
-	if templateID == "" {
-		log.Printf("[EMAIL] ⚠️  EMAILJS_TEMPLATE_ACADEMIA_CADASTRADA não configurado — aviso de nova academia %s (%s) não enviado para admin %s",
-			info.Nome, info.CodigoAcademia, adminEmail)
-		return nil // não bloqueia: só não há template dedicado configurado ainda
-	}
-
-	params := map[string]string{
-		"user_name":          adminNome,
-		"academia_nome":      info.Nome,
-		"academia_codigo":    info.CodigoAcademia,
-		"academia_nif":       info.NIF,
-		"academia_nivel":     info.Nivel,
-		"academia_tipo":      info.Type,
-		"academia_provincia": info.Provincia,
-		"painel_url":         fmt.Sprintf("%s/academias", s.frontendURL),
-	}
-
-	return s.sendEmailViaEmailJS(adminEmail, adminNome, templateID, params)
-}
-
-// SendAcademiaCadastradaEmailSMTP avisa um administrador que uma nova academia
-// se autocadastrou e está pendente de análise/ativação no painel. O HTML é
-// construído no backend, sem template EmailJS, e os destinatários continuam
-// sendo obtidos dinamicamente pela projeção de administradores.
-func (s *EmailService) SendAcademiaCadastradaEmailSMTP(adminEmail, adminNome string, info AcademiaCadastradaInfo) error {
-	cfg, ok := loadSMTPConfig()
-	if !ok {
-		log.Printf("[EMAIL-SMTP] ⚠️  EMAIL_HOST/EMAIL_USER/EMAIL_PASS não configurados — aviso de nova academia %s (%s) não enviado para admin %s",
-			info.Nome, info.CodigoAcademia, adminEmail)
-		return nil
-	}
-	if adminEmail == "" {
-		return fmt.Errorf("email do admin vazio")
-	}
-
-	painelURL := fmt.Sprintf("%s/academias", s.frontendURL)
-	subject := fmt.Sprintf("Nova instituição cadastrada: %s", info.Nome)
-	textBody := fmt.Sprintf(
-		"Olá %s!\n\nA instituição %s (código %s, NIF %s, %s, %s, província %s) concluiu o autocadastro no Spuri e está inativa, aguardando análise.\n\nAcesse o painel para revisar: %s\n",
-		adminNome, info.Nome, info.CodigoAcademia, info.NIF, info.Type, info.Nivel, info.Provincia, painelURL,
-	)
-	htmlBody := renderAcademiaCadastradaHTML(adminNome, info, painelURL)
-	if err := sendSMTPEmail(cfg, adminEmail, adminNome, subject, textBody, htmlBody); err != nil {
-		return fmt.Errorf("smtp: %w", err)
-	}
-	return nil
-}
-
 // SendAcademiaCadastradaEmailBrevo avisa um administrador que uma nova
 // academia se autocadastrou e está pendente de análise/ativação no painel.
 //
@@ -518,7 +219,7 @@ func (s *EmailService) SendAcademiaCadastradaEmailSMTP(adminEmail, adminNome str
 func (s *EmailService) SendAcademiaCadastradaEmailBrevo(adminEmail, adminNome string, info AcademiaCadastradaInfo) error {
 	cfg, ok := loadBrevoConfig()
 	if !ok {
-		log.Printf("[EMAIL-BREVO] ⚠️  BREVO_API_KEY/EMAIL_FROM/EMAIL_USER não configurados — aviso de nova academia %s (%s) não enviado para admin %s",
+		log.Printf("[EMAIL-BREVO] ⚠️  BREVO_API_KEY/EMAIL_FROM não configurados — aviso de nova academia %s (%s) não enviado para admin %s",
 			info.Nome, info.CodigoAcademia, adminEmail)
 		return nil
 	}
@@ -548,26 +249,6 @@ func renderAcademiaCadastradaHTML(adminNome string, info AcademiaCadastradaInfo,
 <table role="presentation" width="100%%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:40px 16px;"><table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%%;max-width:600px;background:#FFFFFF;border-radius:24px;border:1px solid #E4E7EC;"><tr><td style="border-radius:24px 24px 0 0;height:5px;background:#465FFF;"></td></tr><tr><td style="padding:30px 40px 22px;text-align:center;border-bottom:1px solid #F2F4F7;"><span style="font-size:18px;font-weight:700;color:#172741;">Spuri</span></td></tr><tr><td style="padding:40px;"><p style="margin:0 0 6px;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#465FFF;">Novo cadastro pendente</p><h1 style="margin:0 0 16px;font-size:24px;font-weight:700;color:#172741;">Uma instituição acabou de se cadastrar</h1><p style="margin:0;font-size:15px;line-height:1.65;color:#344054;">Olá, <strong>%s</strong>! A instituição <strong>%s</strong> concluiu o autocadastro no Spuri e está com a conta <strong>inativa</strong>, aguardando a sua análise.</p><table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-radius:16px;background:#F9FAFB;border:1px solid #F2F4F7;"><tr><td style="padding:20px 22px;"><p style="margin:0 0 6px;font-size:13px;color:#344054;"><strong>Código:</strong> %s</p><p style="margin:0 0 6px;font-size:13px;color:#344054;"><strong>NIF:</strong> %s</p><p style="margin:0 0 6px;font-size:13px;color:#344054;"><strong>Tipo:</strong> %s</p><p style="margin:0 0 6px;font-size:13px;color:#344054;"><strong>Nível:</strong> %s</p><p style="margin:0;font-size:13px;color:#344054;"><strong>Província:</strong> %s</p></td></tr></table><div style="text-align:center;margin-top:28px;"><a href="%s" style="display:inline-block;padding:14px 34px;background:#465FFF;color:#FFFFFF;text-decoration:none;border-radius:12px;font-size:15px;font-weight:600;">Analisar no Painel</a></div></td></tr><tr><td style="background:#F9FAFB;padding:26px 40px;text-align:center;border-top:1px solid #F2F4F7;border-radius:0 0 24px 24px;"><p style="margin:0;font-size:13px;font-weight:600;color:#172741;">Spuri</p><p style="margin:4px 0 0;font-size:12px;color:#667085;">Confiança e eficiência na gestão académica.</p></td></tr></table></td></tr></table>
 </body></html>`
 	return fmt.Sprintf(tpl, esc(adminNome), esc(info.Nome), esc(info.CodigoAcademia), esc(info.NIF), esc(info.Type), esc(info.Nivel), esc(info.Provincia), painelURL)
-}
-
-// GetDefaultPassword retorna a senha padrão para estudantes e academias.
-// O código do estudante/academia é conhecido pelo operador que criou o registro,
-// tornando este mecanismo aceitável para esses perfis.
-//
-// FIX E4-AA-04: admins foram REMOVIDOS desta função.
-// Admins nunca devem ter senha derivada de constante pública do código-fonte.
-// Use GenerateSecurePassword() + SendAdminWelcomeEmail() para admins.
-func GetDefaultPassword(userType, codigo string) string {
-	switch userType {
-	case "estudante":
-		return codigo
-	case "academia":
-		return codigo
-	default:
-		// Qualquer outra chamada é uso incorreto — logar para diagnóstico.
-		log.Printf("[WARN] GetDefaultPassword chamado para userType=%q — use GenerateSecurePassword() para admins", userType)
-		return codigo
-	}
 }
 
 func getEnvOrDefault(key, defaultValue string) string {

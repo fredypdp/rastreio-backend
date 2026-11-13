@@ -77,8 +77,9 @@ func TestRegisterAcademiaPublicaRequiresCustomPassword(t *testing.T) {
 			t.Fatalf("RegisterAcademiaPublica deve exigir senha customizada — não encontrado: %q", term)
 		}
 	}
-	if strings.Contains(fn, `services.GetDefaultPassword("academia", codigoAcademia)`) {
-		t.Fatal("RegisterAcademiaPublica não deve usar fallback de senha padrão; senha deve ser obrigatória")
+	// Tarefa 123: não existe mais senha padrão; a pública usa a senha do formulário.
+	if strings.Contains(fn, "GenerateTempPassword") || strings.Contains(fn, "DefinirSenhaTemporaria") {
+		t.Fatal("RegisterAcademiaPublica não deve gerar senha temporária; a senha é a escolhida pela academia")
 	}
 }
 

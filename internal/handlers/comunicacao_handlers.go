@@ -10,11 +10,11 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -235,77 +235,18 @@ func EnviarMensagemComunicacao(c *gin.Context) {
 		utils.RespondWithValidationError(c, err)
 		return
 	}
-	destinatario, err := normalizarDestinatarioComunicacao(req.Destinatario)
-	if err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-	conteudo := strings.TrimSpace(req.Conteudo)
-	if conteudo == "" {
-		utils.RespondWithValidationError(c, fmt.Errorf("conteudo é obrigatório"))
-		return
-	}
-	if len(conteudo) > conteudoMensagemComunicacaoMaxLen {
-		utils.RespondWithValidationError(c, fmt.Errorf("conteudo excede o limite de %d caracteres", conteudoMensagemComunicacaoMaxLen))
-		return
-	}
-
-	var provedorPadrao sql.NullString
-	if err := getDbClient(c).DB().QueryRow(`SELECT provedor_padrao FROM projection_comunicacao_config WHERE id = 1`).Scan(&provedorPadrao); err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-	if !provedorPadrao.Valid || provedorPadrao.String == "" {
-		utils.RespondWithValidationError(c, fmt.Errorf("nenhum provedor padrão foi configurado ainda — um administrador FPP precisa de definir o provedor padrão antes de enviar mensagens"))
-		return
-	}
-
-	ordemProvedores := []string{provedorPadrao.String, outroProvedorComunicacao(provedorPadrao.String)}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
-	defer cancel()
-
-	var provedorTentado2, provedorUtilizado, mensagemExternaID string
-	detalhes := []aggregates.TentativaEnvioComunicacao{}
-
-	for i, provedor := range ordemProvedores {
-		if i == 1 {
-			provedorTentado2 = provedor
-		}
-		credenciais, err := getRemetentesComunicacaoProjection(c).GetCredenciaisByProvedor(provedor)
-		if err != nil {
-			detalhes = append(detalhes, aggregates.TentativaEnvioComunicacao{Provedor: provedor, Sucesso: false, ErroMensagem: "falha ao consultar remetente configurado"})
-			continue
-		}
-		if credenciais == nil {
-			detalhes = append(detalhes, aggregates.TentativaEnvioComunicacao{Provedor: provedor, Sucesso: false, ErroMensagem: "nenhum remetente configurado para este provedor"})
-			continue
-		}
-		externalID, sendErr := enviarViaProvedorComunicacao(ctx, provedor, credenciais, destinatario, conteudo)
-		if sendErr != nil {
-			detalhes = append(detalhes, aggregates.TentativaEnvioComunicacao{Provedor: provedor, Sucesso: false, ErroMensagem: sendErr.Error()})
-			continue
-		}
-		detalhes = append(detalhes, aggregates.TentativaEnvioComunicacao{Provedor: provedor, Sucesso: true, MensagemExternaID: externalID})
-		provedorUtilizado = provedor
-		mensagemExternaID = externalID
-		break
-	}
-
-	status := aggregates.StatusMensagemComunicacaoFalhou
-	if provedorUtilizado != "" {
-		status = aggregates.StatusMensagemComunicacaoEnviada
-	}
-
-	msg := aggregates.NewMensagemComunicacao()
-	if err := msg.Registrar(destinatario, conteudo, provedorPadrao.String, provedorTentado2, provedorUtilizado, status, mensagemExternaID, detalhes, userID, userType, codigoAcademia); err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
 	audit := db.AuditContext{UserID: userID.String(), UserType: userType, IP: c.ClientIP()}
-	if err := getRepository(c).SaveWithAudit(msg, audit); err != nil {
+	msg, err := enviarSMSComunicacao(c.Request.Context(), c, atorComunicacao{ID: userID, Tipo: userType, CodigoAcademia: codigoAcademia}, req.Destinatario, req.Conteudo, audit)
+	if err != nil {
+		var entrada erroEntradaComunicacao
+		if errors.Is(err, errProvedorPadraoNaoConfigurado) || errors.As(err, &entrada) {
+			utils.RespondWithValidationError(c, err)
+			return
+		}
 		utils.RespondWithInternalError(c, err)
 		return
 	}
+	status := msg.Status
 
 	resposta := gin.H{
 		"id":                  msg.ID,

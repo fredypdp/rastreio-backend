@@ -102,6 +102,41 @@ func generateToken(userID uuid.UUID, userType string, restrictedFinance bool) (s
 	return tokenString, nil
 }
 
+// CodigoSenhaTemporaria é o "code" devolvido (403) enquanto a conta ainda usa a
+// senha temporária e tenta aceder a qualquer rota fora da lista abaixo. O
+// frontend usa-o para redirecionar para a troca obrigatória (SEC-04).
+const CodigoSenhaTemporaria = "SENHA_TEMPORARIA"
+
+// rotaTrocaSenhaObrigatoria diz se a rota pode ser usada com a senha temporária
+// ainda ativa: ler o próprio perfil, trocar a senha e encerrar a sessão — nada
+// mais. Compara método E caminho exatos.
+func rotaTrocaSenhaObrigatoria(method, path string) bool {
+	switch {
+	case method == http.MethodPut && path == "/alterar-senha":
+		return true
+	case method == http.MethodGet && path == "/meu-perfil":
+		return true
+	case method == http.MethodPost && path == "/logout":
+		return true
+	}
+	return false
+}
+
+// sessaoInvalidadaPorReset diz se o token foi emitido antes de
+// sessoes_validas_desde (reset de senha por link ou reenvio de credenciais). A
+// comparação é feita em segundos, pois o "iat" do JWT não tem fração: um token
+// emitido no mesmo segundo do evento não é descartado (o titular que acabou de
+// redefinir a senha e entra de imediato não pode ser expulso).
+func sessaoInvalidadaPorReset(emitidoEm *jwt.NumericDate, desde sql.NullTime) bool {
+	if !desde.Valid {
+		return false
+	}
+	if emitidoEm == nil {
+		return true
+	}
+	return emitidoEm.Time.Before(desde.Time.Truncate(time.Second))
+}
+
 // AuthMiddleware valida o JWT e verifica se o status do usuário permite acesso.
 //
 // FIX AUTH-01 (E4-AA-02): além de validar assinatura e expiração, este middleware
@@ -157,18 +192,47 @@ func AuthMiddleware() gin.HandlerFunc {
 		// incluindo admin. A verificação é universal — qualquer tipo de usuário
 		// desativado é bloqueado aqui, independentemente de middlewares específicos
 		// de role. Isso fecha o gap nas rotas do grupo "protected".
-		if claims.AcessoRestritoFinanceiro && (claims.UserType != "estudante" || !rotaFinanceiraRestrita(c.Request.URL.Path)) {
+		//
+		// Uma única consulta traz status, deve_alterar_senha e
+		// sessoes_validas_desde (SEC-04 / SEC-10).
+		estado, statusErr := consultarEstadoUsuario(c, claims.UserID, claims.UserType)
+
+		// Sessão restrita ao financeiro (estudante inativo): só as rotas de
+		// pagamento — e, se a conta ainda usa a senha temporária, as três rotas
+		// da troca obrigatória, para que o estudante inativo não fique sem saída.
+		rotaPermitidaRestrita := rotaFinanceiraRestrita(c.Request.URL.Path) ||
+			(estado != nil && estado.DeveAlterarSenha && rotaTrocaSenhaObrigatoria(c.Request.Method, c.Request.URL.Path))
+		if claims.AcessoRestritoFinanceiro && (claims.UserType != "estudante" || !rotaPermitidaRestrita) {
 			utils.RespondWithError(c, http.StatusForbidden, "sessão restrita exclusivamente ao pagamento de mensalidades", nil)
 			c.Abort()
 			return
 		}
-		if err := verificarStatusUsuario(c, claims.UserID, claims.UserType); err != nil && !(claims.AcessoRestritoFinanceiro && claims.UserType == "estudante" && statusInativo(err)) {
+		if statusErr != nil && !(claims.AcessoRestritoFinanceiro && claims.UserType == "estudante" && statusInativo(statusErr)) {
 			log.Printf("❌ [AuthMiddleware] Usuário inativo ou não encontrado - UserID: %s, Type: %s: %v",
-				claims.UserID, claims.UserType, err)
+				claims.UserID, claims.UserType, statusErr)
 			utils.RespondWithError(c, http.StatusUnauthorized,
-				"conta inativa ou não encontrada. Entre em contato com o suporte.", err)
+				"conta inativa ou não encontrada. Entre em contato com o suporte.", statusErr)
 			c.Abort()
 			return
+		}
+
+		if estado != nil {
+			// SEC-10: reset de senha por link e reenvio de credenciais encerram as
+			// sessões que já existiam.
+			if sessaoInvalidadaPorReset(claims.IssuedAt, estado.SessoesValidasDesde) {
+				log.Printf("❌ [AuthMiddleware] Sessão invalidada por redefinição de senha - UserID: %s, Type: %s", claims.UserID, claims.UserType)
+				utils.RespondWithError(c, http.StatusUnauthorized, "sessão encerrada: faça login novamente", nil)
+				c.Abort()
+				return
+			}
+			// SEC-04: com a senha temporária ainda ativa, só perfil/trocar senha/logout.
+			if estado.DeveAlterarSenha && !rotaTrocaSenhaObrigatoria(c.Request.Method, c.Request.URL.Path) {
+				utils.RespondWithErrorData(c, http.StatusForbidden,
+					"é obrigatório alterar a senha temporária antes de continuar", nil,
+					gin.H{"code": CodigoSenhaTemporaria})
+				c.Abort()
+				return
+			}
 		}
 
 		c.Set("user_id", claims.UserID)
@@ -217,13 +281,27 @@ func OptionalAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		if err := verificarStatusUsuario(c, claims.UserID, claims.UserType); err != nil {
+		estado, err := consultarEstadoUsuario(c, claims.UserID, claims.UserType)
+		if err != nil {
 			log.Printf("❌ [OptionalAuthMiddleware] Usuário inativo ou não encontrado - UserID: %s, Type: %s: %v",
 				claims.UserID, claims.UserType, err)
 			utils.RespondWithError(c, http.StatusUnauthorized,
 				"conta inativa ou não encontrada. Entre em contato com o suporte.", err)
 			c.Abort()
 			return
+		}
+		if estado != nil {
+			if sessaoInvalidadaPorReset(claims.IssuedAt, estado.SessoesValidasDesde) {
+				utils.RespondWithError(c, http.StatusUnauthorized, "sessão encerrada: faça login novamente", nil)
+				c.Abort()
+				return
+			}
+			// Senha temporária ainda ativa: a rota é pública, mas a sessão não
+			// ganha a visão ampliada de utilizador autenticado.
+			if estado.DeveAlterarSenha {
+				c.Next()
+				return
+			}
 		}
 
 		c.Set("user_id", claims.UserID)
@@ -234,32 +312,36 @@ func OptionalAuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-// verificarStatusUsuario consulta a projeção correspondente ao userType e
-// retorna erro se o usuário não existir ou estiver com status bloqueado.
+// estadoUsuario é o recorte da projeção que o middleware precisa em cada
+// requisição: status (bloqueio imediato), deve_alterar_senha (SEC-04) e
+// sessoes_validas_desde (SEC-10).
+type estadoUsuario struct {
+	Status              string
+	DeveAlterarSenha    bool
+	SessoesValidasDesde sql.NullTime
+}
+
+// consultarEstadoUsuario consulta a projeção correspondente ao userType numa só
+// query e devolve (estado, erro):
+//   - usuário inexistente → (nil, sql.ErrNoRows);
+//   - status bloqueado    → (estado, *statusInativoError) — o estado vem junto
+//     porque a sessão restrita do estudante inativo ainda precisa dele;
+//   - erro de banco ou dbClient ausente → (nil, nil): degradação graciosa
+//     documentada (FIX E4-CI-03), com log de aviso.
 //
-// FIX AUTH-01 (E4-AA-02): adicionado suporte ao userType "admin", antes ignorado
-// com comentário "delegado ao RequireAdmin". O RequireAdmin só cobre rotas
-// /admin/*, deixando rotas /protected abertas a admins desativados.
+// FIX AUTH-01 (E4-AA-02): admin é verificado aqui, não apenas em RequireAdmin.
 //
-// FIX E4-QI-02: o nome da tabela é determinado por um switch fechado cujos
-// valores são constantes literais controladas pelo código — nunca entrada do
-// usuário. O parâmetro de filtragem (userID) usa placeholder $1. Esta
-// combinação é segura: a interpolação de nome de tabela é estruturalmente
-// idêntica a uma constante, e o valor variável vai por prepared statement.
-//
-// FIX E4-CI-03: em caso de erro de banco (timeout, conexão perdida), a função
-// retorna nil para não derrubar o serviço inteiro por instabilidade pontual.
-// O trade-off documentado: durante degradação do banco, a verificação de
-// revogação é ignorada com log de aviso — aceito como comportamento de
-// degradação graciosa para não bloquear todo o tráfego autenticado.
-func verificarStatusUsuario(c *gin.Context, userID uuid.UUID, userType string) error {
+// FIX E4-QI-02: o nome da tabela vem de um switch fechado com constantes
+// literais — nunca de entrada do usuário; o valor variável (userID) vai por
+// placeholder $1. A comparação é feita por texto (id::text) para tolerar bases
+// legadas com id TEXT.
+func consultarEstadoUsuario(c *gin.Context, userID uuid.UUID, userType string) (*estadoUsuario, error) {
 	clientRaw, exists := c.Get("dbClient")
 	if !exists {
-		// Se o dbClient não estiver no contexto (erro de configuração de router),
-		// permitimos a passagem para não bloquear o arranque — o handler
-		// seguinte falhará com 500 via getDbClient(). Logamos o problema.
+		// dbClient ausente (erro de configuração do router): deixa passar para não
+		// bloquear o arranque — o handler seguinte falhará com 500 via getDbClient().
 		log.Printf("⚠️ [AuthMiddleware] dbClient ausente no contexto ao verificar status — path: %s", c.Request.URL.Path)
-		return nil
+		return nil, nil
 	}
 	client := clientRaw.(*db.Client)
 
@@ -270,38 +352,39 @@ func verificarStatusUsuario(c *gin.Context, userID uuid.UUID, userType string) e
 	case "academia":
 		table = "projection_academias"
 	case "admin":
-		// FIX AUTH-01: admin agora é verificado aqui, não apenas em RequireAdmin.
-		// Isso fecha o gap nas rotas do grupo "protected" acessíveis a qualquer
-		// tipo de usuário autenticado (ex: GET /meu-perfil, PUT /alterar-senha).
 		table = "projection_admins"
 	default:
 		// Tipo desconhecido — não bloqueamos; o middleware específico de role tratará.
-		return nil
+		return nil, nil
 	}
 
-	// A query usa $1 como prepared statement; table é uma constante interna
-	// derivada de um switch fechado (nunca vem do usuário), portanto a
-	// interpolação de nome de tabela é segura.
-	//
-	// Compatibilidade de schema:
-	// - Em algumas bases legadas, o campo "id" pode estar como TEXT.
-	// - Em bases atuais, ele é UUID.
-	// Para evitar erro de operador (text = uuid / uuid = text), comparamos
-	// sempre via representação textual.
-	query := `SELECT status FROM ` + table + ` WHERE id::text = $1`
-
-	var status string
-	var codigoAcademia sql.NullString
+	var (
+		est            estadoUsuario
+		codigoAcademia sql.NullString
+		err            error
+	)
 	if userType == "academia" {
-		query = `SELECT status, codigo_academia FROM projection_academias WHERE id::text = $1`
-		err := client.DB().QueryRow(query, userID.String()).Scan(&status, &codigoAcademia)
+		err = client.DB().QueryRow(
+			`SELECT status, codigo_academia, deve_alterar_senha, sessoes_validas_desde
+			   FROM projection_academias WHERE id::text = $1`, userID.String(),
+		).Scan(&est.Status, &codigoAcademia, &est.DeveAlterarSenha, &est.SessoesValidasDesde)
 		if codigoAcademia.Valid {
 			c.Set("codigo_academia", codigoAcademia.String)
 		}
-		return finalizarVerificacaoStatusUsuario(userType, status, err)
+	} else {
+		err = client.DB().QueryRow(
+			`SELECT status, deve_alterar_senha, sessoes_validas_desde FROM `+table+` WHERE id::text = $1`, userID.String(),
+		).Scan(&est.Status, &est.DeveAlterarSenha, &est.SessoesValidasDesde)
 	}
-	err := client.DB().QueryRow(query, userID.String()).Scan(&status)
-	return finalizarVerificacaoStatusUsuario(userType, status, err)
+	if err == sql.ErrNoRows {
+		return nil, sql.ErrNoRows
+	}
+	if err != nil {
+		// FIX E4-CI-03: em caso de erro de banco permitimos a passagem com aviso.
+		log.Printf("⚠️ [AuthMiddleware] Erro ao verificar status do usuário tipo %s: %v", userType, err)
+		return nil, nil
+	}
+	return &est, finalizarVerificacaoStatusUsuario(userType, est.Status, nil)
 }
 
 func finalizarVerificacaoStatusUsuario(userType, status string, err error) error {

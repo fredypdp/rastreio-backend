@@ -115,6 +115,9 @@ func (a *Academia) Apply(event DomainEvent) error {
 	case "DoisFatoresDesativados":
 		a.DoisFatoresAtivo = false
 		return nil
+	case "SenhaTemporariaDefinida":
+		// Estado vive na projeção (deve_alterar_senha); o agregado só aceita o evento.
+		return nil
 	case "AcademiaSenhaAlterada":
 		return a.applyAcademiaSenhaAlterada(event)
 	case "CategoriaNotaAdicionada":
@@ -452,6 +455,17 @@ func (a *Academia) AlterarNIFPorSolicitacao(novoNif, codigoSolicitacao, decidido
 		UpdatedAt:         time.Now(),
 	}
 
+	a.RaiseEvent(event)
+	return a.Apply(event)
+}
+
+// DefinirSenhaTemporaria registra que a conta nasceu (ou foi redefinida) com
+// senha temporária de troca obrigatória (SEC-04).
+func (a *Academia) DefinirSenhaTemporaria() error {
+	event := &SenhaTemporariaDefinidaEvent{
+		BaseEvent:  BaseEvent{EventType: "SenhaTemporariaDefinida", AggregateID: a.ID},
+		DefinidaEm: time.Now(),
+	}
 	a.RaiseEvent(event)
 	return a.Apply(event)
 }

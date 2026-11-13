@@ -328,9 +328,10 @@ func RegisterAdmin(c *gin.Context) {
 		return
 	}
 
-	// gera senha aleatória segura via crypto/rand.
-	// A senha é enviada ao admin APENAS via email; a resposta HTTP nunca a expõe.
-	plainPassword, err := services.GenerateSecurePassword()
+	// SEC-04: senha temporária aleatória (crypto/rand), de troca obrigatória no
+	// primeiro acesso. É enviada ao admin APENAS por e-mail (Brevo); a resposta
+	// HTTP nunca a expõe.
+	plainPassword, err := services.GenerateTempPassword()
 	if err != nil {
 		log.Printf("[ERROR] RegisterAdmin: falha ao gerar senha segura para %s: %v", req.Email, err)
 		utils.RespondWithInternalError(c, fmt.Errorf("erro ao gerar senha temporária"))
@@ -346,6 +347,10 @@ func RegisterAdmin(c *gin.Context) {
 	newAdmin := aggregates.NewAdmin()
 	if err := newAdmin.Criar(req.Nome, req.Email, &req.Telefone, string(hashedPassword), req.Role, &userID); err != nil {
 		utils.RespondWithValidationError(c, err)
+		return
+	}
+	if err := newAdmin.DefinirSenhaTemporaria(); err != nil {
+		utils.RespondWithInternalError(c, err)
 		return
 	}
 
@@ -372,13 +377,13 @@ func RegisterAdmin(c *gin.Context) {
 		log.Printf("[WARN] RegisterAdmin: falha ao registrar ação do criador no ledger: %v", err)
 	}
 
-	// envia email de boas-vindas com a senha temporária.
-	// Falha de email não bloqueia a criação.
+	// envia email de boas-vindas (Brevo) com a senha temporária.
+	// Falha de email não bloqueia a criação: a conta fica elegível ao reenvio de credenciais.
 	emailSvc := getEmailService(c)
 	if emailErr := emailSvc.SendAdminWelcomeEmail(req.Email, req.Nome, plainPassword, req.Role); emailErr != nil {
-		log.Printf("[WARN] RegisterAdmin: falha ao enviar email para %s: %v", req.Email, emailErr)
+		log.Printf("[WARN] RegisterAdmin: credenciais NÃO enviadas ao admin %s: %v", req.Email, emailErr)
 		c.JSON(http.StatusCreated, gin.H{
-			"message": "administrador criado com sucesso. ATENÇÃO: falha ao enviar email — solicite reset de senha via /recuperar-senha/solicitar.",
+			"message": "administrador criado com sucesso. ATENÇÃO: falha ao enviar o e-mail com as credenciais — use o reenvio de credenciais.",
 			"data": gin.H{
 				"id":       newAdmin.ID,
 				"nome":     newAdmin.Nome,
@@ -386,7 +391,8 @@ func RegisterAdmin(c *gin.Context) {
 				"telefone": req.Telefone,
 				"role":     newAdmin.Role,
 			},
-			"aviso": "email_nao_enviado",
+			"aviso":       "email_nao_enviado",
+			"credenciais": resultadoCredenciais{Canal: "email", Motivo: motivoCanalEmailIndisponivel},
 		})
 		return
 	}
@@ -401,6 +407,7 @@ func RegisterAdmin(c *gin.Context) {
 			"telefone": req.Telefone,
 			"role":     newAdmin.Role,
 		},
+		"credenciais": resultadoCredenciais{Canal: "email", Enviada: true},
 	})
 }
 
@@ -471,6 +478,7 @@ func ListarTodosAdmins(c *gin.Context) {
 		adminsResponse = append(adminsResponse, adminMap)
 	}
 
+	anexarDeveAlterarSenha(getDbClient(c), "projection_admins", "id::text", "id", adminsResponse)
 	c.JSON(http.StatusOK, gin.H{
 		"admins": adminsResponse,
 		"total":  len(adminsResponse),

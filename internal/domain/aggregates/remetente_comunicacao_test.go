@@ -18,7 +18,7 @@ func TestRemetenteComunicacaoConfigurar(t *testing.T) {
 		token         string
 		wantErr       string
 	}{
-		{name: "accepts GoSMS sender", provedor: ProvedorComunicacaoGoSMS, identificador: "spuri123", token: "ciphertext"},
+		{name: "accepts GoSMS sender", provedor: ProvedorComunicacaoGoSMS, identificador: "TESTE123", token: "ciphertext"},
 		{name: "rejects long GoSMS sender", provedor: ProvedorComunicacaoGoSMS, identificador: "ABCDEFGHIJKL", token: "ciphertext", wantErr: "1 a 11"},
 		{name: "rejects non alphanumeric GoSMS sender", provedor: ProvedorComunicacaoGoSMS, identificador: "SPURI-1", token: "ciphertext", wantErr: "alfanuméricos"},
 		{name: "accepts Ziett UUID", provedor: ProvedorComunicacaoZiett, identificador: validZiettID, token: "ciphertext"},

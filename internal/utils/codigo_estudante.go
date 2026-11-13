@@ -18,10 +18,7 @@ func GenerateCodigoEstudante() string {
 	letra3 := letters[rand.Intn(len(letters))]
 	numero := rand.Intn(10000)
 
-	codigo := fmt.Sprintf("%c%c%c%04d", letra1, letra2, letra3, numero)
-	log.Printf("🎲 [GenerateCodigoEstudante] Código gerado: %s", codigo)
-
-	return codigo
+	return fmt.Sprintf("%c%c%c%04d", letra1, letra2, letra3, numero)
 }
 
 // GenerateUniqueCodigoEstudante gera um código de estudante único verificando
@@ -40,10 +37,10 @@ func GenerateUniqueCodigoEstudante(db *sqlx.DB) (string, error) {
 	for i := 0; i < maxAttempts; i++ {
 		codigo := GenerateCodigoEstudante()
 
-		log.Printf("🔍 [GenerateUniqueCodigoEstudante] Tentativa %d/%d - Código: %s", i+1, maxAttempts, codigo)
+		log.Printf("🔍 [GenerateUniqueCodigoEstudante] Tentativa %d/%d", i+1, maxAttempts)
 
 		if !ValidateCodigoEstudante(codigo) {
-			log.Printf("⚠️ [GenerateUniqueCodigoEstudante] Código inválido gerado: %s", codigo)
+			log.Printf("⚠️ [GenerateUniqueCodigoEstudante] Código gerado inválido, a tentar de novo")
 			continue
 		}
 
@@ -79,14 +76,14 @@ func GenerateUniqueCodigoEstudante(db *sqlx.DB) (string, error) {
 			return "", fmt.Errorf("erro ao reservar código: %w", err)
 		}
 
-		log.Printf("🔎 [GenerateUniqueCodigoEstudante] Código %s - Reservado: %v", codigo, reserved)
+		log.Printf("🔎 [GenerateUniqueCodigoEstudante] Reservado: %v", reserved)
 
 		if reserved {
-			log.Printf("✅ [GenerateUniqueCodigoEstudante] Código único reservado com sucesso: %s", codigo)
+			log.Printf("✅ [GenerateUniqueCodigoEstudante] Código único reservado com sucesso")
 			return codigo, nil
 		}
 
-		log.Printf("🔁 [GenerateUniqueCodigoEstudante] Código %s já existe ou já está reservado, tentando novamente...", codigo)
+		log.Printf("🔁 [GenerateUniqueCodigoEstudante] Código já existe ou já está reservado, tentando novamente...")
 	}
 
 	log.Printf("❌ [GenerateUniqueCodigoEstudante] Falha após %d tentativas", maxAttempts)
@@ -94,7 +91,6 @@ func GenerateUniqueCodigoEstudante(db *sqlx.DB) (string, error) {
 }
 
 func ValidateCodigoEstudante(codigo string) bool {
-	log.Printf("🔍 [ValidateCodigoEstudante] Validando código: %s", codigo)
 
 	if len(codigo) != 7 {
 		log.Printf("❌ [ValidateCodigoEstudante] Tamanho inválido: %d (esperado: 7)", len(codigo))
@@ -119,6 +115,5 @@ func ValidateCodigoEstudante(codigo string) bool {
 		}
 	}
 
-	log.Printf("✅ [ValidateCodigoEstudante] Código válido: %s", codigo)
 	return true
 }

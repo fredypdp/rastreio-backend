@@ -87,36 +87,66 @@ func TestRenderVerificationEmailHTML_EscapesUserName(t *testing.T) {
 	mustContain(t, html, "João &amp; Cia")
 }
 
-func TestRenderPasswordResetEmailHTML(t *testing.T) {
-	html := renderPasswordResetEmailHTML("Ana Costa", "Tmp#4821xZ", "https://app.spuri.co.ao/login", "https://app.spuri.co.ao")
+// SEC-03: o e-mail de recuperação traz um LINK, nunca uma senha.
+func TestRenderPasswordResetLinkEmailHTML(t *testing.T) {
+	html := renderPasswordResetLinkEmailHTML("Ana Costa", "https://app.spuri.co.ao/recuperar-senha/tok123", "https://app.spuri.co.ao")
 
-	mustContain(t, html, "<title>Senha Resetada - Spuri</title>")
 	mustContain(t, html, "Ana Costa")
-	mustContain(t, html, "Tmp#4821xZ")
-	mustContain(t, html, "Ir para o Login")
-	mustContain(t, html, "https://app.spuri.co.ao/login")
-	mustContain(t, html, "Importante")
-	mustContain(t, html, "Dicas de Segurança")
-	mustContain(t, html, "https://app.spuri.co.ao/images/email/spuri-logo-email.png")
-}
-
-func TestRenderPasswordResetEmailHTML_EscapesTempPassword(t *testing.T) {
-	// A senha gerada por GenerateSecurePassword() nunca contém estes
-	// caracteres, mas o escaping é feito de forma defensiva mesmo assim.
-	html := renderPasswordResetEmailHTML("Ana Costa", `<b>"forçada"</b>`, "https://app.spuri.co.ao/login", "https://app.spuri.co.ao")
-	if strings.Contains(html, `<b>"forçada"</b>`) {
-		t.Errorf("senha temporária não escapada permitiria injeção de HTML:\n%s", html)
+	mustContain(t, html, "Definir nova senha")
+	mustContain(t, html, "https://app.spuri.co.ao/recuperar-senha/tok123")
+	mustContain(t, html, "1 hora")
+	mustContain(t, html, "a sua senha atual continua a funcionar")
+	for _, proibido := range []string{"Sua senha temporária", "SENHA TEMPORÁRIA"} {
+		if strings.Contains(html, proibido) {
+			t.Errorf("o e-mail de recuperação por link não pode conter %q", proibido)
+		}
 	}
 }
 
-func TestRenderPasswordResetEmailText(t *testing.T) {
-	text := renderPasswordResetEmailText("Ana Costa", "Tmp#4821xZ", "https://app.spuri.co.ao/login")
+func TestRenderPasswordResetLinkEmailHTML_EscapesUserName(t *testing.T) {
+	html := renderPasswordResetLinkEmailHTML(`<script>x</script>`, "https://app.spuri.co.ao/recuperar-senha/t", "https://app.spuri.co.ao")
+	if strings.Contains(html, "<script>x</script>") {
+		t.Errorf("nome não escapado permitiria injeção de HTML:\n%s", html)
+	}
+}
+
+func TestRenderPasswordResetLinkEmailText(t *testing.T) {
+	text := renderPasswordResetLinkEmailText("Ana Costa", "https://app.spuri.co.ao/recuperar-senha/tok123")
 	mustContain(t, text, "Ana Costa")
-	mustContain(t, text, "Tmp#4821xZ")
-	mustContain(t, text, "https://app.spuri.co.ao/login")
+	mustContain(t, text, "https://app.spuri.co.ao/recuperar-senha/tok123")
 	if strings.Contains(text, "<") {
 		t.Errorf("versão em texto simples não deveria conter marcação HTML: %s", text)
 	}
+}
+
+func TestRenderAdminWelcomeEmailHTML(t *testing.T) {
+	html := renderAdminWelcomeEmailHTML("Ana Costa", "ana@spuri.co.ao", "adm", "Ab3dEf7h", "https://app.spuri.co.ao/login", "https://app.spuri.co.ao")
+	mustContain(t, html, "Ana Costa")
+	mustContain(t, html, "ana@spuri.co.ao")
+	mustContain(t, html, "Ab3dEf7h")
+	mustContain(t, html, "Ir para o Login")
+	mustContain(t, html, "https://app.spuri.co.ao/login")
+	mustContain(t, html, "trocar esta senha no primeiro acesso")
+	// o link antigo /admin/login nunca existiu no frontend
+	if strings.Contains(html, "/admin/login") {
+		t.Errorf("o e-mail do admin não pode apontar para /admin/login: %s", html)
+	}
+}
+
+func TestRenderAdminWelcomeEmailHTML_EscapesFields(t *testing.T) {
+	html := renderAdminWelcomeEmailHTML(`<b>n</b>`, `<i>e</i>`, `<u>r</u>`, `<s>p</s>`, "https://x/login", "https://x")
+	for _, bruto := range []string{`<b>n</b>`, `<i>e</i>`, `<u>r</u>`, `<s>p</s>`} {
+		if strings.Contains(html, bruto) {
+			t.Errorf("campo não escapado (%s) permitiria injeção de HTML", bruto)
+		}
+	}
+}
+
+func TestRenderAdminWelcomeEmailText(t *testing.T) {
+	text := renderAdminWelcomeEmailText("Ana", "ana@spuri.co.ao", "adm", "Ab3dEf7h", "https://app.spuri.co.ao/login")
+	mustContain(t, text, "ana@spuri.co.ao")
+	mustContain(t, text, "Ab3dEf7h")
+	mustContain(t, text, "https://app.spuri.co.ao/login")
 }
 
 func TestRenderVerificationEmailText(t *testing.T) {
@@ -145,9 +175,13 @@ func TestRenderEmailButtonAndPillAndAlert_NoUnescapedPercent(t *testing.T) {
 	if strings.Contains(pill, "%!") {
 		t.Errorf("renderEmailPill produziu saída de Sprintf malformada: %s", pill)
 	}
-	full := renderPasswordResetEmailHTML("Ana", "Senha1234!", "https://x/login", "https://x")
-	if strings.Contains(full, "%!") {
-		t.Errorf("renderPasswordResetEmailHTML produziu saída de Sprintf malformada (verificar '%%' não duplicado em algum template): %s", full)
+	for nome, full := range map[string]string{
+		"renderPasswordResetLinkEmailHTML": renderPasswordResetLinkEmailHTML("Ana", "https://x/recuperar-senha/t", "https://x"),
+		"renderAdminWelcomeEmailHTML":      renderAdminWelcomeEmailHTML("Ana", "a@x.co", "adm", "Ab3dEf7h", "https://x/login", "https://x"),
+	} {
+		if strings.Contains(full, "%!") {
+			t.Errorf("%s produziu saída de Sprintf malformada (verificar '%%' não duplicado em algum template): %s", nome, full)
+		}
 	}
 }
 

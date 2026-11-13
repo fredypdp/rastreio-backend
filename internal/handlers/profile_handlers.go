@@ -31,6 +31,11 @@ func AlterarSenha(c *gin.Context) {
 		utils.RespondWithValidationError(c, err)
 		return
 	}
+	// SEC-04: a troca da senha temporária tem de produzir uma senha NOVA.
+	if req.NovaSenha == req.SenhaAtual {
+		utils.RespondWithValidationError(c, fmt.Errorf("a nova senha deve ser diferente da senha atual"))
+		return
+	}
 
 	// ── Admin ──────────────────────────────────────────────────────────────
 	if userType == "admin" {
@@ -127,10 +132,10 @@ func AlterarSenha(c *gin.Context) {
 			utils.RespondWithNotFoundError(c, "estudante")
 			return
 		}
-		if estudanteAuth.Status != "ativo" {
-			utils.RespondWithForbiddenError(c, "conta inativa. Não é possível alterar a senha.")
-			return
-		}
+		// SEC-04: já não se exige estado "ativo" — um estudante recém-criado
+		// (pendente de documentos ou matrícula) precisa de trocar a senha
+		// temporária no primeiro acesso. Contas bloqueadas nem chegam aqui: o
+		// AuthMiddleware recusa a sessão antes.
 		if err := bcrypt.CompareHashAndPassword([]byte(estudanteAuth.Hash), []byte(req.SenhaAtual)); err != nil {
 			utils.RespondWithUnauthorizedError(c)
 			return
@@ -251,7 +256,8 @@ func getPerfilEstudante(c *gin.Context, userID interface{}) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"tipo": "estudante",
+		"tipo":               "estudante",
+		"deve_alterar_senha": deveAlterarSenhaDe(c, estudante.ID, "estudante"),
 		"estudante": gin.H{
 			"id":                             estudante.ID,
 			"nome":                           estudante.Nome,
@@ -291,7 +297,8 @@ func getPerfilAcademia(c *gin.Context, userID interface{}) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"tipo": "academia",
+		"tipo":               "academia",
+		"deve_alterar_senha": deveAlterarSenhaDe(c, id, "academia"),
 		"academia": gin.H{
 			"id":                  academia.ID,
 			"nivel":               academia.Nivel,
@@ -328,7 +335,8 @@ func getPerfilAdmin(c *gin.Context, userID interface{}) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"tipo": "admin",
+		"tipo":               "admin",
+		"deve_alterar_senha": deveAlterarSenhaDe(c, id, "admin"),
 		"admin": gin.H{
 			"id":               admin.ID,
 			"nome":             admin.Nome,

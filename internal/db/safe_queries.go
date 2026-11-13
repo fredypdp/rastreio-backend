@@ -59,6 +59,8 @@ var validEventTypes = map[string]bool{
 	// ── Verificação em duas etapas (compartilhado: Admin, Academia, Estudante) ─
 	"DoisFatoresAtivados":    true,
 	"DoisFatoresDesativados": true,
+	// ── Senha temporária de troca obrigatória (compartilhado: Admin, Academia, Estudante) ─
+	"SenhaTemporariaDefinida": true,
 	// ── Admin ────────────────────────────────────────────────────────────────
 	"AdminCriado":           true,
 	"AdminAtivado":          true,

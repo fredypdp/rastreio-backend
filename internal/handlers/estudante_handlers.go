@@ -198,6 +198,13 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req CadastroEstu
 		utils.RespondWithValidationError(c, err)
 		return
 	}
+	// SEC-04: as credenciais seguem por SMS. Valida-se o telefone de destino ANTES
+	// de criar a conta, para não criar contas cujas credenciais não possam ser entregues.
+	telefoneDestinoCredenciais, err := TelefoneDestinoCredenciaisEstudante(validado.AnoEscolarFundamental, validado.AnoEscolarMedio, validado.AnoSuperior, validado.TelefoneEstudante, validado.TelefoneEncarregado)
+	if err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
 
 	client := getDbClient(c)
 	codigoEstudante, err := utils.GenerateUniqueCodigoEstudante(client.DB())
@@ -261,8 +268,14 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req CadastroEstu
 		}
 	}
 
-	defaultPassword := services.GetDefaultPassword("estudante", codigoEstudante)
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(defaultPassword), bcrypt.DefaultCost)
+	// SEC-04: senha aleatória de 8 caracteres, de troca obrigatória no primeiro acesso.
+	senhaTemporaria, err := services.GenerateTempPassword()
+	if err != nil {
+		_ = provider.Delete(dir)
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(senhaTemporaria), bcrypt.DefaultCost)
 	if err != nil {
 		_ = provider.Delete(dir)
 		utils.RespondWithInternalError(c, err)
@@ -326,6 +339,11 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req CadastroEstu
 		utils.RespondWithValidationError(c, criarErr)
 		return
 	}
+	if err := estudante.DefinirSenhaTemporaria(); err != nil {
+		_ = provider.Delete(dir)
+		utils.RespondWithInternalError(c, err)
+		return
+	}
 	audit := db.AuditContext{UserID: academiaID.String(), UserType: "academia", IP: c.ClientIP()}
 	if err := getRepository(c).SaveWithAudit(estudante, audit); err != nil {
 		_ = provider.Delete(dir)
@@ -340,8 +358,15 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req CadastroEstu
 		}
 		biGuardConsumed = true
 	}
-	log.Printf("Estudante criado por academia %s: %s - %s", academia.CodigoAcademia, codigoEstudante, req.Nome)
-	data := gin.H{"id": estudante.ID, "codigo_estudante": codigoEstudante, "codigo_academia": academia.CodigoAcademia, "documentos": documentos, "status": estudante.Status}
+	log.Printf("Estudante criado por academia %s: %s", academia.CodigoAcademia, codigoEstudante)
+
+	// SEC-04: credenciais por SMS DEPOIS do commit. Falha de envio nunca desfaz a
+	// criação. No cadastro em lote assíncrono (jobs) cada item chega aqui pelo
+	// worker, por isso o envio é por item, dentro do próprio worker.
+	atorCredenciais := atorComunicacao{ID: academiaID, Tipo: "academia", CodigoAcademia: academia.CodigoAcademia}
+	credenciais := enviarCredenciaisSMS(c.Request.Context(), c, atorCredenciais, audit, telefoneDestinoCredenciais, req.Nome, codigoEstudante, senhaTemporaria, false)
+
+	data := gin.H{"id": estudante.ID, "codigo_estudante": codigoEstudante, "codigo_academia": academia.CodigoAcademia, "documentos": documentos, "status": estudante.Status, "credenciais": credenciais}
 	if codigoTurma != "" {
 		data["codigo_turma"] = codigoTurma
 		if err := vincularEstudanteATurma(c, academia, codigoEstudante, req.AnoEscolar, req.AnoEscolarMedio, req.AnoSuperior, req.CursoMedioID, req.CursoSuperiorID, codigoTurma, true, academiaID); err != nil {
@@ -545,6 +570,7 @@ func ListarEstudantes(c *gin.Context) {
 		}
 		defer rows.Close()
 		estudantes := scanEstudantesRows(rows)
+		anexarDeveAlterarSenha(client, "projection_estudantes", "codigo_estudante", "codigo_estudante", estudantes)
 		c.JSON(http.StatusOK, gin.H{
 			"estudantes":      estudantes,
 			"total":           len(estudantes),
@@ -584,6 +610,7 @@ func ListarEstudantes(c *gin.Context) {
 		}
 		defer rows.Close()
 		estudantes := scanEstudantesRows(rows)
+		anexarDeveAlterarSenha(client, "projection_estudantes", "codigo_estudante", "codigo_estudante", estudantes)
 		c.JSON(http.StatusOK, gin.H{
 			"estudantes":   estudantes,
 			"total":        len(estudantes),

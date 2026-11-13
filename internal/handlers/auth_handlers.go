@@ -11,6 +11,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// mensagemCredenciaisInvalidas é a ÚNICA mensagem de falha de autenticação
+// (usuário inexistente ou senha errada), para não permitir enumerar contas.
+const mensagemCredenciaisInvalidas = "credenciais inválidas"
+
 // LoginRequest é o corpo do único endpoint de autenticação do sistema.
 //
 // Campos:
@@ -60,6 +64,10 @@ func Login(c *gin.Context) {
 		userType   string // inferido pela busca — "admin" | "academia" | "estudante"
 		userRole   string // preenchido apenas para admin
 		userFound  bool
+		// emailNaoVerificado: login feito pelo e-mail ainda não verificado. Só é
+		// comunicado DEPOIS de a senha estar correta (SEC-06): antes disso a
+		// resposta seria diferente para quem acertou o identificador.
+		emailNaoVerificado bool
 	)
 
 	// ── Busca em cascata: admin → academia → estudante ─────────────────────
@@ -109,13 +117,7 @@ func Login(c *gin.Context) {
 			// Bloquear login via e-mail se ainda não verificado.
 			// Login por código de academia (ex: AC1234) é sempre permitido —
 			// o código é atribuído pelo sistema e não requer verificação adicional.
-			if academia.Email != nil && *academia.Email == req.Usuario && !academia.EmailVerificado {
-				log.Printf("[INFO] [Login] Academia tentou login com e-mail não verificado: %s", req.Usuario)
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"error": "e-mail não verificado. Verifique sua caixa de entrada e confirme seu e-mail antes de fazer login.",
-				})
-				return
-			}
+			emailNaoVerificado = academia.Email != nil && *academia.Email == req.Usuario && !academia.EmailVerificado
 
 			userID = academia.ID
 			userName = academia.Nome
@@ -145,13 +147,7 @@ func Login(c *gin.Context) {
 			// Bloquear login via e-mail se ainda não verificado.
 			// Login por código de estudante (ex: ABC1234) é sempre permitido —
 			// o código é atribuído pelo sistema e não requer verificação adicional.
-			if estudanteAuth.Email != nil && *estudanteAuth.Email == req.Usuario && !estudanteAuth.EmailVerificado {
-				log.Printf("[INFO] [Login] Estudante tentou login com e-mail não verificado: %s", req.Usuario)
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"error": "e-mail não verificado. Verifique sua caixa de entrada e confirme seu e-mail antes de fazer login.",
-				})
-				return
-			}
+			emailNaoVerificado = estudanteAuth.Email != nil && *estudanteAuth.Email == req.Usuario && !estudanteAuth.EmailVerificado
 
 			userID = estudanteAuth.ID
 			userName = estudanteAuth.Nome
@@ -174,14 +170,25 @@ func Login(c *gin.Context) {
 
 	// Resposta deliberadamente genérica: não revela qual campo estava errado
 	// nem qual tipo de usuário foi (ou não) encontrado.
+	//
+	// SEC-06: usuário inexistente e senha errada devolvem EXATAMENTE a mesma
+	// resposta. O motivo real só vai para o log do servidor.
 	if !userFound {
-		log.Printf("[INFO] [Login] Usuário não encontrado: %s", req.Usuario)
-		utils.RespondWithError(c, http.StatusUnauthorized, "usuário não encontrado", nil)
+		log.Printf("[INFO] [Login] Falha de autenticação: usuário não encontrado")
+		utils.RespondWithError(c, http.StatusUnauthorized, mensagemCredenciaisInvalidas, nil)
 		return
 	}
 	if bcryptErr != nil {
-		log.Printf("[INFO] [Login] Senha incorreta para usuário: %s", req.Usuario)
-		utils.RespondWithError(c, http.StatusUnauthorized, "senha incorreta", nil)
+		log.Printf("[INFO] [Login] Falha de autenticação: senha incorreta (tipo %s)", userType)
+		utils.RespondWithError(c, http.StatusUnauthorized, mensagemCredenciaisInvalidas, nil)
+		return
+	}
+	// Senha correta: só agora é seguro dizer que o e-mail ainda não foi verificado.
+	if emailNaoVerificado {
+		log.Printf("[INFO] [Login] %s tentou login com e-mail não verificado", userType)
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "e-mail não verificado. Verifique sua caixa de entrada e confirme seu e-mail antes de fazer login.",
+		})
 		return
 	}
 
@@ -257,6 +264,9 @@ func responderLoginComSucesso(c *gin.Context, userID uuid.UUID, userType, userNa
 		"token": token,
 		"nome":  userName,
 		"type":  userType,
+		// SEC-04: true enquanto a conta usa a senha temporária — o frontend leva
+		// o titular direto para a troca obrigatória.
+		"deve_alterar_senha": deveAlterarSenhaDe(c, userID, userType),
 	}
 	if userType == "admin" {
 		resp["email"] = identifier
@@ -266,6 +276,27 @@ func responderLoginComSucesso(c *gin.Context, userID uuid.UUID, userType, userNa
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// deveAlterarSenhaDe lê deve_alterar_senha da projeção do usuário. Em caso de
+// erro devolve false: o AuthMiddleware impõe a regra de qualquer forma.
+func deveAlterarSenhaDe(c *gin.Context, userID uuid.UUID, userType string) bool {
+	var table string
+	switch userType {
+	case "admin":
+		table = "projection_admins"
+	case "academia":
+		table = "projection_academias"
+	case "estudante":
+		table = "projection_estudantes"
+	default:
+		return false
+	}
+	var deve bool
+	if err := getDbClient(c).DB().QueryRow(`SELECT deve_alterar_senha FROM `+table+` WHERE id::text = $1`, userID.String()).Scan(&deve); err != nil {
+		return false
+	}
+	return deve
 }
 
 // Logout encerra a sessão no cliente.

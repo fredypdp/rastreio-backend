@@ -312,31 +312,76 @@ func renderVerificationEmailText(userName, verificationURL string) string {
 }
 
 // ============================================================================
-// Template: Recuperação de Senha — porta sendPasswordResetEmail() do frontend
+// Template: Recuperação de senha por LINK (SEC-03)
 // ----------------------------------------------------------------------------
-// Diferença deliberada face ao frontend: o botão "Ir para Alteração de
-// Senha" do template original aponta para `${FRONTEND_URL}/recuperar-senha/
-// ${token}` — uma página que não existe no frontend (a troca já aconteceu
-// no momento em que este e-mail é enviado, tanto no fluxo antigo quanto
-// neste). Ver observação e decisão no documento de tarefa: o botão foi
-// mantido apontando para a MESMA URL (fidelidade ao design pedido), agora
-// direcionada para a página de login, que é o destino que realmente existe
-// e faz sentido depois de uma senha temporária ser emitida.
+// O e-mail NÃO contém senha: só um link de uso único (válido 1 hora) para a
+// página /recuperar-senha/<token> do frontend, onde o titular escolhe a nova
+// senha. Quem não pediu a recuperação ignora o e-mail e nada muda.
 // ============================================================================
 
-// renderPasswordResetEmailHTML monta o corpo + invólucro do e-mail de senha
-// resetada, com a MESMA cópia e estrutura do frontend (bloco de senha
-// temporária em destaque, alerta de segurança, dica de boas práticas).
-func renderPasswordResetEmailHTML(userName, tempPassword, loginURL, frontendURL string) string {
+// renderPasswordResetLinkEmailHTML monta o e-mail com o link de redefinição.
+func renderPasswordResetLinkEmailHTML(userName, resetURL, frontendURL string) string {
+	safeURL := html.EscapeString(resetURL)
+	bodyHTML := fmt.Sprintf(`
+      <p style="margin:0 0 6px; font-family:%s; font-size:12px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:%s;">Recuperação de senha</p>
+      <h1 class="spuri-h1 spuri-heading" style="margin:0 0 16px; font-family:%s; font-size:24px; line-height:1.3; font-weight:700; color:%s;">Defina uma nova senha</h1>
+      <p class="spuri-body-text" style="margin:0; font-family:%s; font-size:15px; line-height:1.65; color:%s;">Olá, <strong style="color:%s;">%s</strong>. Recebemos um pedido para redefinir a senha da sua conta. Clique no botão abaixo para escolher uma nova senha. O link é válido por 1 hora e só pode ser usado uma vez.</p>
+      <div style="text-align:center; margin-top:24px;">%s</div>
+
+      <p class="spuri-muted" style="margin:28px 0 8px; font-family:%s; font-size:13px; color:%s;">
+        Se o botão não funcionar, copie e cole este link no navegador:
+      </p>
+      <p class="spuri-mono-box" style="margin:0; padding:12px 16px; background-color:%s; border:1px solid %s; border-radius:10px;">
+        <a href="%s" style="font-family:%s; font-size:12px; word-break:break-all; color:%s !important; text-decoration:none;">%s</a>
+      </p>
+
+      %s
+    `,
+		emailTplFontStack, emailTplBrandBlue,
+		emailTplFontStack, emailTplNavy,
+		emailTplFontStack, emailTplGray700, emailTplNavy, html.EscapeString(userName),
+		renderEmailButton(safeURL, "Definir nova senha"),
+		emailTplFontStack, emailTplGray500,
+		emailTplGray50, emailTplGray100,
+		safeURL, emailTplMonoStack, emailTplBrandBlueDark, safeURL,
+		renderEmailAlert("warning", "Não foi você?", "Ignore este e-mail: a sua senha atual continua a funcionar e nada foi alterado."),
+	)
+	return renderEmailShell("Redefina a sua senha do Spuri.", "Redefinição de senha - Spuri", bodyHTML, frontendURL)
+}
+
+// renderPasswordResetLinkEmailText é a versão em texto simples.
+func renderPasswordResetLinkEmailText(userName, resetURL string) string {
+	return fmt.Sprintf(`Olá %s,
+
+Recebemos um pedido para redefinir a senha da sua conta Spuri.
+Abra o link abaixo para escolher uma nova senha (válido por 1 hora, uso único):
+
+%s
+
+Se não foi você, ignore este e-mail: a sua senha atual continua a funcionar.
+`, userName, resetURL)
+}
+
+// ============================================================================
+// Template: Boas-vindas do administrador (credenciais temporárias, via Brevo)
+// ============================================================================
+
+// renderAdminWelcomeEmailHTML monta o e-mail com as credenciais temporárias de
+// um administrador criado por outro. A senha só existe neste e-mail (e no hash
+// do ledger): nunca é devolvida pela API nem escrita em log.
+func renderAdminWelcomeEmailHTML(userName, userEmail, role, tempPassword, loginURL, frontendURL string) string {
 	safeName := html.EscapeString(userName)
+	safeEmail := html.EscapeString(userEmail)
+	safeRole := html.EscapeString(role)
 	safePassword := html.EscapeString(tempPassword)
 
 	bodyHTML := fmt.Sprintf(`
-      <p style="margin:0 0 6px; font-family:%s; font-size:12px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:%s;">Recuperação de senha</p>
-      <h1 class="spuri-h1 spuri-heading" style="margin:0 0 16px; font-family:%s; font-size:24px; line-height:1.3; font-weight:700; color:%s;">A sua senha foi redefinida</h1>
+      <p style="margin:0 0 6px; font-family:%s; font-size:12px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:%s;">Acesso de administrador</p>
+      <h1 class="spuri-h1 spuri-heading" style="margin:0 0 16px; font-family:%s; font-size:24px; line-height:1.3; font-weight:700; color:%s;">Bem-vindo ao Spuri</h1>
       <p class="spuri-body-text" style="margin:0; font-family:%s; font-size:15px; line-height:1.65; color:%s;">
-        Olá, <strong style="color:%s;">%s</strong>! Sua senha foi resetada com sucesso. Geramos uma nova senha temporária para a sua conta.
+        Olá, <strong style="color:%s;">%s</strong>! A sua conta de administrador (<strong>%s</strong>) foi criada.
       </p>
+      <p class="spuri-body-text" style="margin:12px 0 0; font-family:%s; font-size:15px; line-height:1.65; color:%s;">Utilizador (login): <strong>%s</strong></p>
 
       <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" class="spuri-pass-box" style="margin-top:24px; border-radius:16px; background-color:%s; border:1px solid %s;">
         <tr>
@@ -350,53 +395,35 @@ func renderPasswordResetEmailHTML(userName, tempPassword, loginURL, frontendURL 
       <div style="text-align:center;">%s</div>
 
       %s
-
-      %s
-
-      <p class="spuri-muted" style="margin:24px 0 0; font-family:%s; font-size:12px; line-height:1.6; color:%s; text-align:center;">
-        Se você não solicitou a recuperação de senha, entre em contato conosco imediatamente em
-        <a href="mailto:spuriartipan@gmail.com" style="color:%s !important;">spuriartipan@gmail.com</a>.
-      </p>
     `,
 		emailTplFontStack, emailTplBrandBlue,
 		emailTplFontStack, emailTplNavy,
-		emailTplFontStack, emailTplGray700,
-		emailTplNavy, safeName,
+		emailTplFontStack, emailTplGray700, emailTplNavy, safeName, safeRole,
+		emailTplFontStack, emailTplGray700, safeEmail,
 		emailTplBrand50, emailTplBrand100,
 		emailTplFontStack, emailTplBrandBlueDark,
 		emailTplMonoStack, emailTplNavy, safePassword,
 		renderEmailButton(loginURL, "Ir para o Login"),
-		renderEmailAlert("warning", "⚠️ Importante", "Por motivos de segurança, altere esta senha imediatamente após fazer login. Acesse seu perfil e vá em <strong>&ldquo;Alterar Senha&rdquo;</strong>."),
-		renderEmailAlert("brand", "🔒 Dicas de Segurança", "Nunca compartilhe sua senha com ninguém. Use uma senha forte com letras, números e símbolos. Não use a mesma senha em diferentes serviços."),
-		emailTplFontStack, emailTplGray500,
-		emailTplBrandBlue,
+		renderEmailAlert("warning", "⚠️ Importante", "Será obrigado a trocar esta senha no primeiro acesso. Nunca a partilhe com ninguém."),
 	)
 
-	return renderEmailShell(
-		"Geramos uma nova senha temporária para a sua conta Spuri. Consulte com segurança dentro do e-mail.",
-		"Senha Resetada - Spuri",
-		bodyHTML,
-		frontendURL,
-	)
+	return renderEmailShell("A sua conta de administrador Spuri foi criada.", "Bem-vindo ao Spuri", bodyHTML, frontendURL)
 }
 
-// renderPasswordResetEmailText porta a versão em texto simples do mesmo
-// e-mail (fallback para clientes sem suporte a HTML).
-func renderPasswordResetEmailText(userName, tempPassword, loginURL string) string {
+// renderAdminWelcomeEmailText é a versão em texto simples.
+func renderAdminWelcomeEmailText(userName, userEmail, role, tempPassword, loginURL string) string {
 	return fmt.Sprintf(`Olá %s!
 
-Sua senha foi resetada com sucesso.
+A sua conta de administrador (%s) no Spuri foi criada.
 
+UTILIZADOR (LOGIN): %s
 SENHA TEMPORÁRIA: %s
 
-IMPORTANTE: Altere esta senha imediatamente após fazer login por motivos de segurança.
+Será obrigado a trocar esta senha no primeiro acesso.
 
-Você pode fazer login em:
-%s
-
-Se você não solicitou esta recuperação, entre em contato conosco imediatamente em spuriartipan@gmail.com.
+Acesse: %s
 
 ---
 © %d Spuri - Todos os direitos reservados
-`, userName, tempPassword, loginURL, time.Now().Year())
+`, userName, role, userEmail, tempPassword, loginURL, time.Now().Year())
 }

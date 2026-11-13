@@ -99,6 +99,8 @@ func (p *EstudanteProjection) Handle(event db.Event) error {
 		return p.handleCursoAlterado(event)
 	case "SenhaAlterada":
 		return p.handleSenhaAlterada(event)
+	case "SenhaTemporariaDefinida":
+		return setSenhaTemporaria(p.client.DB(), "projection_estudantes", event)
 	case "AvaliacaoFinalEscolar", "AvaliacaoFinalSuperior":
 		return p.handleAvaliacaoFinalAnoAcademico(event)
 	case "NotasRegistradas", "FaltasRegistradas":
@@ -892,17 +894,13 @@ func (p *EstudanteProjection) handleCursoAlterado(event db.Event) error {
 func (p *EstudanteProjection) handleSenhaAlterada(event db.Event) error {
 	var payload struct {
 		NovaSenhaHash string `json:"NovaSenhaHash"`
+		Motivo        string `json:"Motivo"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return fmt.Errorf("handleSenhaAlterada: parse error: %w", err)
 	}
-	_, err := p.client.DB().Exec(`
-		UPDATE projection_estudantes
-		SET senha_hash = $1, version = $2,
-			updated_at = CURRENT_TIMESTAMP, last_event_id = $3
-		WHERE id = $4
-	`, payload.NovaSenhaHash, event.EventVersion, event.EventID, event.AggregateID)
-	return err
+	// O motivo decide deve_alterar_senha e sessoes_validas_desde (SEC-04/SEC-10).
+	return aplicarSenhaAlterada(p.client.DB(), "projection_estudantes", payload.NovaSenhaHash, payload.Motivo, event)
 }
 
 func (p *EstudanteProjection) handleAvaliacaoFinalAnoAcademico(event db.Event) error {
