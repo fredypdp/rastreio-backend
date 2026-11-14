@@ -1122,15 +1122,21 @@ func GetMinhasAvaliacoes(c *gin.Context) {
 // ============================================================================
 
 // Perfil reduzido devolvido para academia anterior (SEC-15)
+// Contém APENAS dados registrados por ESTA academia: identificação básica,
+// status geral do estudante (sem detalhes de curso/ano/semestre atuais de outras academias)
+// e períodos de vínculo EXCLUSIVAMENTE com a academia consultante.
 type EstudantePerfilReduzido struct {
-	ID                   uuid.UUID     `json:"id"`
-	Nome                 string        `json:"nome"`
-	CodigoEstudante      string        `json:"codigo_estudante"`
-	CodigoAcademia       *string       `json:"codigo_academia"`
-	Status               string        `json:"status"`
-	StatusEscolarFund    string        `json:"status_escolar_fundamental"`
-	StatusEscolarMedio   string        `json:"status_escolar_medio"`
-	StatusSuperior       string        `json:"status_superior"`
+	ID                   uuid.UUID          `json:"id"`
+	Nome                 string             `json:"nome"`
+	CodigoEstudante      string             `json:"codigo_estudante"`
+	CodigoAcademia       *string            `json:"codigo_academia"`
+	Status               string             `json:"status"`
+	StatusEscolarFund    string             `json:"status_escolar_fundamental"`
+	StatusEscolarMedio   string             `json:"status_escolar_medio"`
+	StatusSuperior       string             `json:"status_superior"`
+	// SEC-15: APENAS períodos de vínculo com a academia que está consultando.
+	// O helper acessoAcademiaAoEstudante já filtra por codigo_academia via
+	// projection_estudante_vinculos.GetByEstudanteAcademia.
 	VinculosPeriodos     []PeriodoVinculoDTO `json:"periodos_vinculo"`
 }
 
