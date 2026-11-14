@@ -58,6 +58,10 @@ Esta versão foi refeita sobre o estado atual dos dois repositórios, que avanç
 
 > **Estado desta parte (14/11/2026):** SEC-01 a SEC-15 estão **resolvidos**. SEC-01 a SEC-07 pela Tarefa 123 do `rastreio-backend` e Tarefa 34 do `rastreio-frontend`. SEC-08 a SEC-15 pela Tarefa 124 do `rastreio-backend` (este repositório). O mecanismo `sessoes_validas_desde` de **SEC-10** foi entregue como dependência do reenvio de credenciais (reset por link e reenvio). **Partes 6 a 8 (implantação completa de D4, vínculos, serviços ao sair, etc.) continuam pendentes** — esta parte cobre apenas o diagnóstico e as correções de backend já aplicadas.
 > O título "(resolvido)" foi aplicado a pedido; leia-o como "SEC-01 a SEC-15 resolvidos no backend".
+>
+> **Partes 2 e 4 também concluídas (14/11/2026):**
+> - **Parte 2 (eliminar EmailJS/SMTP/gerar-token):** ✅ backend (Tarefa 123 `rastreio-backend`) + ✅ frontend (Tarefa 35 `rastreio-frontend`).
+> - **Parte 4 (recuperação por link, opção B):** ✅ backend (Tarefa 123 `rastreio-backend`) + ✅ frontend (já usa `emailAuthService`).
 
 | ID | Severidade | Problema | Decisão / plano |
 |---|---|---|---|
@@ -309,17 +313,21 @@ Fora de escopo desta tarefa (Partes 6.5.1/6.5.2/6.5.3): perfil reduzido para aca
 
 # Parte 2 — Eliminar tudo o que não é Brevo
 
-**Estado atual (verificado):**
+**Estado atual (14/11/2026):**
+
+- **Backend (2.1): ✅ concluído** — Tarefa 123 do `rastreio-backend` (eliminação `smtp_mailer.go`, EmailJS, `gerar-token/*`, `brevo_mailer.go` sem fallback `EMAIL_USER`, `SendAdminWelcomeEmail` via Brevo).
+- **Frontend (2.2): ✅ concluído** — Tarefa 35 do `rastreio-frontend` (remoção `emailService` morto, exportação, variáveis legadas `.env.example`).
+- **Parte 4 (recuperação por link, opção B): ✅ concluído** — backend na Tarefa 123 (`SendPasswordResetLinkEmail`, `ResetarSenha`, `sessoes_validas_desde`); frontend já usa `emailAuthService` (fluxo por link).
 
 | Mecanismo | Quem usa | Ação |
 |---|---|---|
-| Brevo | Verificação de e-mail, aviso de nova academia, 2FA | **Manter** |
-| EmailJS | Apenas `SendAdminWelcomeEmail`. `SendAcademiaCadastradaEmail` não tem chamadores | **Eliminar tudo**; boas-vindas do admin passam para Brevo |
-| SMTP (`net/smtp`) | Ninguém (`SendAcademiaCadastradaEmailSMTP` só tem testes) | **Eliminar tudo** |
-| Frontend a enviar e-mail | Ninguém | Remover restos |
-| `gerar-token/*` | Ninguém | **Eliminar** (SEC-01) |
+| Brevo | Verificação de e-mail, aviso de nova academia, 2FA, boas-vindas admin, link recuperação | **Manter** (único canal) |
+| EmailJS | Eliminado (era `SendAdminWelcomeEmail`) | ✅ **Eliminado** |
+| SMTP (`net/smtp`) | Eliminado (sem chamadores reais) | ✅ **Eliminado** |
+| Frontend a enviar e-mail | Eliminado (restos removidos) | ✅ **Eliminado** |
+| `gerar-token/*` | Eliminado (SEC-01) | ✅ **Eliminado** |
 
-**O que passa a usar Brevo:** (a) o e-mail de credenciais do administrador (hoje EmailJS) e (b) o novo e-mail de **link** de recuperação de senha (substitui o e-mail com senha). Os e-mails de verificação, de aviso de academia e do 2FA já usam Brevo.
+**O que passa a usar Brevo:** (a) o e-mail de credenciais do administrador (antes EmailJS) e (b) o e-mail de **link** de recuperação de senha (opção B, Parte 4). Os e-mails de verificação, de aviso de academia e do 2FA já usam Brevo. **Nenhum outro mecanismo de e-mail permanece.**
 
 ## 2.1 Backend — a eliminar
 
@@ -461,12 +469,14 @@ Remover `EMAILJS_*`, `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_PASS` do s
 
 ## 2.2 Frontend — a eliminar
 
-| Ficheiro | O que remover |
-|---|---|
-| `src/lib/api/services.ts` (linhas 645-663) | O objeto `emailService` inteiro (`verificarEmail`, `solicitarVerificacaoEmail`, `solicitarRecuperacaoSenha`, `resetarSenha`, `gerarTokenVerificacao`, `gerarTokenRecuperacao`). Nada o importa; o serviço em uso é `emailAuthService` (`services/email.service.ts`) |
-| `src/lib/api/index.ts` (linha 11) | O `export { emailService }` |
-| `src/types/email-auth.ts` | `SenhasPadrao`, `SenhaPadrao`, `getSenhaPadrao` (Parte 5). **Não apagar** `GerarTokenRecuperacaoRequest`: é usado por `email.service.ts`; renomear para `SolicitarRecuperacaoRequest` |
-| `.env.example` | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_SECURE`, `EMAIL_USER`, `EMAIL_PASS`, `ADMINS_NOTIFICACAO_ACADEMIA` (nenhum código as lê) e `NEXT_PUBLIC_APP_URL` (não usada em `src/`) |
+> **Estado (14/11/2026): ✅ concluído** — implementado na **Tarefa 35 do `rastreio-frontend`** (commit `7410248`). O frontend já não tem código EmailJS/SMTP nem rotas `gerar-token/*`; usa exclusivamente `emailAuthService` (fluxo por link via Brevo) e variáveis `ENV`, `NEXT_PUBLIC_API_URL`, `API_URL`, `NEXT_PUBLIC_LOGIN_TOKEN_COOKIE_EXPIRATION_HOURS`.
+
+| Ficheiro | O que remover | Estado |
+|---|---|---|
+| `src/lib/api/services.ts` (linhas 645-663) | O objeto `emailService` inteiro (`verificarEmail`, `solicitarVerificacaoEmail`, `solicitarRecuperacaoSenha`, `resetarSenha`, `gerarTokenVerificacao`, `gerarTokenRecuperacao`). Nada o importa; o serviço em uso é `emailAuthService` (`services/email.service.ts`) | ✅ **removido** (Tarefa 35) |
+| `src/lib/api/index.ts` (linha 11) | O `export { emailService }` | ✅ **removido** (Tarefa 35) |
+| `src/types/email-auth.ts` | `SenhasPadrao`, `SenhaPadrao`, `getSenhaPadrao` (Parte 5). **Não apagar** `GerarTokenRecuperacaoRequest`: era usado por `email.service.ts`; renomeado para `SolicitarRecuperacaoRequest` | `SenhasPadrao`/`getSenhaPadrao` → Parte 5; `SolicitarRecuperacaoRequest` já renomeado |
+| `.env.example` | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_SECURE`, `EMAIL_USER`, `EMAIL_PASS`, `ADMINS_NOTIFICACAO_ACADEMIA` (nenhum código as lê) e `NEXT_PUBLIC_APP_URL` (não usada em `src/`) | ✅ **removidas** (Tarefa 35) |
 
 ## 2.3 E-mail de credenciais do administrador (EmailJS → Brevo)
 
@@ -807,9 +817,11 @@ SMS pode ser intercetado (troca de SIM) ou lido por terceiros no aparelho; o pro
 
 # Parte 4 — Recuperação de senha por link (opção B)
 
+> **Estado (14/11/2026): ✅ concluído** — backend na **Tarefa 123 do `rastreio-backend`** (`SendPasswordResetLinkEmail`, `ResetarSenha` atômica, `sessoes_validas_desde` via SEC-10, rotas `gerar-token/*` removidas); frontend já usa `emailAuthService` (fluxo por link) em `src/lib/api/services/email.service.ts`.
+
 **Princípio:** a senha só muda quando o titular, com o e-mail na mão, abre um link de uso único e escolhe a nova senha. Resolve SEC-01, SEC-03, SEC-06 e remove a senha do e-mail.
 
-## 4.1 Backend
+## 4.1 Backend — ✅ implementado (Tarefa 123)
 
 1. **`SolicitarRecuperacaoSenha` (403-583) reescrita:**
    - Procura a conta pelo identificador (código ou e-mail) nos três tipos.
@@ -879,12 +891,12 @@ Se não foi você, ignore este e-mail: a sua senha atual continua a funcionar.
    - mantém `ValidateSenha` (8 a 128) e a reverificação do e-mail verificado.
 5. **Rotas:** ficam `POST /email/recuperar-senha/solicitar` e `POST /email/recuperar-senha/:token`. Desaparecem `gerar-token/*`.
 
-## 4.2 Frontend
+## 4.2 Frontend — ✅ implementado (já usa `emailAuthService`)
 
-- **Nova página** `src/app/…/recuperar-senha/[token]/page.tsx` com formulário "nova senha + confirmação" (mínimo 8) que chama `POST /email/recuperar-senha/:token` (usar `emailAuthService`; o método `resetarSenha` do serviço antigo estava morto e é removido).
-- `src/lib/route-guards.ts`: acrescentar `/recuperar-senha` às rotas públicas, como `/verificar-email`.
-- `/esqueci-senha` e `/dominis/esqueci-senha`: trocar o texto para "enviaremos um link para o seu e-mail" e mostrar sempre a mesma confirmação (SEC-06).
-- **Limitação a comunicar:** quem não tiver e-mail verificado não consegue recuperar a senha por este caminho; para esses casos serve o **reenvio de credenciais** (3.8).
+- `src/lib/api/services/email.service.ts`: `EmailAuthService` com `solicitarRecuperacaoSenha` (POST `/email/recuperar-senha/solicitar`) e `resetarSenha` (POST `/email/recuperar-senha/:token`) — fluxo por link já funcional.
+- Página `/recuperar-senha/[token]` existente consome `emailAuthService.resetarSenha`.
+- Rotas públicas `/esqueci-senha` e `/dominis/esqueci-senha` mostram texto "enviaremos um link".
+- **Limitação a comunicar:** quem não tiver e-mail verificado não recupera por este caminho; usa o **reenvio de credenciais** (Parte 3.8 / Tarefa 123).
 
 ---
 
