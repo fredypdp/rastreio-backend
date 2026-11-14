@@ -450,3 +450,22 @@ func (p *EstudanteVinculosProjection) TeveVinculoAlgumVez(codigoEstudante, codig
 	`, codigoEstudante, codigoAcademia).Scan(&exists)
 	return exists, err
 }
+
+// GetByEstudanteAcademia retorna os vínculos de um estudante com uma academia
+// específica (ativo e histórico), ordenados por vinculado_em DESC.
+// Usado pelo helper acessoAcademiaAoEstudante para determinar o tipo de acesso.
+func (p *EstudanteVinculosProjection) GetByEstudanteAcademia(estudanteID uuid.UUID, codigoAcademia string) ([]EstudanteVinculoDTO, error) {
+	rows, err := p.client.DB().Query(`
+		SELECT id, estudante_id, codigo_estudante, codigo_academia,
+		       tipo_ensino, ano_academico, evento_tipo, evento_version,
+		       vinculado_em, desvinculado_em, deleted_at, deleted_by
+		FROM projection_estudante_vinculos
+		WHERE estudante_id = $1 AND codigo_academia = $2
+		ORDER BY vinculado_em DESC
+	`, estudanteID, codigoAcademia)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEstudanteVinculoRows(rows)
+}

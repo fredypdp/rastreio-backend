@@ -504,7 +504,18 @@ func ListarServicosExtrasPublico(c *gin.Context) {
 func ListarServicosExtrasCatalogoEstudante(c *gin.Context) {
 	uid, _ := middleware.GetUserID(c)
 	est, e := getEstudanteProjection(c).GetByID(uid)
-	if e != nil || est == nil || est.CodigoAcademia == nil {
+	if e != nil || est == nil {
+		utils.RespondWithForbiddenError(c, "estudante não encontrado")
+		return
+	}
+
+	// SEC-15 / D10: estudante desvinculado (inativo) ou deletado não vê catálogo
+	if !estudanteVinculado(est.Status) {
+		c.JSON(http.StatusOK, gin.H{"servicos_extras": []any{}, "categorias_servico": []any{}, "total": 0})
+		return
+	}
+
+	if est.CodigoAcademia == nil {
 		utils.RespondWithForbiddenError(c, "estudante não está vinculado a uma academia")
 		return
 	}

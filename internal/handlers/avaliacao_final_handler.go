@@ -1073,12 +1073,12 @@ func GetAvaliacoesFinaisEstudante(c *gin.Context) {
 			return
 		}
 		// SEC-15: forced filtering via vinculos projection (isola mesmo se codigo_academia mudou ou estudante inativo)
-		temAcesso, err := acessoAcademiaAoEstudante(c, academiaDTO.CodigoAcademia, codigoEstudante)
+		temAcesso, _, err := acessoAcademiaAoEstudante(c, academiaDTO.CodigoAcademia, estudante)
 		if err != nil {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
-		if !temAcesso {
+		if temAcesso == SemAcesso {
 			utils.RespondWithForbiddenError(c, "Estudante não possui vínculo com esta academia")
 			return
 		}

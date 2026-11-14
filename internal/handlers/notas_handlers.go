@@ -380,10 +380,16 @@ func GetNotasEstudante(c *gin.Context) {
 		return
 	}
 
+	var academiaDTO *projections.AcademiaDTO
 	if userType == "academia" {
 		academiaProj := getAcademiaProjection(c)
-		academiaDTO, _ := academiaProj.GetByID(userID)
-		if estudante.CodigoAcademia == nil || academiaDTO == nil || *estudante.CodigoAcademia != academiaDTO.CodigoAcademia {
+		var err error
+		academiaDTO, err = academiaProj.GetByID(userID)
+		if err != nil || academiaDTO == nil {
+			utils.RespondWithNotFoundError(c, "academia")
+			return
+		}
+		if estudante.CodigoAcademia == nil || *estudante.CodigoAcademia != academiaDTO.CodigoAcademia {
 			utils.RespondWithForbiddenError(c, "Estudante não pertence a esta academia")
 			return
 		}
@@ -393,12 +399,12 @@ func GetNotasEstudante(c *gin.Context) {
 			return
 		}
 		// SEC-15: forced filtering via vinculos projection (isola mesmo se codigo_academia mudou ou estudante inativo)
-		temAcesso, err := acessoAcademiaAoEstudante(c, academiaDTO.CodigoAcademia, codigoEstudante)
+		temAcesso, _, err := acessoAcademiaAoEstudante(c, academiaDTO.CodigoAcademia, estudante)
 		if err != nil {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
-		if !temAcesso {
+		if temAcesso == SemAcesso {
 			utils.RespondWithForbiddenError(c, "Estudante não possui vínculo com esta academia")
 			return
 		}
@@ -412,6 +418,15 @@ func GetNotasEstudante(c *gin.Context) {
 	}
 
 	filtros, err := parseFiltrosRegistrosEstudante(c, true)
+	if err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+
+	if userType == "academia" {
+		// SEC-15: forçar filtro por codigo_academia da academia autenticada
+		filtros.codigosAcademia = []string{academiaDTO.CodigoAcademia}
+	}
 	if err != nil {
 		utils.RespondWithValidationError(c, err)
 		return

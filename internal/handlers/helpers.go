@@ -291,13 +291,121 @@ func repeat(s string, n int) string {
 // Helper de isolamento de academia (SEC-15)
 // ============================================================================
 
-// acessoAcademiaAoEstudante verifica se a academia autenticada tem acesso ao
-// estudante informado, consultando a projeção de vínculos (projection_estudante_vinculos).
-// Retorna true se a academia JÁ TEVE vínculo com o estudante (ativo ou histórico).
-// Usado em handlers de consulta (notas, faltas, avaliações) para forçar o isolamento
-// mesmo quando projection_estudantes.codigo_academia foi alterado ou o estudante
-// está inativo/desvinculado.
-func acessoAcademiaAoEstudante(c *gin.Context, codigoAcademia, codigoEstudante string) (bool, error) {
+// AcessoAcademia representa o nível de acesso da academia ao estudante
+type AcessoAcademia int
+
+const (
+	SemAcesso      AcessoAcademia = iota // Academia nunca teve vínculo
+	AcessoAnterior                       // Academia já teve vínculo, hoje não tem (ou tem com outra)
+	AcessoAtual                          // Academia tem vínculo ativo agora
+)
+
+// acessoAcademiaAoEstudante verifica o nível de acesso da academia ao estudante,
+// consultando a projeção de vínculos (projection_estudante_vinculos).
+// Retorna (nível de acesso, períodos de vínculo, erro).
+// Usado em handlers de consulta (perfil, notas, faltas, avaliações, eventos) para
+// forçar o isolamento por academia mesmo quando projection_estudantes.codigo_academia
+// foi alterado ou o estudante está inativo/desvinculado.
+func acessoAcademiaAoEstudante(c *gin.Context, codigoAcademia string, estudante *projections.EstudanteDTO) (AcessoAcademia, []projections.EstudanteVinculoDTO, error) {
 	vinculosProj := getEstudanteVinculosProjection(c)
-	return vinculosProj.TeveVinculoAlgumVez(codigoEstudante, codigoAcademia)
+	periodos, err := vinculosProj.GetByEstudanteAcademia(estudante.ID, codigoAcademia)
+	if err != nil {
+		return SemAcesso, nil, err
+	}
+	if len(periodos) == 0 {
+		return SemAcesso, nil, nil
+	}
+
+	// Verificar se é vínculo atual (estudante vinculado e codigo_academia corresponde)
+	if estudante.CodigoAcademia != nil && *estudante.CodigoAcademia == codigoAcademia && estudanteVinculado(estudante.Status) {
+		return AcessoAtual, periodos, nil
+	}
+	return AcessoAnterior, periodos, nil
+}
+
+// estudanteVinculado verifica se o estudante tem vínculo ativo (ativo ou pendente_documentos)
+func estudanteVinculado(status string) bool {
+	return status == "ativo" || status == "pendente_documentos"
+}
+
+// ============================================================================
+// Helpers de filtro de eventos por período de vínculo (SEC-15)
+// ============================================================================
+
+// filtrarEventosPorPeriodos filtra uma lista de eventos mantendo apenas aqueles
+// cujo occurred_at cai dentro de algum dos períodos de vínculo fornecidos.
+// Inclui os limites: occurred_at >= vinculado_em e (desvinculado_em == nil ou occurred_at <= desvinculado_em).
+func filtrarEventosPorPeriodos(eventos []db.Event, periodos []projections.EstudanteVinculoDTO) []db.Event {
+	if len(periodos) == 0 {
+		return eventos
+	}
+	filtrados := make([]db.Event, 0, len(eventos))
+	for _, e := range eventos {
+		if eventoDentroDoPeriodo(&e, periodos) {
+			filtrados = append(filtrados, e)
+		}
+	}
+	return filtrados
+}
+
+// eventoDentroDoPeriodo verifica se o evento ocorreu dentro de algum dos períodos de vínculo.
+func eventoDentroDoPeriodo(evento *db.Event, periodos []projections.EstudanteVinculoDTO) bool {
+	for _, p := range periodos {
+		if evento.OccurredAt.Before(p.VinculadoEm) {
+			continue
+		}
+		if p.DesvinculadoEm != nil && evento.OccurredAt.After(*p.DesvinculadoEm) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// cancelarInscricoesServicoExtraAoSair cancela todas as inscrições ativas em serviços extras
+// de um estudante ao ser desvinculado ou deletado de uma academia.
+// Retorna erro se houver falha crítica, mas continua cancelando as demais.
+func cancelarInscricoesServicoExtraAoSair(c *gin.Context, codigoEstudante, codigoAcademia, motivo, canceladaPor string) error {
+	solicitacoesProj := getSolicitacoesServicoExtraProjection(c)
+	solicitacaoIDs, err := solicitacoesProj.GetAtivasPorEstudanteAcademia(codigoEstudante, codigoAcademia)
+	if err != nil {
+		return fmt.Errorf("falha ao buscar inscrições ativas: %w", err)
+	}
+
+	repository := getRepository(c)
+	for _, solicitacaoID := range solicitacaoIDs {
+		agg, err := repository.Load(solicitacaoID, "SolicitacaoServicoExtra")
+		if err != nil {
+			log.Printf("[WARN] cancelarInscricoesServicoExtraAoSair: falha ao carregar solicitação %s: %v", solicitacaoID, err)
+			continue
+		}
+		solicitacao, ok := agg.(*aggregates.SolicitacaoServicoExtra)
+		if !ok {
+			log.Printf("[WARN] cancelarInscricoesServicoExtraAoSair: tipo de aggregate inesperado para solicitação %s", solicitacaoID)
+			continue
+		}
+
+		var cancelErr error
+		if solicitacao.Status == aggregates.StatusInscricaoPendente || solicitacao.Status == aggregates.StatusInscricaoAprovadaPendentePagamentoTaxa {
+			cancelErr = solicitacao.CancelarAntesDaVinculacao(motivo, canceladaPor)
+		} else if solicitacao.Status == aggregates.StatusInscricaoVinculada {
+			cancelErr = solicitacao.Cancelar(motivo, canceladaPor)
+		}
+
+		if cancelErr != nil {
+			log.Printf("[WARN] cancelarInscricoesServicoExtraAoSair: falha ao cancelar solicitação %s: %v", solicitacaoID, cancelErr)
+			continue
+		}
+
+		audit := db.AuditContext{
+			UserID:   codigoAcademia,
+			UserType: "academia",
+			IP:       c.ClientIP(),
+		}
+		if err := repository.SaveWithAudit(solicitacao, audit); err != nil {
+			log.Printf("[WARN] cancelarInscricoesServicoExtraAoSair: falha ao persistir cancelamento da solicitação %s: %v", solicitacaoID, err)
+			continue
+		}
+	}
+	return nil
 }

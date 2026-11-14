@@ -77,6 +77,12 @@ func DeletarContaEstudantePorAcademia(c *gin.Context) {
 		return
 	}
 
+	// SEC-15 / D10: ao deletar pela academia, cancelar todas as inscrições ativas em serviços extras
+	if err := cancelarInscricoesServicoExtraAoSair(c, ctx.Estudante.CodigoEstudante, ctx.CodigoAcademia, "Conta deletada pela academia", "academia"); err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+
 	log.Printf("Estudante deletado pela academia que o cadastrou: %s (academia=%s) - Motivo: %s", ctx.Estudante.CodigoEstudante, ctx.CodigoAcademia, req.Motivo)
 	c.JSON(http.StatusOK, gin.H{
 		"message":          "conta do estudante deletada com sucesso",

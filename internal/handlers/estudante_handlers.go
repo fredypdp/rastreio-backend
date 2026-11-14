@@ -535,6 +535,19 @@ func ListarEstudantes(c *gin.Context) {
 	// precisa consultar deleções usa o endpoint dedicado de auditoria.
 	conditions = append(conditions, "e.status <> 'deletado'")
 
+	// SEC-15: filtro por tipo de vínculo (atual, anterior, todos)
+	// Só aplica para academia e admin
+	vinculoParam := strings.TrimSpace(c.Query("vinculo"))
+	if userType == "academia" || userType == "admin" {
+		switch vinculoParam {
+		case "atual", "anterior", "todos", "":
+			// Valores válidos - processados abaixo
+		default:
+			utils.RespondWithValidationError(c, fmt.Errorf("vinculo inválido: valores aceitos são atual, anterior ou todos"))
+			return
+		}
+	}
+
 	baseQuery := selectCols + ` e
 		LEFT JOIN projection_turmas t
 		  ON t.codigo_academia = e.codigo_academia
@@ -550,19 +563,98 @@ func ListarEstudantes(c *gin.Context) {
 			utils.RespondWithForbiddenError(c, "academia não encontrada")
 			return
 		}
-		argsAcademia := append([]interface{}{}, args...)
-		argsAcademia = append(argsAcademia, academiaDTO.CodigoAcademia)
-		where := append([]string{}, conditions...)
-		where = append(where, fmt.Sprintf("e.codigo_academia = $%d", len(argsAcademia)))
-		whereSQL := ` WHERE ` + strings.Join(where, " AND ")
+
+		// SEC-15: construir query com filtro de vínculo
+		var where []string
+		var argsAcademia []interface{}
+		baseAcademiaQuery := baseQuery
+
+		switch vinculoParam {
+		case "atual":
+			// Vínculo atual: estudante com codigo_academia = academia E status ativo/pendente
+			where = append([]string{}, conditions...)
+			where = append(where, "e.codigo_academia = $1 AND e.status IN ('ativo', 'pendente_documentos')")
+			argsAcademia = append(argsAcademia, academiaDTO.CodigoAcademia)
+			argsAcademia = append(argsAcademia, args[1:]...) // skip potential first arg if any
+		case "anterior":
+			// Vínculo anterior: estudante que já teve vínculo com a academia mas não tem atual
+			// Usa JOIN com projection_estudante_vinculos
+			baseAcademiaQuery = selectCols + ` e
+				INNER JOIN projection_estudante_vinculos ev
+				  ON ev.estudante_id = e.id
+				 AND ev.codigo_academia = $1
+				 AND ev.desvinculado_em IS NOT NULL
+				LEFT JOIN projection_turmas t
+				  ON t.codigo_academia = e.codigo_academia
+				 AND EXISTS (
+				    SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.estudantes, '[]'::jsonb)) AS cod(codigo)
+				    WHERE cod.codigo = e.codigo_estudante
+				 )
+				WHERE e.id NOT IN (
+				    SELECT estudante_id FROM projection_estudante_vinculos
+				    WHERE codigo_academia = $1 AND desvinculado_em IS NULL
+				)`
+			argsAcademia = append(argsAcademia, academiaDTO.CodigoAcademia)
+			argsAcademia = append(argsAcademia, args[1:]...)
+			where = conditions
+		case "todos", "":
+			// Todos: estudantes que já tiveram vínculo com a academia (atual ou anterior)
+			baseAcademiaQuery = selectCols + ` e
+				INNER JOIN projection_estudante_vinculos ev
+				  ON ev.estudante_id = e.id
+				 AND ev.codigo_academia = $1
+				LEFT JOIN projection_turmas t
+				  ON t.codigo_academia = e.codigo_academia
+				 AND EXISTS (
+				    SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.estudantes, '[]'::jsonb)) AS cod(codigo)
+				    WHERE cod.codigo = e.codigo_estudante
+				 )`
+			argsAcademia = append(argsAcademia, academiaDTO.CodigoAcademia)
+			argsAcademia = append(argsAcademia, args[1:]...)
+			where = conditions
+		}
+
+		whereSQL := ``
+		if len(where) > 0 {
+			whereSQL = ` WHERE ` + strings.Join(where, " AND ")
+		}
+
+		// Para queries com JOIN, precisamos de DISTINCT no COUNT
+		countQuery := `SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e `
+		if vinculoParam == "anterior" {
+			countQuery = `SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e
+				INNER JOIN projection_estudante_vinculos ev
+				  ON ev.estudante_id = e.id
+				 AND ev.codigo_academia = $1
+				 AND ev.desvinculado_em IS NOT NULL
+				WHERE e.id NOT IN (
+				    SELECT estudante_id FROM projection_estudante_vinculos
+				    WHERE codigo_academia = $1 AND desvinculado_em IS NULL
+				)`
+		} else if vinculoParam == "todos" || vinculoParam == "" {
+			countQuery = `SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e
+				INNER JOIN projection_estudante_vinculos ev
+				  ON ev.estudante_id = e.id
+				 AND ev.codigo_academia = $1`
+		} else {
+			countQuery = `SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e
+				LEFT JOIN projection_turmas t
+				  ON t.codigo_academia = e.codigo_academia
+				 AND EXISTS (
+				    SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.estudantes, '[]'::jsonb)) AS cod(codigo)
+				    WHERE cod.codigo = e.codigo_estudante
+				 )`
+		}
+		countQuery += whereSQL
+
 		var totalGeral int
-		if err = client.DB().QueryRow(`SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e LEFT JOIN projection_turmas t ON t.codigo_academia = e.codigo_academia AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.estudantes, '[]'::jsonb)) AS cod(codigo) WHERE cod.codigo = e.codigo_estudante)`+whereSQL, argsAcademia...).Scan(&totalGeral); err != nil {
+		if err = client.DB().QueryRow(countQuery, argsAcademia...).Scan(&totalGeral); err != nil {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
 		argsAcademia = append(argsAcademia, limit, offset)
 		rows, err = client.DB().Query(
-			baseQuery+whereSQL+fmt.Sprintf(` ORDER BY e.created_at DESC LIMIT $%d OFFSET $%d`, len(argsAcademia)-1, len(argsAcademia)),
+			baseAcademiaQuery+whereSQL+fmt.Sprintf(` ORDER BY e.created_at DESC LIMIT $%d OFFSET $%d`, len(argsAcademia)-1, len(argsAcademia)),
 			argsAcademia...,
 		)
 		if err != nil {
@@ -572,6 +664,15 @@ func ListarEstudantes(c *gin.Context) {
 		defer rows.Close()
 		estudantes := scanEstudantesRows(rows)
 		anexarDeveAlterarSenha(client, "projection_estudantes", "codigo_estudante", "codigo_estudante", estudantes)
+
+		// Adicionar info de vínculo a cada estudante
+		for _, est := range estudantes {
+			est["vinculo"] = vinculoParam
+			if vinculoParam == "" {
+				est["vinculo"] = "todos"
+			}
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"estudantes":      estudantes,
 			"total":           len(estudantes),
@@ -586,25 +687,113 @@ func ListarEstudantes(c *gin.Context) {
 	}
 
 	if userType == "admin" {
-		if codigosAcademia := parseMultiValueQueryParam(c, "codigo_academia"); len(codigosAcademia) > 0 {
+		// Admin pode filtrar por codigo_academia (multi-value) e por vinculo
+		codigosAcademia := parseMultiValueQueryParam(c, "codigo_academia")
+		if len(codigosAcademia) > 0 {
 			args = append(args, pq.Array(codigosAcademia))
 			conditions = append(conditions, fmt.Sprintf("e.codigo_academia = ANY($%d)", len(args)))
 		}
 
-		query := baseQuery
-		whereSQL := ""
-		if len(conditions) > 0 {
-			whereSQL = ` WHERE ` + strings.Join(conditions, " AND ")
-			query += whereSQL
+		var adminBaseQuery string
+		var adminArgs []interface{}
+		var adminWhere []string
+		var adminCountQuery string
+
+		switch vinculoParam {
+		case "atual":
+			adminBaseQuery = baseQuery
+			adminArgs = append(adminArgs, args...)
+			adminWhere = conditions
+			adminCountQuery = `SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e
+				LEFT JOIN projection_turmas t
+				  ON t.codigo_academia = e.codigo_academia
+				 AND EXISTS (
+				    SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.estudantes, '[]'::jsonb)) AS cod(codigo)
+				    WHERE cod.codigo = e.codigo_estudante
+				 )`
+		case "anterior":
+			if len(codigosAcademia) == 0 {
+				utils.RespondWithValidationError(c, fmt.Errorf("filtro vinculo=anterior requer codigo_academia"))
+				return
+			}
+			adminBaseQuery = selectCols + ` e
+				INNER JOIN projection_estudante_vinculos ev
+				  ON ev.estudante_id = e.id
+				 AND ev.codigo_academia = ANY($1)
+				 AND ev.desvinculado_em IS NOT NULL
+				LEFT JOIN projection_turmas t
+				  ON t.codigo_academia = e.codigo_academia
+				 AND EXISTS (
+				    SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.estudantes, '[]'::jsonb)) AS cod(codigo)
+				    WHERE cod.codigo = e.codigo_estudante
+				 )
+				WHERE e.id NOT IN (
+				    SELECT estudante_id FROM projection_estudante_vinculos
+				    WHERE codigo_academia = ANY($1) AND desvinculado_em IS NULL
+				)`
+			adminArgs = append(adminArgs, pq.Array(codigosAcademia))
+			if len(args) > 1 {
+				adminArgs = append(adminArgs, args[1:]...)
+			}
+			adminWhere = conditions
+			adminCountQuery = `SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e
+				INNER JOIN projection_estudante_vinculos ev
+				  ON ev.estudante_id = e.id
+				 AND ev.codigo_academia = ANY($1)
+				 AND ev.desvinculado_em IS NOT NULL
+				WHERE e.id NOT IN (
+				    SELECT estudante_id FROM projection_estudante_vinculos
+				    WHERE codigo_academia = ANY($1) AND desvinculado_em IS NULL
+				)`
+		case "todos", "":
+			if len(codigosAcademia) == 0 {
+				// Sem filtro de academia, retorna todos os estudantes (comportamento original)
+				adminBaseQuery = baseQuery
+				adminArgs = append(adminArgs, args...)
+				adminWhere = conditions
+				adminCountQuery = `SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e
+					LEFT JOIN projection_turmas t
+					  ON t.codigo_academia = e.codigo_academia
+					 AND EXISTS (
+					    SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.estudantes, '[]'::jsonb)) AS cod(codigo)
+					    WHERE cod.codigo = e.codigo_estudante
+					 )`
+			} else {
+				adminBaseQuery = selectCols + ` e
+					INNER JOIN projection_estudante_vinculos ev
+					  ON ev.estudante_id = e.id
+					 AND ev.codigo_academia = ANY($1)
+					LEFT JOIN projection_turmas t
+					  ON t.codigo_academia = e.codigo_academia
+					 AND EXISTS (
+					    SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.estudantes, '[]'::jsonb)) AS cod(codigo)
+					    WHERE cod.codigo = e.codigo_estudante
+					 )`
+				adminArgs = append(adminArgs, pq.Array(codigosAcademia))
+				if len(args) > 1 {
+					adminArgs = append(adminArgs, args[1:]...)
+				}
+				adminWhere = conditions
+				adminCountQuery = `SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e
+					INNER JOIN projection_estudante_vinculos ev
+					  ON ev.estudante_id = e.id
+					 AND ev.codigo_academia = ANY($1)`
+			}
 		}
+
+		adminWhereSQL := ``
+		if len(adminWhere) > 0 {
+			adminWhereSQL = ` WHERE ` + strings.Join(adminWhere, " AND ")
+		}
+
 		var totalGeral int
-		if err = client.DB().QueryRow(`SELECT COUNT(DISTINCT e.id) FROM projection_estudantes e LEFT JOIN projection_turmas t ON t.codigo_academia = e.codigo_academia AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.estudantes, '[]'::jsonb)) AS cod(codigo) WHERE cod.codigo = e.codigo_estudante)`+whereSQL, args...).Scan(&totalGeral); err != nil {
+		if err = client.DB().QueryRow(adminCountQuery+adminWhereSQL, adminArgs...).Scan(&totalGeral); err != nil {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
-		args = append(args, limit, offset)
-		query += fmt.Sprintf(` ORDER BY e.created_at DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args))
-		rows, err = client.DB().Query(query, args...)
+		adminArgs = append(adminArgs, limit, offset)
+		query := adminBaseQuery + adminWhereSQL + fmt.Sprintf(` ORDER BY e.created_at DESC LIMIT $%d OFFSET $%d`, len(adminArgs)-1, len(adminArgs))
+		rows, err = client.DB().Query(query, adminArgs...)
 		if err != nil {
 			utils.RespondWithInternalError(c, err)
 			return
@@ -755,9 +944,32 @@ func GetEventosEstudante(c *gin.Context) {
 		utils.RespondWithNotFoundError(c, "estudante")
 		return
 	}
-	if !podeAuditarEstudante(c, estudante) {
-		utils.RespondWithForbiddenError(c, "acesso negado aos eventos deste estudante")
-		return
+
+	userID, _ := middleware.GetUserID(c)
+	userType, _ := middleware.GetUserType(c)
+
+	// SEC-15: para academia, filtrar eventos pelo período de vínculo
+	var periodos []projections.EstudanteVinculoDTO
+	if userType == "academia" {
+		academiaProj := getAcademiaProjection(c)
+		academiaDTO, err := academiaProj.GetByID(userID)
+		if err != nil || academiaDTO == nil {
+			utils.RespondWithForbiddenError(c, "academia não encontrada")
+			return
+		}
+		acesso, p, err := acessoAcademiaAoEstudante(c, academiaDTO.CodigoAcademia, estudante)
+		if err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		if acesso == SemAcesso {
+			utils.RespondWithForbiddenError(c, "Estudante não pertence nem pertenceu a esta academia")
+			return
+		}
+		if acesso == AcessoAnterior {
+			periodos = p
+		}
+		// AcessoAtual: periodos fica nil (sem filtro)
 	}
 
 	repository := getRepository(c)
@@ -765,6 +977,11 @@ func GetEventosEstudante(c *gin.Context) {
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
 		return
+	}
+
+	// SEC-15: filtrar eventos pelo período de vínculo (se for academia anterior)
+	if len(periodos) > 0 {
+		eventos = filtrarEventosPorPeriodos(eventos, periodos)
 	}
 
 	// SEC-14: redigir hashes de senha dos eventos antes de retornar
@@ -796,17 +1013,51 @@ func GetEventoAuditoria(c *gin.Context) {
 		return
 	}
 	userType, _ := middleware.GetUserType(c)
+	userID, _ := middleware.GetUserID(c)
+
 	if userType == "admin" {
 		// SEC-14: redigir hashes de senha mesmo para admins
 		eventoRedigido := redigirEventoSensivel(evento)
 		c.JSON(http.StatusOK, gin.H{"evento": eventoRedigido})
 		return
 	}
+
 	estudante, err := getEstudanteProjection(c).GetByID(evento.AggregateID)
-	if err != nil || estudante == nil || !podeAuditarEstudante(c, estudante) {
+	if err != nil || estudante == nil {
 		utils.RespondWithNotFoundError(c, "evento")
 		return
 	}
+
+	// SEC-15: para academia, verificar acesso e filtrar por período se for anterior
+	if userType == "academia" {
+		academiaProj := getAcademiaProjection(c)
+		academiaDTO, err := academiaProj.GetByID(userID)
+		if err != nil || academiaDTO == nil {
+			utils.RespondWithForbiddenError(c, "academia não encontrada")
+			return
+		}
+		acesso, periodos, err := acessoAcademiaAoEstudante(c, academiaDTO.CodigoAcademia, estudante)
+		if err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		if acesso == SemAcesso {
+			utils.RespondWithNotFoundError(c, "evento")
+			return
+		}
+		if acesso == AcessoAnterior {
+			// Verificar se o evento está dentro do período de vínculo
+			if !eventoDentroDoPeriodo(evento, periodos) {
+				utils.RespondWithNotFoundError(c, "evento")
+				return
+			}
+		}
+		// AcessoAtual: sem filtro adicional
+	} else if !podeAuditarEstudante(c, estudante) {
+		utils.RespondWithNotFoundError(c, "evento")
+		return
+	}
+
 	// SEC-14: redigir hashes de senha do evento
 	eventoRedigido := redigirEventoSensivel(evento)
 	c.JSON(http.StatusOK, gin.H{"evento": eventoRedigido})
@@ -870,6 +1121,26 @@ func GetMinhasAvaliacoes(c *gin.Context) {
 // GET /consultar-estudante/:codigo
 // ============================================================================
 
+// Perfil reduzido devolvido para academia anterior (SEC-15)
+type EstudantePerfilReduzido struct {
+	ID                   uuid.UUID     `json:"id"`
+	Nome                 string        `json:"nome"`
+	CodigoEstudante      string        `json:"codigo_estudante"`
+	CodigoAcademia       *string       `json:"codigo_academia"`
+	Status               string        `json:"status"`
+	StatusEscolarFund    string        `json:"status_escolar_fundamental"`
+	StatusEscolarMedio   string        `json:"status_escolar_medio"`
+	StatusSuperior       string        `json:"status_superior"`
+	VinculosPeriodos     []PeriodoVinculoDTO `json:"periodos_vinculo"`
+}
+
+type PeriodoVinculoDTO struct {
+	CodigoAcademia string      `json:"codigo_academia"`
+	VinculadoEm    time.Time   `json:"vinculado_em"`
+	DesvinculadoEm *time.Time  `json:"desvinculado_em,omitempty"`
+	VinculoAtivo   bool        `json:"vinculo_ativo"`
+}
+
 func GetEstudantePorCodigo(c *gin.Context) {
 	codigoEstudante := c.Param("codigo")
 
@@ -886,14 +1157,64 @@ func GetEstudantePorCodigo(c *gin.Context) {
 		return
 	}
 
+	// SEC-13: bloquear estudante deletado
+	if estudante.Status == "deletado" {
+		utils.RespondWithError(c, http.StatusUnauthorized, "conta indisponível. Entre em contato com a sua academia ou com o suporte.", nil)
+		return
+	}
+
 	if userType == "academia" {
 		userID, _ := middleware.GetUserID(c)
 		academiaProj := getAcademiaProjection(c)
-		academia, _ := academiaProj.GetByID(userID)
-		if academia == nil || estudante.CodigoAcademia == nil || *estudante.CodigoAcademia != academia.CodigoAcademia {
-			utils.RespondWithForbiddenError(c, "Estudante não pertence a esta academia.")
+		academiaDTO, err := academiaProj.GetByID(userID)
+		if err != nil || academiaDTO == nil {
+			utils.RespondWithForbiddenError(c, "academia não encontrada")
 			return
 		}
+
+		// SEC-15: usar helper de acesso por vínculo (permite academia atual E anterior)
+		acesso, periodos, err := acessoAcademiaAoEstudante(c, academiaDTO.CodigoAcademia, estudante)
+		if err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		if acesso == SemAcesso {
+			utils.RespondWithForbiddenError(c, "Estudante não pertence nem pertenceu a esta academia")
+			return
+		}
+
+		// SEC-12: bloquear se academia inativa
+		if academiaDTO.Status != "ativo" {
+			utils.RespondWithError(c, http.StatusUnauthorized, "academia inativa. Entre em contato com o administrador.", nil)
+			return
+		}
+
+		// Se for acesso anterior, devolver perfil reduzido
+		if acesso == AcessoAnterior {
+			vinculosDTO := make([]PeriodoVinculoDTO, len(periodos))
+			for i, p := range periodos {
+				vinculosDTO[i] = PeriodoVinculoDTO{
+					CodigoAcademia: p.CodigoAcademia,
+					VinculadoEm:    p.VinculadoEm,
+					DesvinculadoEm: p.DesvinculadoEm,
+					VinculoAtivo:   p.DesvinculadoEm == nil,
+				}
+			}
+			perfil := EstudantePerfilReduzido{
+				ID:                  estudante.ID,
+				Nome:                estudante.Nome,
+				CodigoEstudante:     estudante.CodigoEstudante,
+				CodigoAcademia:      estudante.CodigoAcademia,
+				Status:              estudante.Status,
+				StatusEscolarFund:   estudante.StatusEscolarFundamental,
+				StatusEscolarMedio:  estudante.StatusEscolarMedio,
+				StatusSuperior:      estudante.StatusSuperior,
+				VinculosPeriodos:    vinculosDTO,
+			}
+			c.JSON(http.StatusOK, gin.H{"estudante": perfil, "tipo_acesso": "anterior"})
+			return
+		}
+		// Se for acesso atual, continua para o perfil completo abaixo
 	}
 
 	var academiaInfo *gin.H
@@ -971,6 +1292,7 @@ func GetEstudantePorCodigo(c *gin.Context) {
 			"documentos":                     documentosComDownloadEstudante(estudante.CodigoEstudante, estudante.Documentos),
 			"version":                        estudante.Version,
 		},
+		"tipo_acesso": "atual",
 	})
 }
 
@@ -1176,6 +1498,15 @@ func DeletarContaEstudante(c *gin.Context) {
 	if err := repository.SaveWithAudit(estudante, audit); err != nil {
 		utils.RespondWithInternalError(c, err)
 		return
+	}
+
+	// SEC-15 / D10: ao deletar a conta, cancelar todas as inscrições ativas em serviços extras
+	// da academia anterior (o estudante já está desvinculado, então usamos CodigoAcademia)
+	if estudante.CodigoAcademia != nil {
+		if err := cancelarInscricoesServicoExtraAoSair(c, estudante.CodigoEstudante, *estudante.CodigoAcademia, "Conta deletada pelo próprio estudante", "estudante"); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
 	}
 
 	log.Printf("Estudante autodeletado: %s - Motivo: %s", estudante.CodigoEstudante, req.Motivo)

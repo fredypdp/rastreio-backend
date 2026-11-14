@@ -295,6 +295,15 @@ func decidirSolicitacaoStatus(c *gin.Context, tipo string, aprovar bool) {
 	if !salvarEventoEstudante(c, ctx) {
 		return
 	}
+
+	// SEC-15 / D10: ao desvincular, cancelar todas as inscrições ativas em serviços extras
+	if tipo == "desvinculacao" {
+		if err := cancelarInscricoesServicoExtraAoSair(c, codigoEst, codigoAcademia, "Desvinculação da academia aprovada", "academia"); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+	}
+
 	_, err = getDbClient(c).DB().Exec(`UPDATE projection_solicitacoes_status_academico SET status='aprovada',observacao_academia=$1,decidida_por=$2,decidida_at=$3,updated_at=$3 WHERE codigo_solicitacao=$4`, req.Observacao, academiaID, time.Now().UTC(), req.SolicitacaoID)
 	if err != nil {
 		utils.RespondWithInternalError(c, err)

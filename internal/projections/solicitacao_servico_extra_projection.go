@@ -102,4 +102,28 @@ func (p *SolicitacaoServicoExtraProjection) CountAtivasPorServico(servicoID uuid
 	err := p.client.DB().QueryRow(`SELECT COUNT(*) FROM projection_solicitacoes_servico_extra WHERE servico_extra_id=$1 AND status IN ('pendente','aprovada_pendente_pagamento_taxa_inscricao','vinculada')`, servicoID).Scan(&n)
 	return n, err
 }
+
+// GetAtivasPorEstudanteAcademia retorna as inscrições ativas (pendente, aprovada_pendente_pagamento_taxa_inscricao, vinculada)
+// de um estudante em uma academia específica. Usada para cancelar inscrições ao desvincular ou deletar o estudante.
+func (p *SolicitacaoServicoExtraProjection) GetAtivasPorEstudanteAcademia(codigoEstudante, codigoAcademia string) ([]uuid.UUID, error) {
+	rows, err := p.client.DB().Query(`
+		SELECT id FROM projection_solicitacoes_servico_extra
+		WHERE codigo_estudante = $1 AND codigo_academia = $2
+		  AND status IN ('pendente','aprovada_pendente_pagamento_taxa_inscricao','vinculada')
+		ORDER BY created_at DESC`, codigoEstudante, codigoAcademia)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (p *SolicitacaoServicoExtraProjection) unused() sql.NullString { return sql.NullString{} }
