@@ -3,6 +3,7 @@ package services
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -43,9 +44,17 @@ func GenerateToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// hashToken calcula o SHA-256 do token (para armazenamento seguro).
+// SEC-09: Armazenamos apenas o hash, nunca o token em claro.
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
 // SaveToken persiste um token de autenticação (verificação ou recuperação).
 //
 // FIX SVC-01: prepared statement — sem interpolação de string.
+// SEC-09: Armazena SHA-256(token) em vez do token em claro.
 func (s *EmailService) SaveToken(userID uuid.UUID, userType, tipo, email string, expiresIn time.Duration) (string, error) {
 	token, err := GenerateToken()
 	if err != nil {
@@ -53,11 +62,12 @@ func (s *EmailService) SaveToken(userID uuid.UUID, userType, tipo, email string,
 	}
 
 	expiresAt := time.Now().Add(expiresIn)
+	tokenHash := hashToken(token)
 
 	_, err = s.db.Exec(`
 		INSERT INTO auth_tokens (token, user_id, user_type, tipo, email, expires_at, usado)
 		VALUES ($1, $2, $3, $4, $5, $6, FALSE)
-	`, token, userID, userType, tipo, email, expiresAt)
+	`, tokenHash, userID, userType, tipo, email, expiresAt)
 	if err != nil {
 		return "", fmt.Errorf("erro ao salvar token: %w", err)
 	}
@@ -65,46 +75,39 @@ func (s *EmailService) SaveToken(userID uuid.UUID, userType, tipo, email string,
 	return token, nil
 }
 
-// VerifyToken valida e consome um token de autenticação.
+// VerifyToken valida e consome um token de autenticação de forma atômica.
 //
 // FIX SVC-03: erro do UPDATE não é silenciado — token não reutilizável.
+// SEC-09: Consumo atômico com UPDATE ... WHERE usado=FALSE (evita race condition).
+//         Compara SHA-256(token) com o hash armazenado.
 func (s *EmailService) VerifyToken(token, tipo string) (*TokenInfo, error) {
+	tokenHash := hashToken(token)
+
 	var info TokenInfo
 	var idStr string
 
+	// Atomic UPDATE: consome o token apenas se não usado e não expirado
+	// Retorna os dados do token se a atualização afetar exatamente 1 linha
 	err := s.db.QueryRow(`
-		SELECT user_id, user_type, email, usado, expires_at
-		FROM auth_tokens
-		WHERE token = $1 AND tipo = $2
-	`, token, tipo).Scan(&idStr, &info.UserType, &info.Email, &info.Usado, &info.ExpiresAt)
+		UPDATE auth_tokens
+		SET usado = TRUE, usado_em = CURRENT_TIMESTAMP
+		WHERE token = $1
+		  AND tipo = $2
+		  AND usado = FALSE
+		  AND expires_at > CURRENT_TIMESTAMP
+		RETURNING user_id, user_type, email, usado, expires_at
+	`, tokenHash, tipo).Scan(&idStr, &info.UserType, &info.Email, &info.Usado, &info.ExpiresAt)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("token inválido ou não encontrado")
+		// Token não encontrado, já usado, expirado ou tipo incorreto
+		// Não distinguimos entre esses casos para não vazar informação
+		return nil, fmt.Errorf("token inválido, expirado ou já utilizado")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("erro ao verificar token: %w", err)
 	}
 
-	if info.Usado {
-		return nil, fmt.Errorf("token já foi utilizado")
-	}
-
-	if time.Now().After(info.ExpiresAt) {
-		return nil, fmt.Errorf("token expirado")
-	}
-
 	info.UserID, _ = uuid.Parse(idStr)
-
-	// FIX SVC-03: marcar como usado; erro aqui impede reuso.
-	_, err = s.db.Exec(`
-		UPDATE auth_tokens
-		SET usado = TRUE, usado_em = CURRENT_TIMESTAMP
-		WHERE token = $1
-	`, token)
-	if err != nil {
-		return nil, fmt.Errorf("erro ao marcar token como usado: %w", err)
-	}
-
 	return &info, nil
 }
 

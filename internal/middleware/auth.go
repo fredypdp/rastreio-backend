@@ -20,9 +20,8 @@ import (
 )
 
 type Claims struct {
-	UserID                   uuid.UUID `json:"user_id"`
-	UserType                 string    `json:"user_type"`
-	AcessoRestritoFinanceiro bool      `json:"acesso_restrito_financeiro,omitempty"`
+	UserID     uuid.UUID `json:"user_id"`
+	UserType   string    `json:"user_type"`
 	jwt.RegisteredClaims
 }
 
@@ -71,20 +70,11 @@ func getJWTExpiryHours() int {
 }
 
 func GenerateToken(userID uuid.UUID, userType string) (string, error) {
-	return generateToken(userID, userType, false)
-}
-
-func GenerateRestrictedFinanceToken(userID uuid.UUID, userType string) (string, error) {
-	return generateToken(userID, userType, true)
-}
-
-func generateToken(userID uuid.UUID, userType string, restrictedFinance bool) (string, error) {
 	expiryHours := getJWTExpiryHours()
 
 	claims := Claims{
-		UserID:                   userID,
-		UserType:                 userType,
-		AcessoRestritoFinanceiro: restrictedFinance,
+		UserID:     userID,
+		UserType:   userType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expiryHours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -137,26 +127,59 @@ func sessaoInvalidadaPorReset(emitidoEm *jwt.NumericDate, desde sql.NullTime) bo
 	return emitidoEm.Time.Before(desde.Time.Truncate(time.Second))
 }
 
+// rotaPermitidaEstudanteInativo define as rotas que um estudante com status
+// "inativo" (desvinculado) pode acessar. Todas as leituras (GET/HEAD/OPTIONS)
+// são permitidas. Para escrita, apenas uma allowlist explícita de rotas feitas
+// para o estudante desvinculado ou de pagamento.
+func rotaPermitidaEstudanteInativo(method, fullPath string) bool {
+	// Consultar tudo o que o envolve (GET, HEAD, OPTIONS)
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	// Allowlist de rotas de escrita permitidas para estudante inativo
+	switch method + " " + fullPath {
+	// Conta
+	case "POST /logout", "PUT /alterar-senha", "PUT /me/email", "PUT /me/telefone",
+		"POST /dois-fatores/ativacao/solicitar", "POST /dois-fatores/ativacao/confirmar",
+		"POST /dois-fatores/desativacao/solicitar", "POST /dois-fatores/desativacao/confirmar",
+		"PUT /estudante/encarregado/telefone":
+		return true
+	// Pagamentos
+	case "POST /financeiro/mensalidades/pagamento",
+		"POST /financeiro/servicos-extras/taxa-inscricao/pagamento",
+		"POST /financeiro/servicos-extras/obrigacao/pagamento":
+		return true
+	// Feitas para o estudante desvinculado
+	case "PUT /estudante/bilhete-identidade",
+		"POST /estudante/solicitacoes-status/revinculacao/:codigo_academia",
+		"DELETE /estudante/conta":
+		return true
+	}
+	return false
+}
+
 // AuthMiddleware valida o JWT e verifica se o status do usuário permite acesso.
 //
 // FIX AUTH-01 (E4-AA-02): além de validar assinatura e expiração, este middleware
 // consulta a projeção de leitura correspondente ao userType e rejeita tokens de
-// usuários cujo status não permite acesso. Para estudantes, apenas "inativo"
-// bloqueia; para os demais tipos, o status deve ser "ativo". Isso garante que a
-// desativação de um usuário tem efeito imediato — sem esperar a expiração natural
-// do token.
+// usuários cujo status não permite acesso. Isso garante que a desativação de um
+// usuário tem efeito imediato — sem esperar a expiração natural do token.
 //
-// Anteriormente admins eram verificados apenas por RequireAdmin/RequireAdminRole,
-// o que deixava rotas do grupo "protected" (GET /meu-perfil, PUT /alterar-senha,
-// GET /academias, etc.) abertas para admins desativados com JWT ainda válido,
-// pois essas rotas não passam por RequireAdmin.
+// Regras de status por tipo (SEC-12/13):
+//   - admin: só "ativo"
+//   - academia: só "ativo" (exceto rotas de conta que não têm gate de estado)
+//   - estudante: qualquer status EXCETO "deletado"; "inativo" tem escrita
+//     restrita por método (rotaPermitidaEstudanteInativo)
 //
 // Fluxo:
 //  1. Extrair e validar JWT (assinatura + expiração)
 //  2. Obter dbClient do contexto (injetado pelo setupRouter)
 //  3. Consultar status do usuário na projeção correspondente (todos os tipos)
 //  4. Rejeitar com 401 se status não permitir acesso
-//  5. Injetar user_id e user_type no contexto Gin
+//  5. Aplicar regra por método para estudante "inativo" (403 CONTA_DESVINCULADA)
+//  6. Verificar reset de senha (SEC-10) e senha temporária (SEC-04)
+//  7. Injetar user_id e user_type no contexto Gin
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
@@ -197,18 +220,11 @@ func AuthMiddleware() gin.HandlerFunc {
 		// sessoes_validas_desde (SEC-04 / SEC-10).
 		estado, statusErr := consultarEstadoUsuario(c, claims.UserID, claims.UserType)
 
-		// Sessão restrita ao financeiro (estudante inativo): só as rotas de
-		// pagamento — e, se a conta ainda usa a senha temporária, as três rotas
-		// da troca obrigatória, para que o estudante inativo não fique sem saída.
-		rotaPermitidaRestrita := rotaFinanceiraRestrita(c.Request.URL.Path) ||
-			(estado != nil && estado.DeveAlterarSenha && rotaTrocaSenhaObrigatoria(c.Request.Method, c.Request.URL.Path))
-		if claims.AcessoRestritoFinanceiro && (claims.UserType != "estudante" || !rotaPermitidaRestrita) {
-			utils.RespondWithError(c, http.StatusForbidden, "sessão restrita exclusivamente ao pagamento de mensalidades", nil)
-			c.Abort()
-			return
-		}
-		if statusErr != nil && !(claims.AcessoRestritoFinanceiro && claims.UserType == "estudante" && statusInativo(statusErr)) {
-			log.Printf("❌ [AuthMiddleware] Usuário inativo ou não encontrado - UserID: %s, Type: %s: %v",
+		// statusErr != nil significa que o usuário foi encontrado mas o status
+		// bloqueia o acesso (deletado para todos, inativo para admin/academia).
+		// Para estudante inativo, statusErr é nil (o estado vem em estado.Status).
+		if statusErr != nil {
+			log.Printf("❌ [AuthMiddleware] Usuário bloqueado por status - UserID: %s, Type: %s: %v",
 				claims.UserID, claims.UserType, statusErr)
 			utils.RespondWithError(c, http.StatusUnauthorized,
 				"conta inativa ou não encontrada. Entre em contato com o suporte.", statusErr)
@@ -233,11 +249,20 @@ func AuthMiddleware() gin.HandlerFunc {
 				c.Abort()
 				return
 			}
+			// SEC-12: estudante "inativo" (desvinculado) — escrita restrita por método.
+			// Leitura (GET/HEAD/OPTIONS) sempre permitida; escrita só allowlist.
+			if claims.UserType == "estudante" && estado.Status == "inativo" &&
+				!rotaPermitidaEstudanteInativo(c.Request.Method, c.FullPath()) {
+				utils.RespondWithErrorData(c, http.StatusForbidden,
+					"conta desvinculada: apenas consulta e pagamentos estão disponíveis", nil,
+					gin.H{"code": "CONTA_DESVINCULADA"})
+				c.Abort()
+				return
+			}
 		}
 
 		c.Set("user_id", claims.UserID)
 		c.Set("user_type", claims.UserType)
-		c.Set("acesso_restrito_financeiro", claims.AcessoRestritoFinanceiro)
 
 		log.Printf("✅ [AuthMiddleware] Autenticado - UserID: %s, UserType: %s", claims.UserID, claims.UserType)
 		c.Next()
@@ -400,9 +425,21 @@ func finalizarVerificacaoStatusUsuario(userType, status string, err error) error
 		return nil
 	}
 
-	statusBloqueado := status != "ativo"
-	if userType == "estudante" {
-		statusBloqueado = status == "inativo"
+	// SEC-13: "deletado" bloqueia para todos os tipos
+	if status == "deletado" {
+		return &statusInativoError{userType: userType, status: status}
+	}
+
+	// Regras por tipo de usuário
+	statusBloqueado := false
+	switch userType {
+	case "admin":
+		statusBloqueado = status != "ativo"
+	case "academia":
+		statusBloqueado = status != "ativo"
+	case "estudante":
+		// estudante inativo passa (bloqueio de escrita é no middleware por método)
+		statusBloqueado = false
 	}
 	if statusBloqueado {
 		return &statusInativoError{userType: userType, status: status}

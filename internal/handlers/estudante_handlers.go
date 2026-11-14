@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -766,10 +767,13 @@ func GetEventosEstudante(c *gin.Context) {
 		return
 	}
 
+	// SEC-14: redigir hashes de senha dos eventos antes de retornar
+	eventosRedigidos := redigirEventosSensiveis(eventos)
+
 	c.JSON(http.StatusOK, gin.H{
 		"codigo_estudante": codigoEstudante,
-		"eventos":          eventos,
-		"total":            len(eventos),
+		"eventos":          eventosRedigidos,
+		"total":            len(eventosRedigidos),
 	})
 }
 
@@ -793,7 +797,9 @@ func GetEventoAuditoria(c *gin.Context) {
 	}
 	userType, _ := middleware.GetUserType(c)
 	if userType == "admin" {
-		c.JSON(http.StatusOK, gin.H{"evento": evento})
+		// SEC-14: redigir hashes de senha mesmo para admins
+		eventoRedigido := redigirEventoSensivel(evento)
+		c.JSON(http.StatusOK, gin.H{"evento": eventoRedigido})
 		return
 	}
 	estudante, err := getEstudanteProjection(c).GetByID(evento.AggregateID)
@@ -801,7 +807,9 @@ func GetEventoAuditoria(c *gin.Context) {
 		utils.RespondWithNotFoundError(c, "evento")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"evento": evento})
+	// SEC-14: redigir hashes de senha do evento
+	eventoRedigido := redigirEventoSensivel(evento)
+	c.JSON(http.StatusOK, gin.H{"evento": eventoRedigido})
 }
 
 func podeAuditarEstudante(c *gin.Context, estudante *projections.EstudanteDTO) bool {
@@ -1175,4 +1183,82 @@ func DeletarContaEstudante(c *gin.Context) {
 		"message":          "conta deletada com sucesso",
 		"codigo_estudante": estudante.CodigoEstudante,
 	})
+}
+
+// ============================================================================
+// SEC-14: Redação de hashes de senha em endpoints de auditoria
+// ============================================================================
+
+// redigirEventosSensiveis redige campos sensíveis (hashes de senha) de uma lista de eventos.
+func redigirEventosSensiveis(eventos []db.Event) []db.Event {
+	redigidos := make([]db.Event, len(eventos))
+	for i, e := range eventos {
+		redigidos[i] = *redigirEventoSensivel(&e)
+	}
+	return redigidos
+}
+
+// redigirEventoSensivel redige campos sensíveis (hashes de senha) de um evento.
+// Cria uma cópia do evento com o payload sanitizado.
+func redigirEventoSensivel(evento *db.Event) *db.Event {
+	// Eventos que contêm hashes de senha:
+	// - EstudanteCriadoComVinculo: SenhaHash
+	// - SenhaAlterada (estudante): NovaSenhaHash
+	// - AcademiaCriada: SenhaHash
+	// - AcademiaSenhaAlterada: NovaSenhaHash
+	// - AdminCriado: SenhaHash
+	// - AdminSenhaAlterada: NovaSenhaHash
+
+	// Se o evento ou payload for nulo/vazio, retorna o evento original
+	if evento == nil || len(evento.Payload) == 0 {
+		return evento
+	}
+
+	// Cria uma cópia do evento para não modificar o original
+	eventoRedigido := *evento
+
+	// Unmarshal do payload para map genérico
+	var payload map[string]interface{}
+	if err := json.Unmarshal(evento.Payload, &payload); err != nil {
+		// Se falhar ao fazer unmarshal, retorna o evento original (falha segura)
+		return evento
+	}
+
+	// Redigir campos sensíveis baseado no tipo do evento
+	switch evento.EventType {
+	case "EstudanteCriadoComVinculo":
+		if _, ok := payload["SenhaHash"]; ok {
+			payload["SenhaHash"] = "[REDACTED]"
+		}
+	case "SenhaAlterada": // Estudante
+		if _, ok := payload["NovaSenhaHash"]; ok {
+			payload["NovaSenhaHash"] = "[REDACTED]"
+		}
+	case "AcademiaCriada":
+		if _, ok := payload["SenhaHash"]; ok {
+			payload["SenhaHash"] = "[REDACTED]"
+		}
+	case "AcademiaSenhaAlterada":
+		if _, ok := payload["NovaSenhaHash"]; ok {
+			payload["NovaSenhaHash"] = "[REDACTED]"
+		}
+	case "AdminCriado":
+		if _, ok := payload["SenhaHash"]; ok {
+			payload["SenhaHash"] = "[REDACTED]"
+		}
+	case "AdminSenhaAlterada":
+		if _, ok := payload["NovaSenhaHash"]; ok {
+			payload["NovaSenhaHash"] = "[REDACTED]"
+		}
+	}
+
+	// Remarshal do payload sanitizado
+	redigidoJSON, err := json.Marshal(payload)
+	if err != nil {
+		// Se falhar ao fazer marshal, retorna o evento original (falha segura)
+		return evento
+	}
+
+	eventoRedigido.Payload = redigidoJSON
+	return &eventoRedigido
 }

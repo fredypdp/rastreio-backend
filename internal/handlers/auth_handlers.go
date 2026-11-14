@@ -193,11 +193,10 @@ func Login(c *gin.Context) {
 	}
 
 	// ── Verificação de status ANTES de emitir o JWT ────────────────────────
-	// Estudantes podem autenticar com qualquer status diferente de "inativo"
-	// (ex.: finalizado/regularização), enquanto admins e academias continuam
-	// exigindo status exatamente "ativo". A regra vive em avaliarStatusLogin,
-	// compartilhada com a segunda etapa do login (2FA).
-	acessoRestritoFinanceiro, msgBloqueio, statusBloqueado := avaliarStatusLogin(userType, userStatus)
+	// Estudantes podem autenticar com qualquer status diferente de "deletado"
+	// (SEC-13), enquanto admins e academias exigem status "ativo".
+	// A regra vive em avaliarStatusLogin, compartilhada com a segunda etapa do 2FA.
+	msgBloqueio, statusBloqueado := avaliarStatusLogin(userType, userStatus)
 	if statusBloqueado {
 		log.Printf("[INFO] [Login] Conta bloqueada por status — type: %s, identifier: %s, status: %s",
 			userType, identifier, userStatus)
@@ -207,51 +206,50 @@ func Login(c *gin.Context) {
 
 	// ── Verificação em duas etapas (tarefa 122) ────────────────────────────
 	// Senha e status corretos. Se o usuário ativou o 2FA, NENHUM token é emitido
-	// aqui (nem o restrito ao financeiro): envia-se o código por e-mail e a
-	// resposta pede a segunda etapa. Qualquer falha termina em erro, nunca em token.
+	// aqui: envia-se o código por e-mail e a resposta pede a segunda etapa.
+	// Qualquer falha termina em erro, nunca em token.
 	if iniciarDoisFatoresNoLogin(c, userID, userType, userName) {
 		return
 	}
 
-	responderLoginComSucesso(c, userID, userType, userName, identifier, userRole, acessoRestritoFinanceiro)
+	responderLoginComSucesso(c, userID, userType, userName, identifier, userRole)
 }
 
 // avaliarStatusLogin aplica a regra de status do login (compartilhada entre o
 // login direto e a segunda etapa do 2FA):
-//   - admin/academia: só "ativo" autentica;
-//   - estudante: qualquer status autentica; "inativo" recebe apenas o token
-//     restrito ao financeiro (restrito=true).
+//   - admin: só "ativo" autentica;
+//   - academia: só "ativo" autentica; "deletado" bloqueia;
+//   - estudante: qualquer status autentica EXCETO "deletado" (SEC-13).
 //
-// Devolve (restrito, mensagem, bloqueado).
-func avaliarStatusLogin(userType, userStatus string) (bool, string, bool) {
-	if userType == "estudante" {
-		return userStatus == "inativo", "", false
-	}
-	if userStatus == "ativo" {
-		return false, "", false
-	}
+// Devolve (mensagem, bloqueado).
+func avaliarStatusLogin(userType, userStatus string) (string, bool) {
 	switch userType {
-	case "admin":
-		return false, "conta inativa. Entre em contato com o suporte.", true
+	case "estudante":
+		if userStatus == "deletado" {
+			return "conta indisponível. Entre em contato com a sua academia ou com o suporte.", true
+		}
+		return "", false // qualquer outro estado entra; a escrita é restringida no middleware
 	case "academia":
-		return false, "academia inativa. Entre em contato com o administrador.", true
+		if userStatus == "deletado" {
+			return "conta indisponível. Entre em contato com o administrador.", true
+		}
+		if userStatus == "ativo" {
+			return "", false
+		}
+		return "academia inativa. Entre em contato com o administrador.", true
+	default: // admin
+		if userStatus == "ativo" {
+			return "", false
+		}
+		return "conta inativa. Entre em contato com o suporte.", true
 	}
-	return false, "", true
 }
 
 // responderLoginComSucesso emite o JWT e escreve a resposta de login. É o ÚNICO
 // ponto que emite token de login — usado pelo login direto e pela segunda etapa
 // do 2FA, para que as duas respostas tenham exatamente o mesmo formato.
-func responderLoginComSucesso(c *gin.Context, userID uuid.UUID, userType, userName, identifier, userRole string, acessoRestritoFinanceiro bool) {
-	var (
-		token string
-		err   error
-	)
-	if acessoRestritoFinanceiro {
-		token, err = middleware.GenerateRestrictedFinanceToken(userID, userType)
-	} else {
-		token, err = middleware.GenerateToken(userID, userType)
-	}
+func responderLoginComSucesso(c *gin.Context, userID uuid.UUID, userType, userName, identifier, userRole string) {
+	token, err := middleware.GenerateToken(userID, userType)
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
 		return

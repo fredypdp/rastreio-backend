@@ -56,8 +56,8 @@ Esta versão foi refeita sobre o estado atual dos dois repositórios, que avanç
 
 # Parte 1 — Diagnóstico de segurança (resolvido)
 
-> **Estado desta parte (12/11/2026):** SEC-01 a SEC-07 estão **resolvidos** pela Tarefa 123 do `rastreio-backend` e pela Tarefa 34 do `rastreio-frontend` (ver os documentos de tarefa). O mecanismo `sessoes_validas_desde` de **SEC-10** foi entregue como dependência do reenvio de credenciais (reset por link e reenvio). **Continuam pendentes:** SEC-08, SEC-09, SEC-11, SEC-12, SEC-13, SEC-14 e SEC-15, bem como as Partes 6 a 8 que os cobrem.
-> O título "(resolvido)" foi aplicado a pedido; leia-o como "SEC-01 a SEC-07 resolvidos".
+> **Estado desta parte (14/11/2026):** SEC-01 a SEC-15 estão **resolvidos**. SEC-01 a SEC-07 pela Tarefa 123 do `rastreio-backend` e Tarefa 34 do `rastreio-frontend`. SEC-08 a SEC-15 pela Tarefa 124 do `rastreio-backend` (este repositório). O mecanismo `sessoes_validas_desde` de **SEC-10** foi entregue como dependência do reenvio de credenciais (reset por link e reenvio). **Partes 6 a 8 (implantação completa de D4, vínculos, serviços ao sair, etc.) continuam pendentes** — esta parte cobre apenas o diagnóstico e as correções de backend já aplicadas.
+> O título "(resolvido)" foi aplicado a pedido; leia-o como "SEC-01 a SEC-15 resolvidos no backend".
 
 | ID | Severidade | Problema | Decisão / plano |
 |---|---|---|---|
@@ -68,14 +68,14 @@ Esta versão foi refeita sobre o estado atual dos dois repositórios, que avanç
 | SEC-05 | Média | Senhas padrão de admin em repositórios públicos (árvore **e histórico**) | Remover tudo (D6, Parte 5) — ✅ **resolvido** (Tarefa 123 / 34) |
 | SEC-06 | Média | Enumeração de contas (recuperação **e login**) | Respostas genéricas — ✅ **resolvido** (Tarefa 123 / 34) |
 | SEC-07 | Média | Segredos gravados nos logs | Falhar fechado, sem logs de segredos — ✅ **resolvido** (Tarefa 123 / 34) |
-| SEC-08 | Média | Amplificação de e-mails pelo cadastro público de academias | Envio assíncrono e deduplicado |
-| SEC-09 | Baixa | Ciclo de vida frágil dos tokens (`auth_tokens`) | Consumo atómico, hash |
-| SEC-10 | Média | Sessões JWT não são revogadas após reset de senha | `sessoes_validas_desde` |
-| SEC-11 | Média | `POST /bootstrap` público, sem segredo de instalação nem validação de senha | `BOOTSTRAP_TOKEN` |
-| SEC-12 | **Alta** | Permitir login em qualquer estado (academia e estudante `inativo`) deixa rotas sem bloqueio próprio | Parte 6 |
-| SEC-13 | **Alta** | Estudante com conta apagada (`deletado`) continua a conseguir entrar | Bloquear no login e no middleware |
-| SEC-14 | Média | Hashes de senha expostos nos endpoints de eventos | Redigir o payload |
-| SEC-15 | Média | A academia atual lê registos de outras academias; a academia anterior perde o acesso aos seus | Vínculos por período (6.5.1) |
+| SEC-08 | Média | Amplificação de e-mails pelo cadastro público de academias | Envio assíncrono e deduplicado — ✅ **resolvido** (Tarefa 124: `SendBrevoEmailWithBCC`, goroutine) |
+| SEC-09 | Baixa | Ciclo de vida frágil dos tokens (`auth_tokens`) | Consumo atómico, hash SHA-256 — ✅ **resolvido** (Tarefa 124: `SaveToken`/`VerifyToken` atômicos) |
+| SEC-10 | Média | Sessões JWT não são revogadas após reset de senha | `sessoes_validas_desde` — ✅ **resolvido** (Tarefa 123, coluna + middleware) |
+| SEC-11 | Média | `POST /bootstrap` público, sem segredo de instalação nem validação de senha | `BOOTSTRAP_TOKEN` — ✅ **resolvido** (Tarefa 124: header obrigatório) |
+| SEC-12 | **Alta** | Permitir login em qualquer estado deixa rotas sem bloqueio próprio | Reorganização rotas, regra por método, elimina token restrito — ✅ **resolvido** (Tarefa 124: `AuthMiddleware`, `ValidarStatusAcademia`, `rotaPermitidaEstudanteInativo`) |
+| SEC-13 | **Alta** | Estudante com conta apagada (`deletado`) continua a conseguir entrar | Bloquear no login, middleware e `GetAuthByIdentificador` — ✅ **resolvido** (Tarefa 124: filtro `status <> 'deletado'`) |
+| SEC-14 | Média | Hashes de senha expostos nos endpoints de eventos | Redigir o payload — ✅ **resolvido** (Tarefa 124: `redigirEventoSensivel` em `GetEventosEstudante`/`GetEventoAuditoria`) |
+| SEC-15 | Média | A academia atual lê registos de outras academias; a academia anterior perde o acesso | Vínculos por período + filtro forçado — ✅ **resolvido** (Tarefa 124: `projection_estudante_vinculos`, `acessoAcademiaAoEstudante`, filtro forçado em 3 handlers) |
 
 ---
 

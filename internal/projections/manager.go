@@ -352,6 +352,7 @@ var defaultRebuildOrder = []string{
 	"materias",
 	"categorias_nota",
 	"estudantes",
+	"estudante_vinculos",
 	"turmas",
 	"solicitacoes_matricula",
 	"solicitacoes_edicao_dados_estudante",

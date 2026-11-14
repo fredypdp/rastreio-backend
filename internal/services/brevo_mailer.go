@@ -115,3 +115,76 @@ func sendBrevoEmailToURL(cfg BrevoConfig, url, toEmail, toName, subject, textBod
 	}
 	return fmt.Errorf("brevo respondeu status %d", resp.StatusCode)
 }
+
+// LoadBrevoConfigForAsync carrega a configuração do Brevo sem depender de DB.
+// Usado em goroutines assíncronas (ex: SEC-08 notificação de nova academia).
+func LoadBrevoConfigForAsync() (BrevoConfig, bool) {
+	return loadBrevoConfig()
+}
+
+// brevoSendRequestWithBCC estende brevoSendRequest com BCC.
+type brevoSendRequestWithBCC struct {
+	Sender      brevoEmailAddress   `json:"sender"`
+	To          []brevoEmailAddress `json:"to"`
+	Bcc         []brevoEmailAddress `json:"bcc,omitempty"`
+	Subject     string              `json:"subject"`
+	HTMLContent string              `json:"htmlContent"`
+	TextContent string              `json:"textContent,omitempty"`
+}
+
+// SendBrevoEmailWithBCC envia email via Brevo com destinatários em BCC.
+// toEmail/toName: destinatário principal (To)
+// bccEmails: lista de emails em cópia oculta (BCC)
+func SendBrevoEmailWithBCC(cfg BrevoConfig, toEmail, toName, subject, textBody, htmlBody string, bccEmails []string) error {
+	if len(bccEmails) == 0 {
+		return sendBrevoEmail(cfg, toEmail, toName, subject, textBody, htmlBody)
+	}
+
+	bcc := make([]brevoEmailAddress, 0, len(bccEmails))
+	for _, e := range bccEmails {
+		if e != "" {
+			bcc = append(bcc, brevoEmailAddress{Email: e})
+		}
+	}
+
+	reqBody := brevoSendRequestWithBCC{
+		Sender:      brevoEmailAddress{Email: cfg.SenderEmail, Name: cfg.SenderName},
+		To:          []brevoEmailAddress{{Email: toEmail, Name: toName}},
+		Bcc:         bcc,
+		Subject:     subject,
+		HTMLContent: htmlBody,
+		TextContent: textBody,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("erro ao serializar email: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, BrevoAPIURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("erro ao montar requisição: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("api-key", cfg.APIKey)
+
+	resp, err := brevoHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("erro na requisição ao Brevo: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var ok brevoSendResponse
+		_ = json.NewDecoder(resp.Body).Decode(&ok)
+		return nil
+	}
+
+	var apiErr brevoErrorResponse
+	_ = json.NewDecoder(resp.Body).Decode(&apiErr)
+	if apiErr.Message != "" {
+		return fmt.Errorf("brevo respondeu %d: %s (%s)", resp.StatusCode, apiErr.Message, apiErr.Code)
+	}
+	return fmt.Errorf("brevo respondeu status %d", resp.StatusCode)
+}

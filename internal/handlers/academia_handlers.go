@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -25,6 +27,14 @@ import (
 	"spuri/internal/storage"
 	"spuri/internal/utils"
 )
+
+func getEnvOrDefault(key, defaultValue string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	return value
+}
 
 // ============================================================================
 // POST /dominis/academia/cadastro
@@ -482,6 +492,10 @@ func RegisterAcademiaPublica(c *gin.Context) {
 // Bloqueio: NUNCA. O cadastro já foi concluído com sucesso (evento já
 // persistido) antes desta chamada — qualquer falha aqui é só logada, no
 // mesmo padrão não bloqueante do restante do serviço de email do projeto.
+//
+// SEC-08: Envio assíncrono e deduplicado. Um único e-mail com todos os admins
+// em BCC (cópia oculta) para evitar amplificação (um cadastro = um e-mail,
+// não N e-mails). O envio ocorre em goroutine fora do ciclo da requisição.
 func notificarAdminsSobreNovaAcademiaPendente(c *gin.Context, req RegisterAcademiaRequest, codigoAcademia, codigoProvincia string) {
 	admins, err := getAdminProjection(c).GetAdminsParaNotificarNovaAcademia()
 	if err != nil {
@@ -493,7 +507,22 @@ func notificarAdminsSobreNovaAcademiaPendente(c *gin.Context, req RegisterAcadem
 		return
 	}
 
-	emailSvc := getEmailService(c)
+	// Coletar e-mails dos admins para BCC
+	adminEmails := make([]string, 0, len(admins))
+	adminNomes := make([]string, 0, len(admins))
+	for _, admin := range admins {
+		if admin.Email != "" {
+			adminEmails = append(adminEmails, admin.Email)
+			adminNomes = append(adminNomes, admin.Nome)
+		}
+	}
+	if len(adminEmails) == 0 {
+		log.Printf("[WARN] notificarAdminsSobreNovaAcademiaPendente: nenhum admin com email válido — academia %s (%s) ficou sem notificação", req.Nome, codigoAcademia)
+		return
+	}
+
+	// Capturar dados necessários para o envio assíncrono
+	// (não podemos usar o gin.Context nem o emailSvc fora da request)
 	info := services.AcademiaCadastradaInfo{
 		Nome:           req.Nome,
 		CodigoAcademia: codigoAcademia,
@@ -502,11 +531,49 @@ func notificarAdminsSobreNovaAcademiaPendente(c *gin.Context, req RegisterAcadem
 		Type:           req.Type,
 		Provincia:      codigoProvincia,
 	}
-	for _, admin := range admins {
-		if emailErr := emailSvc.SendAcademiaCadastradaEmailBrevo(admin.Email, admin.Nome, info); emailErr != nil {
-			log.Printf("[WARN] notificarAdminsSobreNovaAcademiaPendente: falha ao notificar admin %s sobre academia %s: %v", admin.Email, codigoAcademia, emailErr)
+	frontendURL := getEnvOrDefault("FRONTEND_URL", "http://localhost:3000")
+
+	// Enviar assincronamente em goroutine (SEC-08)
+	go func(emails, nomes []string, info services.AcademiaCadastradaInfo, url string) {
+		// Usar o primeiro admin como destinatário principal, os demais em BCC
+		// Nota: Brevo aceita BCC via API; aqui usamos o primeiro como "to" e logamos os BCC
+		if len(emails) > 0 {
+			painelURL := fmt.Sprintf("%s/academias", url)
+			subject := fmt.Sprintf("Nova instituição cadastrada: %s", info.Nome)
+
+			// Construir lista de nomes para o corpo do e-mail
+			nomesStr := strings.Join(nomes, ", ")
+
+			textBody := fmt.Sprintf(
+				"Olá,\n\nA instituição %s (código %s, NIF %s, %s, %s, província %s) concluiu o autocadastro no Spuri e está inativa, aguardando análise.\n\nAdministradores notificados: %s\n\nAcesse o painel para revisar: %s\n",
+				info.Nome, info.CodigoAcademia, info.NIF, info.Type, info.Nivel, info.Provincia, nomesStr, painelURL,
+			)
+
+			// Preparar HTML
+			esc := html.EscapeString
+			htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="pt-AO"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#F9FAFB;font-family:'Segoe UI',Arial,sans-serif;">
+<table role="presentation" width="100%%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:40px 16px;"><table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%%;max-width:600px;background:#FFFFFF;border-radius:24px;border:1px solid #E4E7EC;"><tr><td style="border-radius:24px 24px 0 0;height:5px;background:#465FFF;"></td></tr><tr><td style="padding:30px 40px 22px;text-align:center;border-bottom:1px solid #F2F4F7;"><span style="font-size:18px;font-weight:700;color:#172741;">Spuri</span></td></tr><tr><td style="padding:40px;"><p style="margin:0 0 6px;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#465FFF;">Novo cadastro pendente</p><h1 style="margin:0 0 16px;font-size:24px;font-weight:700;color:#172741;">Uma instituição acabou de se cadastrar</h1><p style="margin:0;font-size:15px;line-height:1.65;color:#344054;">A instituição <strong>%s</strong> concluiu o autocadastro no Spuri e está com a conta <strong>inativa</strong>, aguardando a sua análise.</p><table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-radius:16px;background:#F9FAFB;border:1px solid #F2F4F7;"><tr><td style="padding:20px 22px;"><p style="margin:0 0 6px;font-size:13px;color:#344054;"><strong>Código:</strong> %s</p><p style="margin:0 0 6px;font-size:13px;color:#344054;"><strong>NIF:</strong> %s</p><p style="margin:0 0 6px;font-size:13px;color:#344054;"><strong>Tipo:</strong> %s</p><p style="margin:0 0 6px;font-size:13px;color:#344054;"><strong>Nível:</strong> %s</p><p style="margin:0;font-size:13px;color:#344054;"><strong>Província:</strong> %s</p><p style="margin:8px 0 0;font-size:13px;color:#344054;"><strong>Admins notificados:</strong> %s</p></td></tr></table><div style="text-align:center;margin-top:28px;"><a href="%s" style="display:inline-block;padding:14px 34px;background:#465FFF;color:#FFFFFF;text-decoration:none;border-radius:12px;font-size:15px;font-weight:600;">Analisar no Painel</a></div></td></tr><tr><td style="background:#F9FAFB;padding:26px 40px;text-align:center;border-top:1px solid #F2F4F7;border-radius:0 0 24px 24px;"><p style="margin:0;font-size:13px;font-weight:600;color:#172741;">Spuri</p><p style="margin:4px 0 0;font-size:12px;color:#667085;">Confiança e eficiência na gestão académica.</p></td></tr></table></td></tr></table>
+</body></html>`,
+				esc(info.Nome), esc(info.CodigoAcademia), esc(info.NIF), esc(info.Type), esc(info.Nivel), esc(info.Provincia), esc(nomesStr), painelURL)
+
+			// Enviar via Brevo com BCC (usar primeiro email como to, demais como BCC via API)
+			cfg, ok := services.LoadBrevoConfigForAsync()
+			if !ok {
+				log.Printf("[WARN] notificarAdminsSobreNovaAcademiaPendente (async): Brevo não configurado — aviso de nova academia %s não enviado", info.CodigoAcademia)
+				return
+			}
+
+			// Enviar para o primeiro admin com os demais em BCC
+			// Nota: A API do Brevo suporta BCC; enviamos para o primeiro e passamos os demais
+			if err := services.SendBrevoEmailWithBCC(cfg, emails[0], adminNomes[0], subject, textBody, htmlBody, emails[1:]); err != nil {
+				log.Printf("[WARN] notificarAdminsSobreNovaAcademiaPendente (async): falha ao enviar e-mail para admins sobre academia %s: %v", info.CodigoAcademia, err)
+			} else {
+				log.Printf("✅ [SEC-08] Aviso de nova academia %s enviado para %d admin(s) (1 to + %d BCC)", info.CodigoAcademia, len(emails), len(emails)-1)
+			}
 		}
-	}
+	}(adminEmails, adminNomes, info, frontendURL)
 }
 
 // ============================================================================

@@ -74,6 +74,17 @@ func SolicitarServicoExtra(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "estudante não está vinculado a uma academia")
 		return
 	}
+	// SEC-12/13 handler defense in depth: bloquear estudante deletado e academia inativa
+	if est.Status == "deletado" {
+		utils.RespondWithError(c, http.StatusUnauthorized, "conta indisponível. Entre em contato com a sua academia ou com o suporte.", nil)
+		return
+	}
+	academiaProj := getAcademiaProjection(c)
+	academiaDTO, err := academiaProj.GetByCodigo(*est.CodigoAcademia)
+	if err != nil || academiaDTO == nil || academiaDTO.Status != "ativo" {
+		utils.RespondWithError(c, http.StatusUnauthorized, "academia inativa ou indisponível", nil)
+		return
+	}
 	serv, e := getServicosExtrasProjection(c).GetByID(sid)
 	if e != nil || serv == nil || !serv.Ativo || serv.CodigoAcademia != *est.CodigoAcademia {
 		utils.RespondWithForbiddenError(c, "serviço extra indisponível")

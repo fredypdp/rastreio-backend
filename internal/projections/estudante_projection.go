@@ -1325,8 +1325,8 @@ func (p *EstudanteProjection) GetAuthByIdentificador(identificador string) (*Est
 		SELECT id, nome, codigo_estudante, status, senha_hash,
 		       email, COALESCE(email_verificado, FALSE)
 		FROM projection_estudantes
-		WHERE codigo_estudante = $1
-		   OR email            = $1
+		WHERE (codigo_estudante = $1 OR email = $1)
+		  AND status <> 'deletado'
 		LIMIT 1
 	`, identificador).Scan(&e.ID, &e.Nome, &e.Codigo, &e.Status, &e.Hash,
 		&emailNull, &e.EmailVerificado)

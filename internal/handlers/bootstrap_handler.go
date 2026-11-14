@@ -3,6 +3,7 @@ package handlers
 import (
 	"log"
 	"net/http"
+	"os"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/utils"
@@ -19,6 +20,8 @@ import (
 //   - Após o primeiro uso a rota fica bloqueada (retorna 403).
 //   - Advisory lock PostgreSQL serializa requisições concorrentes.
 //   - A senha NÃO é retornada na resposta.
+//   - SEC-11: Requer header BOOTSTRAP_TOKEN igual à variável de ambiente
+//     BOOTSTRAP_TOKEN (ou BOOTSTRAP_TOKEN_DEV em não-produção).
 //
 // FIX E4-LN-02: o advisory lock era mantido retido DURANTE o polling síncrono
 // (até 10 segundos), o que bloqueava concorrentes e mantinha uma conexão de
@@ -30,6 +33,23 @@ import (
 // tornando o período de espera pela projeção um problema puramente de
 // responsividade da resposta HTTP, sem impacto em outras requisições.
 func BootstrapAdminFPP(c *gin.Context) {
+	// SEC-11: Validar header BOOTSTRAP_TOKEN antes de qualquer processamento
+	expectedToken := os.Getenv("BOOTSTRAP_TOKEN")
+	// Permitir BOOTSTRAP_TOKEN_DEV apenas em ambientes não-produção
+	if expectedToken == "" {
+		if os.Getenv("ENV") != "production" {
+			expectedToken = os.Getenv("BOOTSTRAP_TOKEN_DEV")
+		}
+	}
+	providedToken := c.GetHeader("BOOTSTRAP_TOKEN")
+	if expectedToken == "" || providedToken == "" || providedToken != expectedToken {
+		log.Printf("❌ [BOOTSTRAP] Token inválido ou ausente (IP: %s)", c.ClientIP())
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "acesso negado: token de bootstrap inválido",
+		})
+		return
+	}
+
 	log.Println("🔵 [BOOTSTRAP] Iniciando criação de Admin FPP...")
 
 	// Body obrigatório — sem fallback hardcoded.

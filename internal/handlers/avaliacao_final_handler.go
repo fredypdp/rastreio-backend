@@ -1053,12 +1053,33 @@ func GetAvaliacoesFinaisEstudante(c *gin.Context) {
 		return
 	}
 
+	// SEC-12/13 handler defense in depth: bloquear estudante deletado
+	if estudante.Status == "deletado" {
+		utils.RespondWithError(c, http.StatusUnauthorized, "conta indisponível. Entre em contato com a sua academia ou com o suporte.", nil)
+		return
+	}
+
 	if userType == "academia" {
 		academiaProj := getAcademiaProjection(c)
 		academiaDTO, _ := academiaProj.GetByID(userID)
 		if estudante.CodigoAcademia == nil || academiaDTO == nil ||
 			*estudante.CodigoAcademia != academiaDTO.CodigoAcademia {
 			utils.RespondWithForbiddenError(c, "Estudante não pertence a esta academia")
+			return
+		}
+		// SEC-12 handler defense in depth: bloquear se academia inativa
+		if academiaDTO.Status != "ativo" {
+			utils.RespondWithError(c, http.StatusUnauthorized, "academia inativa. Entre em contato com o administrador.", nil)
+			return
+		}
+		// SEC-15: forced filtering via vinculos projection (isola mesmo se codigo_academia mudou ou estudante inativo)
+		temAcesso, err := acessoAcademiaAoEstudante(c, academiaDTO.CodigoAcademia, codigoEstudante)
+		if err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		if !temAcesso {
+			utils.RespondWithForbiddenError(c, "Estudante não possui vínculo com esta academia")
 			return
 		}
 	}

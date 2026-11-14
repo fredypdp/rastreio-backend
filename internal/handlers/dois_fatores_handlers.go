@@ -366,13 +366,13 @@ func VerificarLoginDoisFatores(c *gin.Context) {
 		utils.RespondWithError(c, http.StatusUnauthorized, "usuário não encontrado", nil)
 		return
 	}
-	restrito, msg, bloqueado := avaliarStatusLogin(ident.Tipo, ident.Status)
+	msg, bloqueado := avaliarStatusLogin(ident.Tipo, ident.Status)
 	if bloqueado {
 		log.Printf("[INFO] [Login/2FA] Conta bloqueada por status — type: %s, identifier: %s, status: %s", ident.Tipo, ident.Identificador, ident.Status)
 		utils.RespondWithError(c, http.StatusUnauthorized, msg, nil)
 		return
 	}
-	responderLoginComSucesso(c, ident.ID, ident.Tipo, ident.Nome, ident.Identificador, ident.Role, restrito)
+	responderLoginComSucesso(c, ident.ID, ident.Tipo, ident.Nome, ident.Identificador, ident.Role)
 }
 
 type reenviarLoginDoisFatoresRequest struct {
@@ -411,7 +411,7 @@ func ReenviarLoginDoisFatores(c *gin.Context) {
 		utils.RespondWithError(c, http.StatusUnauthorized, services.ErrDoisFatoresDesafioInvalido.Error(), nil)
 		return
 	}
-	if _, msg, bloqueado := avaliarStatusLogin(ident.Tipo, ident.Status); bloqueado {
+	if _, msg, bloqueado := func(tipo, status string) (bool, string, bool) { msg, blocked := avaliarStatusLogin(tipo, status); return false, msg, blocked }(ident.Tipo, ident.Status); bloqueado {
 		utils.RespondWithError(c, http.StatusUnauthorized, msg, nil)
 		return
 	}

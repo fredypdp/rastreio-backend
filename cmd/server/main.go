@@ -168,6 +168,7 @@ func initProjections() error {
 
 	// ── Tier 2 — dependem de academias/cursos ────────────────────────────
 	projManager.RegisterProjection("estudantes", projections.NewEstudanteProjection(dbClient))
+	projManager.RegisterProjection("estudante_vinculos", projections.NewEstudanteVinculosProjection(dbClient))
 	projManager.RegisterProjection("turmas", projections.NewTurmasProjection(dbClient))
 
 	// ── Tier 3 — dependem de estudantes e materias ───────────────────────
@@ -355,8 +356,10 @@ func setupRouter() *gin.Engine {
 	router.GET("/consultar-academia/:codigo", middleware.OptionalAuthMiddleware(), handlers.GetAcademiaPorCodigo)
 
 	// ── Rotas de jobs assíncronos (qualquer usuário autenticado) ──────────
+	// SEC-12: academia inativa não pode acessar jobs (envio de SMS, etc.)
 	jobRoutes := router.Group("/jobs")
 	jobRoutes.Use(middleware.AuthMiddleware())
+	jobRoutes.Use(middleware.ValidarStatusAcademia())
 	{
 		jobRoutes.GET("", handlers.ListJobs)
 		jobRoutes.GET("/stream", handlers.StreamJobs)
@@ -377,9 +380,11 @@ func setupRouter() *gin.Engine {
 	// Disponível para administradores (qualquer role) e academias. Uma
 	// academia só vê/envia em nome de si própria; um admin vê tudo, com
 	// filtro opcional por codigo_academia na listagem.
+	// SEC-12: academia inativa não pode enviar mensagens (custo da plataforma)
 	comunicacaoMensagens := router.Group("/comunicacao")
 	comunicacaoMensagens.Use(middleware.AuthMiddleware())
 	comunicacaoMensagens.Use(middleware.RequireAcademiaOuAdmin())
+	comunicacaoMensagens.Use(middleware.ValidarStatusAcademia())
 	{
 		comunicacaoMensagens.POST("/mensagens", handlers.EnviarMensagemComunicacao)
 		comunicacaoMensagens.GET("/mensagens", handlers.ListarMensagensComunicacao)
@@ -405,28 +410,37 @@ func setupRouter() *gin.Engine {
 		adminComunicacao.PUT("/provedor-padrao", handlers.DefinirProvedorPadraoComunicacao)
 	}
 
-	// ── Rotas autenticadas (qualquer tipo) ────────────────────────────────
+	// ── Rotas de conta (qualquer tipo, sem gate de estado da academia) ──────
+	// Permitem que academia inativa acesse sua própria conta (logout, senha, perfil, 2FA).
+	conta := router.Group("/")
+	conta.Use(middleware.AuthMiddleware())
+	{
+		conta.POST("/logout", handlers.Logout)
+		conta.PUT("/alterar-senha", handlers.AlterarSenha)
+		conta.GET("/meu-perfil", handlers.GetMeuPerfil)
+		conta.PUT("/me/email", handlers.AtualizarMeuEmail)
+		conta.PUT("/me/telefone", handlers.AtualizarMeuTelefone)
+		// Verificação em duas etapas por e-mail (tarefa 122)
+		conta.GET("/dois-fatores", handlers.ObterDoisFatores)
+		conta.POST("/dois-fatores/ativacao/solicitar", handlers.SolicitarAtivacaoDoisFatores)
+		conta.POST("/dois-fatores/ativacao/confirmar", handlers.ConfirmarAtivacaoDoisFatores)
+		conta.POST("/dois-fatores/desativacao/solicitar", handlers.SolicitarDesativacaoDoisFatores)
+		conta.POST("/dois-fatores/desativacao/confirmar", handlers.ConfirmarDesativacaoDoisFatores)
+	}
+
+	// ── Rotas autenticadas restantes (bloqueadas para academia inativa) ───
+	// SEC-12: ValidarStatusAcademia aplica-se a tudo que não for rota de conta.
 	protected := router.Group("/")
 	protected.Use(middleware.AuthMiddleware())
+	protected.Use(middleware.ValidarStatusAcademia())
 	{
-		protected.POST("/logout", handlers.Logout)
-		protected.PUT("/alterar-senha", handlers.AlterarSenha)
-		protected.GET("/meu-perfil", handlers.GetMeuPerfil)
-		protected.PUT("/me/email", handlers.AtualizarMeuEmail)
-		protected.PUT("/me/telefone", handlers.AtualizarMeuTelefone)
-		// Verificação em duas etapas por e-mail (tarefa 122)
-		protected.GET("/dois-fatores", handlers.ObterDoisFatores)
-		protected.POST("/dois-fatores/ativacao/solicitar", handlers.SolicitarAtivacaoDoisFatores)
-		protected.POST("/dois-fatores/ativacao/confirmar", handlers.ConfirmarAtivacaoDoisFatores)
-		protected.POST("/dois-fatores/desativacao/solicitar", handlers.SolicitarDesativacaoDoisFatores)
-		protected.POST("/dois-fatores/desativacao/confirmar", handlers.ConfirmarDesativacaoDoisFatores)
 		protected.GET("/eventos-estudante/:codigo", handlers.GetEventosEstudante)
 		protected.GET("/eventos/:event_id", handlers.GetEventoAuditoria)
 		protected.GET("/verificar-integridade/:codigo", handlers.VerificarIntegridade)
 		protected.GET("/consultar-estudante/:codigo", handlers.GetEstudantePorCodigo)
 		protected.GET("/estudantes", middleware.RequireAcademiaOuAdmin(), handlers.ListarEstudantes)
 		// Tarefa 123 (SEC-04): reenvio de credenciais temporárias (academia dona ou admin fpp).
-		protected.POST("/estudantes/:codigo/credenciais/reenviar", middleware.RequireAcademiaOuAdmin(), middleware.ValidarStatusAcademia(), handlers.ReenviarCredenciaisEstudante)
+		protected.POST("/estudantes/:codigo/credenciais/reenviar", middleware.RequireAcademiaOuAdmin(), handlers.ReenviarCredenciaisEstudante)
 		protected.GET("/avaliacoes", handlers.ListarAvaliacoes)
 		protected.GET("/aprovacoes", handlers.ListarAprovacoes)
 		protected.GET("/reprovacoes", handlers.ListarReprovacoes)

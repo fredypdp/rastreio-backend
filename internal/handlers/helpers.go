@@ -155,6 +155,10 @@ func getSolicitacaoAlteracaoNIFAcademiaProjection(c *gin.Context) *projections.S
 	return projections.NewSolicitacaoAlteracaoNIFAcademiaProjection(getDbClient(c))
 }
 
+func getEstudanteVinculosProjection(c *gin.Context) *projections.EstudanteVinculosProjection {
+	return projections.NewEstudanteVinculosProjection(getDbClient(c))
+}
+
 // ============================================================================
 // Helpers de permissão admin
 // ============================================================================
@@ -281,4 +285,19 @@ func repeat(s string, n int) string {
 		result += s
 	}
 	return result
+}
+
+// ============================================================================
+// Helper de isolamento de academia (SEC-15)
+// ============================================================================
+
+// acessoAcademiaAoEstudante verifica se a academia autenticada tem acesso ao
+// estudante informado, consultando a projeção de vínculos (projection_estudante_vinculos).
+// Retorna true se a academia JÁ TEVE vínculo com o estudante (ativo ou histórico).
+// Usado em handlers de consulta (notas, faltas, avaliações) para forçar o isolamento
+// mesmo quando projection_estudantes.codigo_academia foi alterado ou o estudante
+// está inativo/desvinculado.
+func acessoAcademiaAoEstudante(c *gin.Context, codigoAcademia, codigoEstudante string) (bool, error) {
+	vinculosProj := getEstudanteVinculosProjection(c)
+	return vinculosProj.TeveVinculoAlgumVez(codigoEstudante, codigoAcademia)
 }
