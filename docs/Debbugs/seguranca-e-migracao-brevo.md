@@ -186,94 +186,124 @@ Esta versão foi refeita sobre o estado atual dos dois repositórios, que avanç
 
 ---
 
-## SEC-08 — Amplificação de e-mails pelo cadastro público de academias (Média)
+## SEC-08 — Amplificação de e-mails pelo cadastro público de academias (Média) — ✅ resolvido
 
-**Onde:** `POST /academia/cadastro` (pública) → `notificarAdminsSobreNovaAcademiaPendente` (`academia_handlers.go`, chamada na linha 425).
+**Onde:** `POST /academia/cadastro` (pública) → `notificarAdminsSobreNovaAcademiaPendente` (`academia_handlers.go`, linha 458).
 
-**O que acontece.** Cada cadastro dispara, **de forma síncrona e sequencial dentro do pedido**, um e-mail Brevo por administrador elegível, com timeout de 15 s por envio. Sem limite de taxa (SEC-02), um script pode repetir o cadastro indefinidamente.
+**O que acontece.** Cada cadastro disparava, **de forma síncrona e sequencial dentro do pedido**, um e-mail Brevo por administrador elegível, com timeout de 15 s por envio. Sem limite de taxa (SEC-02), um script pode repetir o cadastro indefinidamente.
 
 **Impacto:** inundação das caixas dos admins; consumo da quota do Brevo (bloqueando verificações e recuperações legítimas); pedidos presos até *N admins × 15 s*.
 
-**Correção (sem depender de rate limit):** enviar fora do pedido (goroutine ou fila com limite de concorrência) e **agrupar/deduplicar**: um único e-mail para todos os admins, em cópia oculta, ou um resumo periódico. A academia só é criada se o cadastro for válido (NIF, documentos), o que já reduz o abuso trivial.
+**Correção:** envio **assíncrono em goroutine** fora do ciclo da requisição + **agrupamento com BCC** (um único e-mail via Brevo, primeiro admin como `to`, demais em BCC). Implementado em:
+- `internal/handlers/academia_handlers.go:499-577` — `notificarAdminsSobreNovaAcademiaPendente` regravada para capturar dados, disparar goroutine e usar `services.SendBrevoEmailWithBCC`.
+- `internal/services/brevo_mailer.go:118-190` — `LoadBrevoConfigForAsync` (lê config sem `gin.Context`) e `SendBrevoEmailWithBCC` (envio único com lista BCC via API do Brevo).
+- `internal/services/email_service.go:43-60` — `LoadBrevoConfigForAsync` exposto no serviço.
+O cadastro da academia retorna imediatamente; falhas de e-mail só são logadas (padrão não bloqueante do projeto).
 
 ---
 
-## SEC-09 — Ciclo de vida dos tokens (Baixa)
+## SEC-09 — Ciclo de vida dos tokens (Baixa) — ✅ resolvido
 
-**Onde:** `email_service.go` (`SaveToken` 143-160, `VerifyToken` 165-203) e `migrations/001_complete_schema.sql` (tabela `auth_tokens`).
+**Onde:** `internal/services/email_service.go` (`SaveToken` linhas 70-105, `VerifyToken` linhas 110-145, `hashToken` linhas 43-59).
 
-1. **Consumo não atómico.** `VerifyToken` faz `SELECT … usado` e depois `UPDATE … WHERE token = $1` sem `AND usado = FALSE` nem verificação de linhas afetadas: dois pedidos simultâneos podem ambos passar. Correção: um único `UPDATE … SET usado = TRUE WHERE token = $1 AND tipo = $2 AND NOT usado AND expires_at > NOW() RETURNING …`.
-2. **Tokens em texto claro.** Com a opção B, o token de recuperação passa a ser **a credencial central do fluxo**. Guardar `SHA-256(token)` (256 bits de entropia dispensam bcrypt).
-3. **Tokens antigos não são invalidados** ao pedir um novo. Invalidar os pendentes do mesmo utilizador e tipo.
-4. **`cleanup_expired_tokens()` nunca é chamada** (só existe na migration) e só apagaria expirados **não usados**. Agendar a limpeza e apagar também os usados com mais de N dias.
-
----
-
-## SEC-10 — Sessões JWT não são revogadas após reset de senha (Média)
-
-**Onde:** `internal/middleware/auth.go` (JWT *stateless*, expiração padrão de 24 h; o `IssuedAt` já é gravado na linha 90).
-
-**O que acontece.** Depois de uma recuperação de senha, os tokens emitidos antes continuam válidos até expirarem. Quem já tinha entrado na conta (o motivo típico para recuperar) mantém acesso.
-
-**Correção:** coluna `sessoes_validas_desde` nas três projeções. O `AuthMiddleware` rejeita tokens com `IssuedAt` anterior. Só é atualizada por **reset por link** e por **reenvio de credenciais**; a troca normal de senha pelo próprio utilizador não a altera, para não terminar a sessão atual (Partes 3 e 4).
+1. **Consumo atómico.** `VerifyToken` agora executa um único `UPDATE auth_tokens SET usado = TRUE, used_at = NOW() WHERE token_hash = $1 AND tipo = $2 AND NOT usado AND expires_at > NOW() RETURNING user_id, user_type` — se nenhuma linha for afetada, o token é inválido/usado/expirado.
+2. **Tokens em hash SHA-256.** Nova função `hashToken(token string) string` calcula `SHA-256(token)` (hex). `SaveToken` guarda o hash; `VerifyToken` faz hash do token recebido e compara. O token em texto claro nunca é persistido.
+3. **Invalidação de tokens antigos.** `SaveToken` executa `UPDATE auth_tokens SET usado = TRUE WHERE user_id = $1 AND user_type = $2 AND tipo = $3 AND NOT usado` antes de inserir o novo — só um token pendente por utilizador/tipo.
+4. **Limpeza agendada.** Pendente (Parte 7) — a migration já tem `cleanup_expired_tokens()`; será chamada por job cron.
 
 ---
 
-## SEC-11 — `POST /bootstrap` público e sem segredo de instalação (Média)
+## SEC-10 — Sessões JWT não são revogadas após reset de senha (Média) — ✅ resolvido
 
-**Onde:** `cmd/server/main.go:313`; `internal/handlers/bootstrap_handler.go`.
+**Onde:** `internal/middleware/auth.go` (JWT *stateless*, expiração padrão de 24 h; `IssuedAt` gravado na linha 90); `internal/projections/estudante_projection.go`, `academia_projection.go`, `admin_projection.go` (coluna `sessoes_validas_desde`); `internal/handlers/auth_handlers.go` (`responderLoginComSucesso`, `finalizarVerificacaoStatusUsuario`).
 
-**O que acontece.** A rota cria o primeiro admin `fpp` e só funciona enquanto não existir nenhum admin. Não exige segredo de instalação: num deploy novo com base vazia, **o primeiro a chamar a rota vence**. A senha enviada não passa por `ValidateSenha`.
+**O que acontece.** Depois de uma recuperação de senha, os tokens emitidos antes continuavam válidos até expirarem. Quem já tinha entrado na conta mantinha acesso.
 
-**Correção:** exigir um segredo de instalação (`BOOTSTRAP_TOKEN` em variável de ambiente, enviado em cabeçalho) e validar a senha com `ValidateSenha`. A rota continua a responder `409` depois de existir um admin. Aqui o utilizador escolhe a própria senha (não é senha temporária).
-
----
-
-## SEC-12 — Permitir login em qualquer estado deixa rotas sem bloqueio próprio (Alta)
-
-Consequência direta da decisão D4. A verificação pedida está na **Parte 6** e **não confirma a premissa** de que cada funcionalidade já tem o seu bloqueio:
-
-- **Academias:** `ValidarStatusAcademia` só está aplicado a 4 grupos `/academia/*`. Hoje o único bloqueio nas restantes rotas de academia é o gate central do `AuthMiddleware`, que deixa de existir para academias. Ficariam abertos a uma academia inativa o envio de SMS a custo da plataforma, as 31 rotas de `/financeiro/*`, o reprocessamento de lotes e as leituras do grupo `protected`.
-- **Estudantes `inativo`:** hoje quem bloqueia tudo o que não é pagamento é o token restrito. Ao eliminá-lo, quatro rotas ficam sem nenhum bloqueio próprio (pedido de serviço extra e o seu cancelamento, `interrupcao` e `desvinculacao`). Uma delas, `SolicitarServicoExtra`, **tem uma verificação que não protege**: testa `CodigoAcademia == nil`, mas esse campo nunca fica nulo depois da desvinculação.
-- **O que está correto:** as leituras e os pagamentos do estudante (28 handlers `GET` e 5 financeiros) não dependem de nenhum estado e restringem os dados ao próprio; o escopo por academia das 92 rotas com parâmetro foi verificado (6.2.1).
-
-**Correção:** regra por método para o estudante `inativo` (consulta e pagamento, o resto bloqueado por padrão) e `ValidarStatusAcademia()` nas rotas de academia que não o têm (Parte 6), com testes que percorrem todas as rotas.
+**Correção:** coluna `sessoes_validas_desde` (timestamp) nas três projeções (`projection_estudantes`, `projection_academias`, `projection_admins`). O `AuthMiddleware` (linhas 180-195) rejeita tokens com `IssuedAt` anterior a esse valor.
+- Atualizada **apenas** por: reset por link (Parte 4, `FinalizarVerificacaoSenha`) e reenvio de credenciais (Parte 3, `ReenviarCredenciaisTemporarias`).
+- **Não alterada** pela troca normal de senha do próprio utilizador (`AlterarSenha`), para não terminar a sessão atual.
+- Entregue como dependência da Tarefa 123 (backend) + Tarefa 34 (frontend).
 
 ---
 
-## SEC-13 — Estudante com conta apagada continua a conseguir entrar (Alta)
+## SEC-11 — `POST /bootstrap` público e sem segredo de instalação (Média) — ✅ resolvido
 
-**Onde:** `projections/estudante_projection.go:1323-1345` (`GetAuthByIdentificador`), `auth_handlers.go:219` (`avaliarStatusLogin`) e `middleware/auth.go:320-322`.
+**Onde:** `cmd/server/main.go:313` (rota registrada); `internal/handlers/bootstrap_handler.go:30-56` (`BootstrapHandler`).
 
-**O que acontece (pelo código; não executei).** Apagar a conta de um estudante é uma *soft delete*: a linha fica em `projection_estudantes` com `status = 'deletado'` e **o hash da senha intacto** (`EstudanteDeletado` só altera `status`, `deleted_at` e `deletado_por`). O login procura por código ou e-mail **sem filtrar `deletado`**, `avaliarStatusLogin` só distingue o `inativo` e o middleware só bloqueia o `inativo` para estudantes. Resultado: um estudante apagado, por si (`Deletar`) ou pela academia (`DeletarPorAcademia`), obtém um token completo. Não acontece com admin e academia (bloqueados por `!= ativo`) nem no passo do 2FA (`carregarIdentidadeAuth` filtra `deletado`).
+**O que acontece.** A rota cria o primeiro admin `fpp` e só funciona enquanto não existir nenhum admin. Não exigia segredo de instalação: num deploy novo com base vazia, **o primeiro a chamar a rota vencia**. A senha enviada não passava por `ValidateSenha`.
 
-**Impacto:** a exclusão não revoga o acesso. O estudante apagado continua a ler os seus dados, a fazer pagamentos e a usar todas as rotas de estudante.
-
-**Correção:** o login e o middleware bloqueiam estudante `deletado` (6.3.1 e 6.3.2) e `GetAuthByIdentificador` filtra `deletado`. A decisão D4 mantém `deletado` bloqueado para os três tipos de conta.
-
----
-
-## SEC-14 — Hashes de senha expostos nos endpoints de eventos (Média)
-
-**Onde:** `GET /eventos-estudante/:codigo` (`GetEventosEstudante`, `estudante_handlers.go:721`) e `GET /eventos/:event_id` (`GetEventoAuditoria`, `:752`), via `repository.GetEventHistory` e `db.Event` (`event_store.go:15`).
-
-**O que acontece.** Devolvem os eventos **tal como estão guardados**, com o `payload` completo e sem qualquer redação. O evento de criação (`SenhaHash`) e o de troca de senha (`SenhaAlteradaEvent.NovaSenhaHash`) levam o **hash bcrypt** da senha, com essas chaves, porque os eventos não têm tags JSON. Quem pode chamar: o próprio estudante, a **academia** (qualquer estudante com o seu `codigo_academia`, incluindo os desvinculados, ver 6.5.1) e os admins.
-
-**Impacto:** a academia, ou quem comprometer a conta de uma academia, obtém hashes de senhas de estudantes para quebra offline. Com a regra antiga (senha = código) seria trivial; com a senha temporária de 8 caracteres (≈ 46 bits) é custoso, mas o hash da senha que o estudante escolhe depois costuma ser fraco.
-
-**Correção:** remover do `payload`, antes de responder, `SenhaHash`, `NovaSenhaHash` e qualquer chave terminada em `Hash`, nos dois handlers. A redação só altera a resposta; o evento guardado não muda. Teste: nenhuma resposta contém `$2a$` nem `$2b$`.
+**Correção:** exigir header `BOOTSTRAP_TOKEN` com o valor da variável de ambiente `BOOTSTRAP_TOKEN` (obrigatório em produção). Implementado em:
+- `internal/handlers/bootstrap_handler.go:30-56` — valida header obrigatório, compara com `os.Getenv("BOOTSTRAP_TOKEN")`, retorna `401` se ausente ou inválido, `403` se não configurado no servidor. Valida senha com `ValidateSenha` (mínimo 8 chars, maiúscula, minúscula, número, símbolo). Retorna `409` se já existe admin.
+- Variável `BOOTSTRAP_TOKEN` deve ser definida no ambiente de produção antes do primeiro deploy.
 
 ---
 
-## SEC-15 — Isolamento entre academias: a atual lê registos das anteriores e a anterior perde o acesso (Média)
+## SEC-12 — Permitir login em qualquer estado deixa rotas sem bloqueio próprio (Alta) — ✅ resolvido
 
-**Onde:** `GetNotasEstudante` (`notas_handlers.go:380-387`), `GetFaltasEstudante` (`faltas_handlers.go:354-361`), `GetAvaliacoesFinaisEstudante` (`avaliacao_final_handler.go:1059-1067`), `GetEventosEstudante` (`estudante_handlers.go:721`), `GetEstudantePorCodigo` (`estudante_handlers.go:847-937`) e `canAccessEstudanteDocument`.
+**Onde:** `internal/middleware/auth.go` (`AuthMiddleware` linhas 20-448, `ValidarStatusAcademia` linhas 420-448, `rotaPermitidaEstudanteInativo` linhas 450-495); `cmd/server/main.go` (reestruturação de rotas linhas 357-472); `internal/handlers/auth_handlers.go` (`avaliarStatusLogin` linhas 219-277); handlers de defesa em profundidade em `servico_extra_solicitacao_handlers.go`, `notas_handlers.go`, `faltas_handlers.go`, `avaliacao_final_handler.go`.
 
-**O que acontece.** Estes handlers autorizam pela academia do **último vínculo** (`estudante.CodigoAcademia`) e depois carregam os registos **de todas as academias** (`GetByEstudante(codigo)`), filtrando apenas se o chamador passar `codigos_academia` na consulta. Num estudante que passou da academia A para a B: **B lê as notas, faltas, avaliações e eventos registados por A**, e **A é barrada logo na autorização**, deixando de ver o que ela própria registou. (Turmas e finanças já filtram por academia.)
+**O que acontece.** A decisão D4 permitiu login em qualquer estado, mas as rotas não tinham bloqueio próprio:
+- **Academias:** `ValidarStatusAcademia` só estava em 4 grupos `/academia/*`. As demais (financeiro, jobs, protected) ficavam abertas a academia `inativa`.
+- **Estudantes `inativo`:** o token restrito (SEC-10) bloqueava tudo exceto pagamentos. Ao eliminá-lo, 4 rotas ficavam sem proteção (serviço extra, cancelamento, interrupção, desvinculação). `SolicitarServicoExtra` testava `CodigoAcademia == nil` que nunca é nulo pós-desvinculação.
+
+**Correção:**
+1. **Reestruturação de rotas** (`cmd/server/main.go:357-472`): dois grupos principais — `conta` (apenas autenticação, sem bloqueio de estado) e `protected` (exige `ValidarStatusAcademia` para academia, regra por método para estudante).
+2. **Middleware** (`internal/middleware/auth.go`):
+   - `rotaPermitidaEstudanteInativo`: allowlist por método — `GET /estudante/meu-perfil`, `PUT /estudante/alterar-senha`, `POST /estudante/logout`, rotas 2FA, rotas de pagamento, `GET /estudante/bilhete-identidade`, `POST /estudante/revinculacao`, `DELETE /estudante/conta`.
+   - `AuthMiddleware` reescrito: aplica regra por método a estudante `inativo`; academia `inativa` só passa no grupo `conta`.
+   - `finalizarVerificacaoStatusUsuario` atualizada: bloqueia `deletado` para **todos** os tipos (estudante, academia, admin).
+   - Token restrito de finanças **eliminado** (era dependência do SEC-10).
+3. **Login** (`auth_handlers.go:219-277`): `avaliarStatusLogin` bloqueia `deletado` para estudante/academia; permite `inativo`, `pendente_ativacao`, `pendente_validacao`. `responderLoginComSucesso` simplificada (um só `GenerateToken`).
+4. **Defesa em profundidade nos handlers** (SEC-12/13): `GetNotasEstudante`, `GetFaltasEstudante`, `GetAvaliacoesFinaisEstudante`, `SolicitarServicoExtra` verificam `status != 'deletado'` (estudante) e `academia.Status == 'ativo'` antes de processar.
+
+---
+
+## SEC-13 — Estudante com conta apagada continua a conseguir entrar (Alta) — ✅ resolvido
+
+**Onde:** `internal/projections/estudante_projection.go:1321-1343` (`GetAuthByIdentificador`); `internal/handlers/auth_handlers.go:219-277` (`avaliarStatusLogin`); `internal/middleware/auth.go:170-195` (verificação no `AuthMiddleware`); handlers de defesa em profundidade.
+
+**O que acontece.** Apagar a conta de um estudante é *soft delete*: a linha fica em `projection_estudantes` com `status = 'deletado'` e o hash da senha intacto. O login procurava por código ou e-mail **sem filtrar `deletado`**, `avaliarStatusLogin` só distinguia `inativo` e o middleware só bloqueava `inativo` para estudantes. Resultado: um estudante apagado obtinha token completo. Não acontecia com admin/academia (bloqueados por `!= ativo`) nem no 2FA (`carregarIdentidadeAuth` filtra `deletado`).
+
+**Impacto:** a exclusão não revogava o acesso. O estudante apagado continuava a ler dados, fazer pagamentos e usar todas as rotas.
+
+**Correção:** bloqueio em três camadas:
+1. **Projeção** (`estudante_projection.go:1321-1343`): `GetAuthByIdentificador` adiciona `AND status <> 'deletado'` no `WHERE` — estudante `deletado` nunca é retornado para autenticação.
+2. **Login** (`auth_handlers.go:219-277`): `avaliarStatusLogin` retorna erro `"conta indisponível"` para `status == 'deletado'` (estudante e academia).
+3. **Middleware** (`auth.go:170-195`): `AuthMiddleware` verifica `userDTO.Status == "deletado"` para estudante e academia e retorna `401`.
+4. **Defesa em profundidade** nos handlers de leitura (`GetNotasEstudante`, `GetFaltasEstudante`, `GetAvaliacoesFinaisEstudante`, `SolicitarServicoExtra`): verificam `estudante.Status == "deletado"` antes de processar e retornam `401`.
+A decisão D4 mantém `deletado` bloqueado para os três tipos de conta.
+
+---
+
+## SEC-14 — Hashes de senha expostos nos endpoints de eventos (Média) — ✅ resolvido
+
+**Onde:** `internal/handlers/estudante_handlers.go` — `GetEventosEstudante` (linhas 748-805), `GetEventoAuditoria` (linhas 1186-1260); `repository.GetEventHistory` + `db.Event` (`event_store.go:15`).
+
+**O que acontece.** Devolviam os eventos **tal como estão guardados**, com o `payload` completo. O evento de criação (`SenhaHash`) e o de troca de senha (`SenhaAlteradaEvent.NovaSenhaHash`) levam o **hash bcrypt** da senha. Quem pode chamar: o próprio estudante, a **academia** (qualquer estudante com o seu `codigo_academia`) e os admins.
+
+**Impacto:** a academia, ou quem comprometer a conta de uma academia, obtinha hashes de senhas para quebra offline.
+
+**Correção:** funções de redação adicionadas em `estudante_handlers.go`:
+- `redigirEventoSensivel(event *db.Event) *db.Event` — cópia do evento com `payload` limpo (remove chaves `SenhaHash`, `NovaSenhaHash`, `*Hash`).
+- `redigirEventosSensiveis(events []*db.Event) []*db.Event` — aplica a anterior a uma lista.
+Aplicadas em `GetEventosEstudante` (linha 798) e `GetEventoAuditoria` (linha 1255). O evento guardado não muda; só a resposta é limpa. Teste: nenhuma resposta contém `$2a$` nem `$2b$`.
+
+---
+
+## SEC-15 — Isolamento entre academias: a atual lê registos das anteriores e a anterior perde o acesso (Média) — ✅ resolvido
+
+**Onde:** `internal/handlers/notas_handlers.go:397` (`GetNotasEstudante`), `faltas_handlers.go:371` (`GetFaltasEstudante`), `avaliacao_final_handler.go:1077` (`GetAvaliacoesFinaisEstudante`); nova projeção `internal/projections/estudante_vinculos_projection.go`; `internal/handlers/helpers.go:158, 295` (`getEstudanteVinculosProjection`, `acessoAcademiaAoEstudante`); `internal/projections/manager.go:348` (rebuild order); `migrations/136_estudante_vinculos.sql`.
+
+**O que acontece.** Estes handlers autorizavam pela academia do **último vínculo** (`estudante.CodigoAcademia`) e depois carregavam os registos **de todas as academias** (`GetByEstudante(codigo)`), filtrando apenas se o chamador passasse `codigos_academia` na query string. Num estudante que passou da academia A para a B: **B lia as notas, faltas e avaliações registadas por A**, e **A era barrada logo na autorização**, perdendo o acesso ao que ela própria registou.
 
 **Impacto:** exposição de dados entre instituições e perda de acesso de cada academia à sua própria informação.
 
-**Correção:** vínculos por período e filtro forçado por `codigo_academia`, como decidido em 6.5.1. A metade barata (forçar o filtro nas três leituras) pode ser feita já, sem a projeção nova.
+**Correção:** vínculos históricos + filtro forçado por academia do chamador.
+1. **Nova projeção `projection_estudante_vinculos`** (`estudante_vinculos_projection.go`): reconstrói histórico a partir dos eventos `EstudanteCriadoComVinculo`, `EstudanteReintegrado`, `EstudanteDesvinculadoDaAcademia`. Cada linha guarda `estudante_id`, `codigo_academia`, `vinculado_em`, `desvinculado_em` (NULL = ativo). Índices por academia, por estudante, por par; constraint única impede dois vínculos ativos com a mesma academia.
+2. **Rebuild order** (`manager.go:348`): `"estudante_vinculos"` entre `"estudantes"` e `"turmas"`.
+3. **Helper `acessoAcademiaAoEstudante`** (`helpers.go:295`): chama `TeveVinculoAlgumVez` na projeção — retorna `true` se a academia **já teve** vínculo com o estudante (ativo ou histórico).
+4. **Filtro forçado nas 3 rotas** (`notas_handlers.go:397`, `faltas_handlers.go:371`, `avaliacao_final_handler.go:1077`): após confirmar vínculo via helper, **ignora** qualquer `codigos_academia` vindo na query e **injeta** `filtros.codigosAcademia = []string{academiaDTO.CodigoAcademia}`. O estudante continua a ver tudo (sem filtro de academia).
+Fora de escopo desta tarefa (Partes 6.5.1/6.5.2/6.5.3): perfil reduzido para academia anterior, filtro de eventos por período de vínculo, parâmetro `vinculo=` na lista de estudantes, cancelamento de inscrições ao desvincular/apagar, avisos no frontend.
 
 ---
 
