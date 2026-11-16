@@ -238,8 +238,15 @@ func TestCredenciaisTemporarias01CadastroEnviaSenhaAleatoriaPorSMSEExigeTroca(t 
 	if r, _ := chamarJSON(fx, http.MethodPut, "/alterar-senha", token, map[string]any{"senha_atual": senha, "nova_senha": senha}); r.Code != http.StatusUnprocessableEntity && r.Code != http.StatusBadRequest {
 		t.Fatalf("nova senha igual à atual deveria ser recusada, recebi %d: %s", r.Code, r.Body.String())
 	}
-	if r, _ := chamarJSON(fx, http.MethodPut, "/alterar-senha", token, map[string]any{"senha_atual": senha, "nova_senha": "MinhaSenhaNova#9"}); r.Code != http.StatusOK {
+	r, trocada := chamarJSON(fx, http.MethodPut, "/alterar-senha", token, map[string]any{"senha_atual": senha, "nova_senha": "MinhaSenhaNova#9"})
+	if r.Code != http.StatusOK {
 		t.Fatalf("troca da senha temporária: %d %s", r.Code, r.Body.String())
+	}
+	// Tarefa 127: a troca da senha temporária encerra as sessões emitidas antes (esta
+	// incluída) e devolve o token novo, que passa a ser o da sessão do titular.
+	token, _ = trocada["token"].(string)
+	if token == "" {
+		t.Fatalf("a troca da senha temporária deve devolver um token novo: %v", trocada)
 	}
 	// O evento de troca de senha chega à projeção como no runtime real.
 	aplicarEventosEstudante(t, fx, dataMap(resp)["id"].(string), ultimoEvento)

@@ -312,7 +312,10 @@ func setupRouter() *gin.Engine {
 	router.POST("/login/dois-fatores/reenviar", handlers.ReenviarLoginDoisFatores)
 	router.POST("/bootstrap", handlers.BootstrapAdminFPP)
 	router.POST("/solicitacao-matricula", handlers.CriarSolicitacaoMatricula)
-	router.POST("/academia/cadastro", handlers.RegisterAcademiaPublica)
+	// SEC-08 (Tarefa 127): cada cadastro público dispara um e-mail aos admins; o
+	// limite por IP (rajada de 10, reposição de 1 a cada 3 min) trava o envio em
+	// massa sem afetar o uso normal (cadastros de academias são raros).
+	router.POST("/academia/cadastro", middleware.RateLimitMiddleware(middleware.NewRateLimiter(rate.Every(3*time.Minute), 10, time.Hour)), handlers.RegisterAcademiaPublica)
 	// Search and payment have independent public financial rate limits so an
 	// exhausted search bucket cannot suppress a legitimate payment attempt.
 	router.GET("/solicitacao-matricula/busca", middleware.RateLimitMiddleware(middleware.NewRateLimiter(rate.Every(time.Minute/20), 5, time.Minute)), handlers.BuscarSolicitacoesMatricula)

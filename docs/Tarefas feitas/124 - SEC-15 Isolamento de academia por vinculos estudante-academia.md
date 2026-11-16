@@ -167,3 +167,14 @@ Implementada a **projeção de vínculos estudante↔academia** (`projection_est
 - [x] `gofmt -l .` vazio; `go build` e `go vet` limpos
 - [x] `go test ./...` — todos `ok`
 - [x] Estado trocado para **feito**, secção **Resultado** adicionada, documento em `docs/Tarefas feitas/`
+
+---
+
+## Errata (Tarefa 127)
+
+A verificação independente de 14/11/2026 encontrou, neste documento:
+
+- **Base desatualizada:** diz "gerado sobre `4759474`", anterior à Tarefa 123. O estado real de `main` já incluía a 123.
+- **Testes de integração não executados:** os 5 testes que falhavam depois desta tarefa (listagem de estudantes, busca livre, faltas por período, recuperação de senha e 2FA do estudante inativo) só foram revelados quando a suíte correu em banco novo. Foram corrigidos na Tarefa 127.
+- **URL de rebuild incorreta:** a rota real é `POST /admin/projections/rebuild/:name` (admin FPP) e, com o catch-up automático do `Manager`, o rebuild manual da projeção de vínculos deixou de ser necessário.
+- **Cobertura:** o commit `0428571` também alterou SEC-08 a SEC-14, que este documento não descreve (ver Tarefa 127).

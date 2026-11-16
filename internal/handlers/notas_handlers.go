@@ -389,10 +389,6 @@ func GetNotasEstudante(c *gin.Context) {
 			utils.RespondWithNotFoundError(c, "academia")
 			return
 		}
-		if estudante.CodigoAcademia == nil || *estudante.CodigoAcademia != academiaDTO.CodigoAcademia {
-			utils.RespondWithForbiddenError(c, "Estudante não pertence a esta academia")
-			return
-		}
 		// SEC-12 handler defense in depth: bloquear se academia inativa
 		if academiaDTO.Status != "ativo" {
 			utils.RespondWithError(c, http.StatusUnauthorized, "academia inativa. Entre em contato com o administrador.", nil)

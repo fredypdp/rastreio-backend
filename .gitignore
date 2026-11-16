@@ -41,3 +41,6 @@ Thumbs.db
 
 # Mega session credentials
 data/mega_session.json
+
+# Pasta criada pelos testes de armazenamento local
+/data/

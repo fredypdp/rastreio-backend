@@ -65,6 +65,8 @@ func (p *EstudanteVinculosProjection) Handle(event db.Event) error {
 		return p.handleEstudanteReintegrado(event)
 	case "EstudanteDesvinculadoDaAcademia":
 		return p.handleEstudanteDesvinculadoDaAcademia(event)
+	case "EstudanteDeletado":
+		return p.handleEstudanteDeletado(event)
 	}
 	return nil
 }
@@ -309,24 +311,38 @@ func (p *EstudanteVinculosProjection) handleEstudanteDesvinculadoDaAcademia(even
 	return nil
 }
 
+// handleEstudanteDeletado fecha os períodos de vínculo ainda abertos do estudante
+// apagado (idempotente: não toca nos que já estão fechados).
+func (p *EstudanteVinculosProjection) handleEstudanteDeletado(event db.Event) error {
+	_, err := p.client.DB().Exec(`
+		UPDATE projection_estudante_vinculos
+		SET desvinculado_em = $1
+		WHERE estudante_id = $2 AND desvinculado_em IS NULL
+	`, event.OccurredAt, event.AggregateID)
+	if err != nil {
+		return fmt.Errorf("handleEstudanteDeletado: exec error: %w", err)
+	}
+	return nil
+}
+
 // ============================================================================
 // DTOs de leitura
 // ============================================================================
 
 type EstudanteVinculoDTO struct {
-	ID                 int64      `json:"id"`
-	EstudanteID        uuid.UUID  `json:"estudante_id"`
-	CodigoEstudante    string     `json:"codigo_estudante"`
-	CodigoAcademia     string     `json:"codigo_academia"`
-	TipoEnsino         string     `json:"tipo_ensino"`
-	AnoAcademico       string     `json:"ano_academico"`
-	EventoTipo         string     `json:"evento_tipo"`
-	EventoVersion      int        `json:"evento_version"`
-	VinculadoEm        time.Time  `json:"vinculado_em"`
-	DesvinculadoEm     *time.Time `json:"desvinculado_em,omitempty"`
-	DeletedAt          *time.Time `json:"deleted_at,omitempty"`
-	DeletedBy          *uuid.UUID `json:"deleted_by,omitempty"`
-	VinculoAtivo       bool       `json:"vinculo_ativo"`
+	ID              int64      `json:"id"`
+	EstudanteID     uuid.UUID  `json:"estudante_id"`
+	CodigoEstudante string     `json:"codigo_estudante"`
+	CodigoAcademia  string     `json:"codigo_academia"`
+	TipoEnsino      string     `json:"tipo_ensino"`
+	AnoAcademico    string     `json:"ano_academico"`
+	EventoTipo      string     `json:"evento_tipo"`
+	EventoVersion   int        `json:"evento_version"`
+	VinculadoEm     time.Time  `json:"vinculado_em"`
+	DesvinculadoEm  *time.Time `json:"desvinculado_em,omitempty"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy       *uuid.UUID `json:"deleted_by,omitempty"`
+	VinculoAtivo    bool       `json:"vinculo_ativo"`
 }
 
 func scanEstudanteVinculo(row *sql.Row) (*EstudanteVinculoDTO, error) {

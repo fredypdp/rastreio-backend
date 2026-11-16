@@ -44,7 +44,7 @@ Esta versão foi refeita sobre o estado atual dos dois repositórios, que avanç
 | D1  | **Eliminar** os três rate limiters desativados (`GlobalRateLimit`, `LoginRateLimit`, `EmailRateLimit`)                                                                                                                                                                                                                                                                                                                                                                                                                                | Parte 7                                                                                                         |
 | D2  | **Parar de usar senhas padrão.** Toda conta criada por terceiros recebe uma senha temporária aleatória de **8 caracteres alfanuméricos** (8 é o mínimo permitido: `ValidateSenha` exige 8 a 128), com **troca obrigatória** no primeiro acesso                                                                                                                                                                                                                                                                                        | Parte 3                                                                                                         |
 | D3  | **Entrega das credenciais:** estudante e academia â†’ **SMS**, pela função padronizada de envio do módulo de comunicação, **só em `ENV=production`**. **Administrador â†’ apenas e-mail (Brevo)**                                                                                                                                                                                                                                                                                                                                         | Parte 3                                                                                                         |
-| D4  | **Estudante e academia podem fazer login em qualquer estado da conta** (exceto `deletado`, nos dois). Admin continua a exigir `ativo`. O estudante **consulta tudo o que o envolve e paga as suas contas em qualquer estado geral (`ativo`, `pendente_documentos`, `inativo`) e em qualquer estado académico** (`inativo`, `em_andamento`, `finalizado` em fundamental, médio e superior). O `inativo` (desvinculado) passa a ter token normal; as demais escritas dele ficam bloqueadas por padrão. O token restrito é eliminado     | Parte 6 (a verificação pedida **não confirma a premissa por completo**, nem para academias nem para estudantes) |
+| D4  | **O estudante pode fazer login em qualquer estado da conta** (exceto `deletado`). **Academia e admin continuam a exigir `ativo`** (a exceção para academias foi avaliada e não adotada na Tarefa 127: exigiria gate por rota e tela própria no frontend; é o mais seguro). O estudante **consulta tudo o que o envolve e paga as suas contas em qualquer estado geral (`ativo`, `pendente_documentos`, `inativo`) e em qualquer estado académico** (`inativo`, `em_andamento`, `finalizado` em fundamental, médio e superior). O `inativo` (desvinculado) passa a ter token normal; as demais escritas dele ficam bloqueadas por padrão. O token restrito é eliminado     | Parte 6 (a verificação pedida **não confirma a premissa por completo**, nem para academias nem para estudantes) |
 | D5  | **Recuperação de senha por link (opção B):** o utilizador define a própria senha via link Brevo; nenhuma senha viaja por e-mail                                                                                                                                                                                                                                                                                                                                                                                                       | Parte 4                                                                                                         |
 | D6  | **Remover por completo** as senhas padrão de admin (árvore atual e histórico git)                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Parte 5                                                                                                         |
 | D7  | Eliminar tudo o que envia e-mail fora do Brevo (EmailJS, SMTP, `gerar-token/*`)                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Parte 2                                                                                                         |
@@ -54,35 +54,35 @@ Esta versão foi refeita sobre o estado atual dos dois repositórios, que avanç
 
 ---
 
-# Parte 1 — Diagnóstico de segurança (resolvido)
+# Parte 1 — Diagnóstico de segurança
 
-> **Estado desta parte (14/11/2026):** SEC-01 a SEC-15 estão **resolvidos**. SEC-01 a SEC-07 pela Tarefa 123 do `rastreio-backend` e Tarefa 34 do `rastreio-frontend`. SEC-08 a SEC-15 pela Tarefa 124 do `rastreio-backend` (este repositório). O mecanismo `sessoes_validas_desde` de **SEC-10** foi entregue como dependência do reenvio de credenciais (reset por link e reenvio). **Todas as partes (1 a 8) estão CONCLUÍDAS ✅**.
-> O título "(resolvido)" foi aplicado a pedido; leia-o como "SEC-01 a SEC-15 resolvidos no backend".
+> **Estado desta parte (14/11/2026):** SEC-01 a SEC-15 foram implementados nas Tarefas 123, 124 e 125 do `rastreio-backend` e 34 a 36 do `rastreio-frontend`, e corrigidos/completados na Tarefa 127 (backend) e 37 (frontend). O mecanismo `sessoes_validas_desde` de **SEC-10** foi entregue como dependência do reenvio de credenciais (reset por link e reenvio).
+> **Verificação independente (14/11/2026):** encontrou lacunas (listagem de estudantes, SEC-15, tokens pendentes, sessões na troca da senha temporária, falha aberta do middleware, bootstrap, resíduos), fechadas pela **Tarefa 127 (backend) e Tarefa 37 (frontend)**. **Continuam por conta do titular, por não serem código:** reescrever o histórico git e rodar a rotação das senhas (SEC-05, Parte 5).
 >
-> **Todas as partes concluídas (14/11/2026):**
+> **Situação por parte (14/11/2026):**
 > - **Parte 2 (eliminar EmailJS/SMTP/gerar-token):** ✅ backend (Tarefa 123 `rastreio-backend`) + ✅ frontend (Tarefa 35 `rastreio-frontend`).
 > - **Parte 3 (credenciais temporárias D2/D3):** ✅ backend (Tarefa 123 `rastreio-backend`) + ✅ frontend (Tarefa 34 `rastreio-frontend`).
 > - **Parte 4 (recuperação por link, opção B):** ✅ backend (Tarefa 123 `rastreio-backend`) + ✅ frontend (já usa `emailAuthService`).
-> - **Parte 6 (login por estado da conta D4):** ✅ backend (Tarefa 124 `rastreio-backend`) + ✅ frontend (pendente: Tarefa do `rastreio-frontend` para remover sessão restrita e avisos de exclusão).
-> - **Partes 7 e 8 (rate limiters e ordem de execução):** ✅ backend (Tarefa 124 `rastreio-backend` para Parte 7; Parte 8 é documento de referência).
+> - **Parte 6 (login por estado da conta D4):** ✅ backend (Tarefa 124 + 127) + ✅ frontend (Tarefa 36 removeu a sessão restrita; Tarefa 37 acrescenta aviso de exclusão, tratamento de 401/`CONTA_DESVINCULADA` e filtro de vínculo para a academia). D4 aplica-se ao **estudante**; a academia só entra ativa.
+> - **Partes 7 e 8 (rate limiters e ordem de execução):** ✅ backend (limite de taxa por IP apenas no cadastro público de academias, Tarefa 127; login e recuperação ficam sem limite por risco de bloquear utilizadores atrás de CGNAT; a limpeza agendada de tokens segue pendente). Parte 8 é documento de referência.
 
 | ID | Severidade | Problema | Decisão / plano |
 |---|---|---|---|
 | SEC-01 | **Crítica** | Tomada de conta sem autenticação via `gerar-token/recuperacao` | Eliminar rotas (Parte 2) — ✅ **resolvido** (Tarefa 123 / 34) |
 | SEC-02 | Alta | Rate limiters são no-ops | **Eliminar o código morto** (D1, Parte 7), com risco residual declarado — ✅ **resolvido** (Tarefa 123 / 34) |
-| SEC-03 | Alta | Reset de senha sem prova de posse do e-mail | Opção B (D5, Parte 4) — ✅ **resolvido** (Tarefa 123 / 34) |
+| SEC-03 | Alta | Reset de senha sem prova de posse do e-mail | Opção B (D5, Parte 4) — ✅ **resolvido** (Tarefa 123 / 34; **Tarefa 127**: um novo pedido e um reset concluído invalidam os links pendentes) |
 | SEC-04 | Alta | Senha inicial = código do utilizador, sem troca obrigatória | Senhas temporárias (D2/D3, Parte 3) — ✅ **resolvido** (Tarefa 123 / 34) |
-| SEC-05 | Média | Senhas padrão de admin em repositórios públicos (árvore **e histórico**) | Remover tudo (D6, Parte 5) — ✅ **resolvido** (Tarefa 123 / 34) |
+| SEC-05 | Média | Senhas padrão de admin em repositórios públicos (árvore **e histórico**) | Remover tudo (D6, Parte 5) — ⚠️ **árvore limpa** nos dois repositórios (Tarefa 123/34/127); **histórico git e rotação das senhas pendentes** (ação do titular, Parte 5) |
 | SEC-06 | Média | Enumeração de contas (recuperação **e login**) | Respostas genéricas — ✅ **resolvido** (Tarefa 123 / 34) |
 | SEC-07 | Média | Segredos gravados nos logs | Falhar fechado, sem logs de segredos — ✅ **resolvido** (Tarefa 123 / 34) |
-| SEC-08 | Média | Amplificação de e-mails pelo cadastro público de academias | Envio assíncrono e deduplicado — ✅ **resolvido** (Tarefa 124: `SendBrevoEmailWithBCC`, goroutine) |
-| SEC-09 | Baixa | Ciclo de vida frágil dos tokens (`auth_tokens`) | Consumo atómico, hash SHA-256 — ✅ **resolvido** (Tarefa 124: `SaveToken`/`VerifyToken` atômicos) |
-| SEC-10 | Média | Sessões JWT não são revogadas após reset de senha | `sessoes_validas_desde` — ✅ **resolvido** (Tarefa 123, coluna + middleware) |
-| SEC-11 | Média | `POST /bootstrap` público, sem segredo de instalação nem validação de senha | `BOOTSTRAP_TOKEN` — ✅ **resolvido** (Tarefa 124: header obrigatório) |
-| SEC-12 | **Alta** | Permitir login em qualquer estado deixa rotas sem bloqueio próprio | Reorganização rotas, regra por método, elimina token restrito — ✅ **resolvido** (Tarefa 124: `AuthMiddleware`, `ValidarStatusAcademia`, `rotaPermitidaEstudanteInativo`) |
-| SEC-13 | **Alta** | Estudante com conta apagada (`deletado`) continua a conseguir entrar | Bloquear no login, middleware e `GetAuthByIdentificador` — ✅ **resolvido** (Tarefa 124: filtro `status <> 'deletado'`) |
-| SEC-14 | Média | Hashes de senha expostos nos endpoints de eventos | Redigir o payload — ✅ **resolvido** (Tarefa 124: `redigirEventoSensivel` em `GetEventosEstudante`/`GetEventoAuditoria`) |
-| SEC-15 | Média | A academia atual lê registos de outras academias; a academia anterior perde o acesso | Vínculos por período + filtro forçado — ✅ **resolvido** (Tarefa 124: `projection_estudante_vinculos`, `acessoAcademiaAoEstudante`, filtro forçado em 3 handlers) |
+| SEC-08 | Média | Amplificação de e-mails pelo cadastro público de academias | Envio assíncrono e agrupado — ✅ **resolvido** (Tarefa 124: `SendBrevoEmailWithBCC`, goroutine; **Tarefa 127**: `recover`, testes e limite de taxa por IP no `POST /academia/cadastro`) |
+| SEC-09 | Baixa | Ciclo de vida frágil dos tokens (`auth_tokens`) | Consumo atómico, hash SHA-256 — ✅ **resolvido** (Tarefa 124: consumo atómico e hash; **Tarefa 127**: `SaveToken` e `ResetarSenha` invalidam os tokens pendentes). A **limpeza agendada** de tokens expirados segue pendente (Parte 7) |
+| SEC-10 | Média | Sessões JWT não são revogadas após reset de senha | `sessoes_validas_desde` — ✅ **resolvido** (Tarefa 123, coluna + middleware; **Tarefa 127**: também na primeira troca da senha temporária, com token novo na resposta, e tratamento do `401 SESSAO_INVALIDA` no frontend — Tarefa 37) |
+| SEC-11 | Média | `POST /bootstrap` público, sem segredo de instalação nem validação de senha | `BOOTSTRAP_TOKEN` — ✅ **resolvido** (Tarefa 124: header obrigatório; **Tarefa 127**: comparação em tempo constante, `X-Bootstrap-Token`, `ValidateSenha`, 401/403, testes, `.env.example`) |
+| SEC-12 | **Alta** | Permitir login em qualquer estado deixa rotas sem bloqueio próprio | Reorganização rotas, regra por método, elimina token restrito — ✅ **resolvido** (Tarefa 124: `AuthMiddleware`, `rotaPermitidaEstudanteInativo`; **Tarefa 127**: D4 só para o estudante — a academia só entra ativa —, falha fechada em erro de banco, código `SESSAO_INVALIDA`, varredura das 270 rotas autenticadas por estado de conta) |
+| SEC-13 | **Alta** | Estudante com conta apagada (`deletado`) continua a conseguir entrar | Bloquear no login, middleware e `GetAuthByIdentificador` — ✅ **resolvido** (Tarefa 124: filtro `status <> 'deletado'`; confirmado por teste ponta a ponta e pela varredura de rotas da Tarefa 127) |
+| SEC-14 | Média | Hashes de senha expostos nos endpoints de eventos | Redigir o payload — ✅ **resolvido** (Tarefa 124; **Tarefa 127**: redação genérica de qualquer campo `*hash`/senha, em qualquer nível, com falha fechada) |
+| SEC-15 | Média | A academia atual lê registos de outras academias; a academia anterior perde o acesso | Vínculos por período + filtro forçado — ✅ **resolvido** (Tarefa 124/125; **completado na Tarefa 127**: autorização só por `acessoAcademiaAoEstudante`, eventos filtrados também para a academia atual, perfil reduzido sem a academia atual, listagem `GET /estudantes` reescrita, migration 137) |
 
 ---
 
@@ -147,9 +147,9 @@ Esta versão foi refeita sobre o estado atual dos dois repositórios, que avanç
 
 ---
 
-## SEC-05 — Senhas padrão de admin em repositórios públicos (Média) — ✅ resolvido
+## SEC-05 — Senhas padrão de admin em repositórios públicos (Média) — ⚠️ código resolvido; histórico e rotação pendentes (ação do titular)
 
-**Onde:** frontend `src/types/email-auth.ts` (`SenhasPadrao`: `spuriadm`, `spurigerente`, `spurifpp`, `spuri123`; helper `getSenhaPadrao`) e `src/docs/Tarefas feitas/1 - "¦md` (â‰ˆ linhas 251-285); backend `email_service.go:93` (comentário que repete os valores).
+**Onde:** frontend `src/types/email-auth.ts` (`SenhasPadrao`: as 4 senhas padrão, valores omitidos de propósito; helper `getSenhaPadrao`) e `src/docs/Tarefas feitas/1 - "¦md` (â‰ˆ linhas 251-285); backend `email_service.go:93` (comentário que repetia os valores).
 
 **O que acontece.** Os dois repositórios são públicos. O backend já não gera admins com estas senhas (fix E4-AA-04), mas o frontend ainda as publica e **todas estão no histórico git dos dois repositórios**: no backend, em pelo menos 8 commits (incluindo cópias da pasta do frontend); no frontend, nos commits `c93c2f4` e `b6c0ef6`. Nada no código usa `SenhasPadrao`/`getSenhaPadrao`.
 
@@ -206,6 +206,7 @@ Esta versão foi refeita sobre o estado atual dos dois repositórios, que avanç
 - `internal/services/brevo_mailer.go:118-190` — `LoadBrevoConfigForAsync` (lê config sem `gin.Context`) e `SendBrevoEmailWithBCC` (envio único com lista BCC via API do Brevo).
 - `internal/services/email_service.go:43-60` — `LoadBrevoConfigForAsync` exposto no serviço.
 O cadastro da academia retorna imediatamente; falhas de e-mail só são logadas (padrão não bloqueante do projeto).
+- **Tarefa 127:** `recover` na goroutine; testes de `SendBrevoEmailWithBCC` (1 pedido ao Brevo, `to` + `bcc`, erro da API, sem BCC); limite de taxa por IP no `POST /academia/cadastro` (rajada de 10, reposição de 1 a cada 3 min). Login e recuperação de senha continuam **sem** limite (muitos utilizadores partilham o mesmo IP por CGNAT; o limite certo para eles seria por conta).
 
 ---
 
@@ -213,10 +214,10 @@ O cadastro da academia retorna imediatamente; falhas de e-mail só são logadas 
 
 **Onde:** `internal/services/email_service.go` (`SaveToken` linhas 70-105, `VerifyToken` linhas 110-145, `hashToken` linhas 43-59).
 
-1. **Consumo atómico.** `VerifyToken` agora executa um único `UPDATE auth_tokens SET usado = TRUE, used_at = NOW() WHERE token_hash = $1 AND tipo = $2 AND NOT usado AND expires_at > NOW() RETURNING user_id, user_type` — se nenhuma linha for afetada, o token é inválido/usado/expirado.
-2. **Tokens em hash SHA-256.** Nova função `hashToken(token string) string` calcula `SHA-256(token)` (hex). `SaveToken` guarda o hash; `VerifyToken` faz hash do token recebido e compara. O token em texto claro nunca é persistido.
-3. **Invalidação de tokens antigos.** `SaveToken` executa `UPDATE auth_tokens SET usado = TRUE WHERE user_id = $1 AND user_type = $2 AND tipo = $3 AND NOT usado` antes de inserir o novo — só um token pendente por utilizador/tipo.
-4. **Limpeza agendada.** Pendente (Parte 7) — a migration já tem `cleanup_expired_tokens()`; será chamada por job cron.
+1. **Consumo atómico.** `VerifyToken` executa um único `UPDATE auth_tokens SET usado = TRUE, usado_em = ... WHERE token = <hash> AND tipo = $2 AND usado = FALSE AND expires_at > ... RETURNING ...` — se nenhuma linha for afetada, o token é inválido/usado/expirado.
+2. **Tokens em hash SHA-256.** `hashToken(token)` calcula `SHA-256(token)` (hex). `SaveToken` guarda o hash **na coluna `token`** (não existe coluna `token_hash`); `VerifyToken` faz o hash do token recebido e compara. O token em texto claro nunca é persistido. Tokens emitidos antes desta mudança (guardados em claro) deixam de ser válidos.
+3. **Invalidação de tokens antigos.** `SaveToken` invalida, na mesma transação, os tokens pendentes do mesmo utilizador/tipo antes de inserir o novo, e `ResetarSenha` invalida os restantes tokens de recuperação depois do sucesso — só um token pendente por utilizador/tipo (**implementado na Tarefa 127**; a versão anterior do código só fazia `INSERT`).
+4. **Limpeza agendada.** Pendente (Parte 7) — a migration já tem `cleanup_expired_tokens()`; será chamada por job cron. Continua por fazer.
 
 ---
 
@@ -227,8 +228,8 @@ O cadastro da academia retorna imediatamente; falhas de e-mail só são logadas 
 **O que acontece.** Depois de uma recuperação de senha, os tokens emitidos antes continuavam válidos até expirarem. Quem já tinha entrado na conta mantinha acesso.
 
 **Correção:** coluna `sessoes_validas_desde` (timestamp) nas três projeções (`projection_estudantes`, `projection_academias`, `projection_admins`). O `AuthMiddleware` (linhas 180-195) rejeita tokens com `IssuedAt` anterior a esse valor.
-- Atualizada **apenas** por: reset por link (Parte 4, `FinalizarVerificacaoSenha`) e reenvio de credenciais (Parte 3, `ReenviarCredenciaisTemporarias`).
-- **Não alterada** pela troca normal de senha do próprio utilizador (`AlterarSenha`), para não terminar a sessão atual.
+- Atualizada por: reset por link (`ResetarSenha`, motivo `reset_senha`), reenvio de credenciais (`credenciais_reenviadas`) e a primeira troca da senha temporária (`troca_senha_temporaria`).
+- **Não alterada** pela troca normal de senha do próprio utilizador (`alteracao_usuario`), para não terminar a sessão atual. A troca da senha ainda **temporária** usa o motivo `troca_senha_temporaria`: invalida as sessões anteriores e a resposta traz um token novo (Tarefa 127).
 - Entregue como dependência da Tarefa 123 (backend) + Tarefa 34 (frontend).
 
 ---
@@ -239,15 +240,15 @@ O cadastro da academia retorna imediatamente; falhas de e-mail só são logadas 
 
 **O que acontece.** A rota cria o primeiro admin `fpp` e só funciona enquanto não existir nenhum admin. Não exigia segredo de instalação: num deploy novo com base vazia, **o primeiro a chamar a rota vencia**. A senha enviada não passava por `ValidateSenha`.
 
-**Correção:** exigir header `BOOTSTRAP_TOKEN` com o valor da variável de ambiente `BOOTSTRAP_TOKEN` (obrigatório em produção). Implementado em:
-- `internal/handlers/bootstrap_handler.go:30-56` — valida header obrigatório, compara com `os.Getenv("BOOTSTRAP_TOKEN")`, retorna `401` se ausente ou inválido, `403` se não configurado no servidor. Valida senha com `ValidateSenha` (mínimo 8 chars, maiúscula, minúscula, número, símbolo). Retorna `409` se já existe admin.
+**Correção:** exigir o header `X-Bootstrap-Token` com o valor da variável de ambiente `BOOTSTRAP_TOKEN` (obrigatório em produção). Implementado em:
+- `internal/handlers/bootstrap_handler.go` — exige o header `X-Bootstrap-Token` (ou `BOOTSTRAP_TOKEN`; vários proxies descartam headers com sublinhado), compara com `os.Getenv("BOOTSTRAP_TOKEN")` em tempo constante (`crypto/subtle`), devolve `401` se ausente ou inválido e `403` se não estiver configurado no servidor. A senha passa por `ValidateSenha` (8 a 128 caracteres) **antes** de qualquer acesso ao banco (Tarefa 127). Devolve `403` se já existe admin.
 - Variável `BOOTSTRAP_TOKEN` deve ser definida no ambiente de produção antes do primeiro deploy.
 
 ---
 
 ## SEC-12 — Permitir login em qualquer estado deixa rotas sem bloqueio próprio (Alta) — ✅ resolvido
 
-**Onde:** `internal/middleware/auth.go` (`AuthMiddleware` linhas 20-448, `ValidarStatusAcademia` linhas 420-448, `rotaPermitidaEstudanteInativo` linhas 450-495); `cmd/server/main.go` (reestruturação de rotas linhas 357-472); `internal/handlers/auth_handlers.go` (`avaliarStatusLogin` linhas 219-277); handlers de defesa em profundidade em `servico_extra_solicitacao_handlers.go`, `notas_handlers.go`, `faltas_handlers.go`, `avaliacao_final_handler.go`.
+**Onde:** `internal/middleware/auth.go` (`AuthMiddleware`, `ValidarStatusAcademia` em `academia_middleware.go`, `rotaPermitidaEstudanteInativo` linhas 450-495); `cmd/server/main.go` (reestruturação de rotas linhas 357-472); `internal/handlers/auth_handlers.go` (`avaliarStatusLogin` linhas 219-277); handlers de defesa em profundidade em `servico_extra_solicitacao_handlers.go`, `notas_handlers.go`, `faltas_handlers.go`, `avaliacao_final_handler.go`.
 
 **O que acontece.** A decisão D4 permitiu login em qualquer estado, mas as rotas não tinham bloqueio próprio:
 - **Academias:** `ValidarStatusAcademia` só estava em 4 grupos `/academia/*`. As demais (financeiro, jobs, protected) ficavam abertas a academia `inativa`.
@@ -257,10 +258,10 @@ O cadastro da academia retorna imediatamente; falhas de e-mail só são logadas 
 1. **Reestruturação de rotas** (`cmd/server/main.go:357-472`): dois grupos principais — `conta` (apenas autenticação, sem bloqueio de estado) e `protected` (exige `ValidarStatusAcademia` para academia, regra por método para estudante).
 2. **Middleware** (`internal/middleware/auth.go`):
    - `rotaPermitidaEstudanteInativo`: allowlist por método — `GET /estudante/meu-perfil`, `PUT /estudante/alterar-senha`, `POST /estudante/logout`, rotas 2FA, rotas de pagamento, `GET /estudante/bilhete-identidade`, `POST /estudante/revinculacao`, `DELETE /estudante/conta`.
-   - `AuthMiddleware` reescrito: aplica regra por método a estudante `inativo`; academia `inativa` só passa no grupo `conta`.
+   - `AuthMiddleware` reescrito: aplica regra por método a estudante `inativo`. **Academia: só entra `ativa`** (login e todas as rotas, inclusive `conta`): a exceção D4 de "qualquer estado" foi aplicada só ao estudante (decisão de segurança da Tarefa 127; estender às academias exige gate por rota no frontend e na API).
    - `finalizarVerificacaoStatusUsuario` atualizada: bloqueia `deletado` para **todos** os tipos (estudante, academia, admin).
    - Token restrito de finanças **eliminado** (era dependência do SEC-10).
-3. **Login** (`auth_handlers.go:219-277`): `avaliarStatusLogin` bloqueia `deletado` para estudante/academia; permite `inativo`, `pendente_ativacao`, `pendente_validacao`. `responderLoginComSucesso` simplificada (um só `GenerateToken`).
+3. **Login** (`auth_handlers.go`): `avaliarStatusLogin` bloqueia `deletado` para estudante/academia e permite estudante `inativo`; a academia só entra `ativa`. `responderLoginComSucesso` simplificada (um só `GenerateToken`).
 4. **Defesa em profundidade nos handlers** (SEC-12/13): `GetNotasEstudante`, `GetFaltasEstudante`, `GetAvaliacoesFinaisEstudante`, `SolicitarServicoExtra` verificam `status != 'deletado'` (estudante) e `academia.Status == 'ativo'` antes de processar.
 
 ---
@@ -294,6 +295,7 @@ A decisão D4 mantém `deletado` bloqueado para os três tipos de conta.
 - `redigirEventoSensivel(event *db.Event) *db.Event` — cópia do evento com `payload` limpo (remove chaves `SenhaHash`, `NovaSenhaHash`, `*Hash`).
 - `redigirEventosSensiveis(events []*db.Event) []*db.Event` — aplica a anterior a uma lista.
 Aplicadas em `GetEventosEstudante` (linha 798) e `GetEventoAuditoria` (linha 1255). O evento guardado não muda; só a resposta é limpa. Teste: nenhuma resposta contém `$2a$` nem `$2b$`.
+**Tarefa 127:** a redação deixou de depender de uma lista fixa de tipos de evento: qualquer campo, em qualquer nível do payload, cujo nome termine em `hash` (maiúsculas/minúsculas e `_` ignorados) ou seja uma senha em claro (`senha`, `novaSenha`, `senhaAtual`, `password`) passa a `[REDACTED]`; um payload que não seja JSON legível é substituído por completo (falha fechada). Testes: `redigir_evento_sensivel_test.go`.
 
 ---
 
@@ -308,7 +310,7 @@ Aplicadas em `GetEventosEstudante` (linha 798) e `GetEventoAuditoria` (linha 125
 **Correção:** vínculos históricos + filtro forçado por academia do chamador.
 1. **Nova projeção `projection_estudante_vinculos`** (`estudante_vinculos_projection.go`): reconstrói histórico a partir dos eventos `EstudanteCriadoComVinculo`, `EstudanteReintegrado`, `EstudanteDesvinculadoDaAcademia`. Cada linha guarda `estudante_id`, `codigo_academia`, `vinculado_em`, `desvinculado_em` (NULL = ativo). Índices por academia, por estudante, por par; constraint única impede dois vínculos ativos com a mesma academia.
 2. **Rebuild order** (`manager.go:348`): `"estudante_vinculos"` entre `"estudantes"` e `"turmas"`.
-3. **Helper `acessoAcademiaAoEstudante`** (`helpers.go:295`): chama `TeveVinculoAlgumVez` na projeção — retorna `true` se a academia **já teve** vínculo com o estudante (ativo ou histórico).
+3. **Helper `acessoAcademiaAoEstudante`** (`helpers.go`): devolve `AcessoAtual` (vínculo aberto), `AcessoAnterior` (só períodos fechados) ou `SemAcesso`, com os períodos da academia consultada (`GetByEstudanteAcademia`).
 4. **Filtro forçado nas 3 rotas** (`notas_handlers.go:397`, `faltas_handlers.go:371`, `avaliacao_final_handler.go:1077`): após confirmar vínculo via helper, **ignora** qualquer `codigos_academia` vindo na query e **injeta** `filtros.codigosAcademia = []string{academiaDTO.CodigoAcademia}`. O estudante continua a ver tudo (sem filtro de academia).
 **✅ Implementado (Partes 6.5.1/6.5.2/6.5.3) — Tarefa 125:**
 - Perfil reduzido para academia anterior: `GetEstudantePorCodigo` em `estudante_handlers.go` retorna apenas nome, código, estado do vínculo e períodos de vínculo para academia anterior.
@@ -316,6 +318,14 @@ Aplicadas em `GetEventosEstudante` (linha 798) e `GetEventoAuditoria` (linha 125
 - Parâmetro `vinculo=` na lista de estudantes: `ListarEstudantes` em `estudante_handlers.go` aceita `vinculo=atual|anterior|todos`.
 - Cancelamento de inscrições ao desvincular/apagar: `cancelarInscricoesServicoExtraAoSair` em `helpers.go`; chamado em `decidirSolicitacaoStatus` (desvinculacao), `DeletarContaEstudante` e `DeletarContaEstudantePorAcademia`.
 - Catálogo de serviços extras só da academia atual: `ListarServicosExtrasCatalogoEstudante` em `servico_extra_handlers.go` retorna listas vazias para estudante `inativo`/`deletado`.
+
+**Tarefa 127 (14/11/2026) — correções da verificação independente:**
+- **Autorização:** removida a verificação antiga `CodigoAcademia != academia → 403` das 3 rotas de leitura; decide só `acessoAcademiaAoEstudante` (`SemAcesso` → 403; `AcessoAnterior`/`AcessoAtual` → filtro forçado pela academia do chamador). Rede de segurança: sem linhas na projeção de vínculos (logo após o deploy) a academia registada no estudante mantém o acesso atual.
+- **Eventos:** o filtro por período vale também para a academia **atual** (D8); sem períodos conhecidos nenhum evento é devolvido (falha fechada); margem de 2 s no início do vínculo.
+- **Perfil reduzido:** só `id`, `nome`, `codigo_estudante`, `status: "desvinculado"` e `periodos_vinculo`; sem `codigo_academia` atual nem estado escolar.
+- **Listagem:** `ListarEstudantes` reescrita (numeração única dos `$n`); `vinculo` por linha é a relação real; estudantes que seguiram para outra academia só aparecem sem filtros/busca e com nome e código.
+- **Projeção:** migration `137` remove a FK para `projection_estudantes` (ordem entre projeções e rebuild); `EstudanteDeletado` fecha o período aberto.
+- **Testes:** `sec15_isolamento_integration_test.go`, `estudantes_listagem_vinculo_integration_test.go`, `estudante_vinculos_projection_test.go`.
 
 ---
 
@@ -917,7 +927,7 @@ Se não foi você, ignore este e-mail: a sua senha atual continua a funcionar.
 | Frontend | `src/types/email-auth.ts` (â‰ˆ linhas 62-97) | Apagar `SenhasPadrao` (62), `SenhaPadrao` (74) e `getSenhaPadrao` (84), que ainda codifica "senha = código" para estudante e academia (nada os usa) |
 | Frontend | `src/docs/Tarefas feitas/1 - "¦md` (â‰ˆ linhas 251-285) | Apagar o bloco de código com as senhas; reescrever a frase sobre "senhas padrão por role" |
 | Backend | `internal/services/email_service.go:93` | O comentário `FIX E4-AA-04` repete os valores literais: reescrever sem eles (a função e o comentário somem com `GenerateSecurePassword`) |
-| Backend | `internal/domain/aggregates/remetente_comunicacao_test.go:21` | `spuri123` é um identificador de remetente num teste (falso positivo); renomear para não gerar alertas |
+| Backend | `internal/domain/aggregates/remetente_comunicacao_test.go:21` | uma das 4 strings aparecia como identificador de remetente num teste (falso positivo); renomear para não gerar alertas |
 
 ## 5.2 Histórico git (obrigatório para "remover tudo")
 
@@ -928,10 +938,12 @@ As strings estão no histórico dos **dois** repositórios. Como as `main` de am
 git clone --mirror git@github.com:fredypdp/rastreio-backend.git
 cd rastreio-backend.git
 cat > /tmp/expressions.txt <<'EOF'
-spuriadm==>REMOVIDO
-spurigerente==>REMOVIDO
-spurifpp==>REMOVIDO
-spuri123==>REMOVIDO
+<SENHA-PADRAO-1>==>REMOVIDO
+<SENHA-PADRAO-2>==>REMOVIDO
+<SENHA-PADRAO-3>==>REMOVIDO
+<SENHA-PADRAO-4>==>REMOVIDO
+# Substitua <SENHA-PADRAO-n> pelas 4 senhas padrão. Este ficheiro fica FORA do repositório
+# (nunca o versione): escrever as senhas em documentos foi o que as voltou a publicar.
 EOF
 git filter-repo --replace-text /tmp/expressions.txt
 git push --force --mirror
@@ -1433,6 +1445,8 @@ Se preferir que os meses posteriores à saída sejam anulados automaticamente, a
 
 Nenhum teste referencia as três funções. **Efeito:** nenhum na execução (eram no-ops); o risco residual está descrito no SEC-02.
 
+**Tarefa 127:** o `RateLimiter` mantido passou a proteger também o `POST /academia/cadastro` (rajada de 10 por IP, reposição de 1 a cada 3 minutos), que dispara um e-mail aos administradores por cadastro (SEC-08). Login, 2FA e recuperação de senha continuam sem limite de taxa: por IP bloquearia utilizadores legítimos atrás de CGNAT; o limite adequado seria por conta (tentativas falhadas por identificador).
+
 ---
 
 # Parte 8 — Ordem de execução e verificação
@@ -1459,14 +1473,15 @@ grep -rniE "emailjs|net/smtp|EMAIL_HOST|EMAIL_PASS|EMAIL_PORT|sendSMTP|loadSMTP|
 grep -rnE "GlobalRateLimit|LoginRateLimit|EmailRateLimit|RATE_LIMIT_(GLOBAL|LOGIN|EMAIL)" \
   --include=*.go --include=.env.example .
 grep -rnE "AcessoRestritoFinanceiro|GenerateRestrictedFinanceToken|rotaFinanceiraRestrita|acesso_restrito" --include=*.go .
-grep -rnE "spuriadm|spurifpp|spurigerente|spuri123" . --exclude-dir=.git
+SENHAS='<senha1>|<senha2>|<senha3>|<senha4>'   # as 4 senhas padrão (NÃO as escreva em documentos versionados)
+grep -rnE "$SENHAS" . --exclude-dir=.git
 
 # frontend
 npx tsc --noEmit && npm run build
-grep -rniE "emailjs|nodemailer|EMAIL_HOST|EMAIL_PASS|gerar-token|spuriadm|spurifpp|spurigerente|spuri123|isRestrictedFinance|acesso_restrito_financeiro" src --include=*.ts --include=*.tsx
+grep -rniE "emailjs|nodemailer|EMAIL_HOST|EMAIL_PASS|gerar-token|$SENHAS|isRestrictedFinance|acesso_restrito_financeiro" src --include=*.ts --include=*.tsx
 
 # histórico (após o filter-repo)
-git log --all -S"spuriadm" --oneline        # deve ficar vazio
+git log --all -S"<senha1>" --oneline        # deve ficar vazio
 ```
 
 **Padrões assumidos (já refletidos no documento; ajustáveis sem refazer o plano):**

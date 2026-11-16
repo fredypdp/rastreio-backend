@@ -441,7 +441,7 @@ func TestIntegrationDoisFatoresDesativacaoLimitaTentativasDeSenha(t *testing.T) 
 
 // ── Login: estudante, academia e casos de segurança ─────────────────────────
 
-func TestIntegrationDoisFatoresLoginEstudanteInativoSoRecebeTokenRestritoDepoisDoCodigo(t *testing.T) {
+func TestIntegrationDoisFatoresLoginEstudanteInativoSoRecebeTokenDepoisDoCodigo(t *testing.T) {
 	client := integrationFinanceClient(t)
 	captura := instalarCapturaDF(t)
 	router := routerDoisFatores(client)
@@ -464,10 +464,11 @@ func TestIntegrationDoisFatoresLoginEstudanteInativoSoRecebeTokenRestritoDepoisD
 	if token == "" || body["type"] != "estudante" || body["codigo"] != codigo {
 		t.Fatalf("resposta inesperada: %v", body)
 	}
-	// O token restrito ao financeiro não alcança a gestão do 2FA.
+	// SEC-12 (Tarefa 127): já não existe token restrito. O estudante desvinculado
+	// recebe um token normal e continua a gerir o seu 2FA (rota de conta).
 	rec, _ = chamar(router, http.MethodGet, "/dois-fatores", token, nil)
-	if rec.Code == http.StatusOK {
-		t.Fatalf("token restrito ao financeiro não deveria acessar /dois-fatores: %s", rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("o estudante desvinculado deve poder consultar /dois-fatores: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -535,6 +535,12 @@ func notificarAdminsSobreNovaAcademiaPendente(c *gin.Context, req RegisterAcadem
 
 	// Enviar assincronamente em goroutine (SEC-08)
 	go func(emails, nomes []string, info services.AcademiaCadastradaInfo, url string) {
+		// Goroutine fora do pedido HTTP: um pânico aqui derrubaria o processo.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[ERROR] notificarAdminsSobreNovaAcademiaPendente (async): pânico recuperado: %v", r)
+			}
+		}()
 		// Usar o primeiro admin como destinatário principal, os demais em BCC
 		// Nota: Brevo aceita BCC via API; aqui usamos o primeiro como "to" e logamos os BCC
 		if len(emails) > 0 {
@@ -567,7 +573,7 @@ func notificarAdminsSobreNovaAcademiaPendente(c *gin.Context, req RegisterAcadem
 
 			// Enviar para o primeiro admin com os demais em BCC
 			// Nota: A API do Brevo suporta BCC; enviamos para o primeiro e passamos os demais
-			if err := services.SendBrevoEmailWithBCC(cfg, emails[0], adminNomes[0], subject, textBody, htmlBody, emails[1:]); err != nil {
+			if err := services.SendBrevoEmailWithBCC(cfg, emails[0], nomes[0], subject, textBody, htmlBody, emails[1:]); err != nil {
 				log.Printf("[WARN] notificarAdminsSobreNovaAcademiaPendente (async): falha ao enviar e-mail para admins sobre academia %s: %v", info.CodigoAcademia, err)
 			} else {
 				log.Printf("✅ [SEC-08] Aviso de nova academia %s enviado para %d admin(s) (1 to + %d BCC)", info.CodigoAcademia, len(emails), len(emails)-1)

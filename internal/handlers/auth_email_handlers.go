@@ -398,6 +398,14 @@ func ResetarSenha(c *gin.Context) {
 
 	client := getDbClient(c)
 
+	// Depois de um reset concluído nenhum outro link de recuperação pendente
+	// do mesmo utilizador pode continuar válido (SEC-03/SEC-09).
+	invalidarPendentes := func() {
+		if err := emailSvc.InvalidarTokensPendentes(tokenInfo.UserID, tokenInfo.UserType, "recuperacao_senha"); err != nil {
+			log.Printf("[WARN] ResetarSenha: %v", err)
+		}
+	}
+
 	switch tokenInfo.UserType {
 
 	// ── Admin ──────────────────────────────────────────────────────────────
@@ -435,6 +443,7 @@ func ResetarSenha(c *gin.Context) {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
+		invalidarPendentes()
 		log.Printf("Senha resetada (event sourcing) para admin: %s", tokenInfo.Email)
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Senha redefinida com sucesso!",
@@ -476,6 +485,7 @@ func ResetarSenha(c *gin.Context) {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
+		invalidarPendentes()
 		log.Printf("Senha resetada (event sourcing) para academia: %s", tokenInfo.Email)
 		c.JSON(http.StatusOK, gin.H{
 			"message":         "Senha resetada com sucesso!",
@@ -518,6 +528,7 @@ func ResetarSenha(c *gin.Context) {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
+		invalidarPendentes()
 		log.Printf("Senha resetada (event sourcing) para estudante: %s", tokenInfo.Email)
 		c.JSON(http.StatusOK, gin.H{
 			"message":         "Senha resetada com sucesso!",

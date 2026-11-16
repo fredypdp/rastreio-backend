@@ -122,7 +122,7 @@ Nenhum arquivo foi renomeado ou movido de pasta. `go.mod`/`go.sum` **não** muda
 | --- | --- |
 | `.env.example` | Blocos EmailJS e SMTP e `RATE_LIMIT_*` removidos; bloco do Brevo reescrito (único canal; `EMAIL_FROM` sem fallback); `CREDENCIAIS_LOG_DEV` documentada. |
 | `Documentação da API.md` | Versão 2.10.0; secção de senhas e allowlist da troca obrigatória; login com `deve_alterar_senha` e erros genéricos; `alterar-senha` (8 a 128, diferente da atual); secção de e-mail (Brevo único, sem `gerar-token`, recuperação por link, 503); cadastros com `telefone` obrigatório (academia) e objeto `credenciais`; três rotas de reenvio; indicador nas listas. |
-| `internal/domain/aggregates/remetente_comunicacao_test.go` | `spuri123` (falso positivo de SEC-05) trocado por identificador neutro. |
+| `internal/domain/aggregates/remetente_comunicacao_test.go` | um identificador de remetente (falso positivo de SEC-05) trocado por identificador neutro. |
 | `internal/handlers/academia_register_publica_test.go` | Guarda atualizada: a pública não usa senha temporária. |
 | `internal/services/brevo_mailer_test.go`, `email_html_templates_test.go` | Ajustados ao novo comportamento (sem fallback `EMAIL_USER`; templates de link e de admin). |
 | `internal/handlers/auth_email_handlers_integration_test.go` | Reescrito para a recuperação por link (ver validação). |
@@ -209,7 +209,7 @@ ok  spuri/internal/utils  0.0s
 
 Nota honesta sobre o ciclo: a primeira tentativa de desfazer "reenvio de academia sem fpp" **sobreviveu** quando só o handler foi alterado — porque o `RequireFPP()` da rota já barra antes (defesa em profundidade). Só desfazendo os dois ao mesmo tempo o teste cai, como mostra a linha acima. Outras 5 mutações iniciais não compilavam e foram reescritas para compilar antes de contar.
 
-**Histórico do Git (SEC-05):** o comando do plano (`git filter-repo --replace-text`) foi **validado em clones espelho descartáveis dos dois repositórios, sem push**: antes, 11 commits do backend e 2 do frontend continham `spuriadm`; depois, 0 commits contêm qualquer das quatro senhas, nos dois. Nada foi enviado ao GitHub.
+**Histórico do Git (SEC-05):** o comando do plano (`git filter-repo --replace-text`) foi **validado em clones espelho descartáveis dos dois repositórios, sem push**: antes, 11 commits do backend e 2 do frontend continham as senhas padrão; depois, 0 commits contêm qualquer das quatro senhas, nos dois. Nada foi enviado ao GitHub.
 
 **Não foi validado:** SMS real e Brevo real (a rede do sandbox só alcança servidores falsos locais; o conteúdo dos e-mails e SMS foi verificado nos servidores falsos); comportamento sob `ENV=production` completo (os testes ligam só `ENV=production` na parte do envio); desempenho do comando de migração com milhares de contas (as comparações bcrypt correm em paralelo, mas não foram medidas em volume).
 

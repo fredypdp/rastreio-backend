@@ -55,6 +55,9 @@ func hashToken(token string) string {
 //
 // FIX SVC-01: prepared statement — sem interpolação de string.
 // SEC-09: Armazena SHA-256(token) em vez do token em claro.
+// SEC-09 (Tarefa 127): só existe UM token pendente por utilizador e tipo — os
+// anteriores são invalidados na mesma transação que grava o novo, para que um
+// e-mail antigo não continue a funcionar depois de um pedido mais recente.
 func (s *EmailService) SaveToken(userID uuid.UUID, userType, tipo, email string, expiresIn time.Duration) (string, error) {
 	token, err := GenerateToken()
 	if err != nil {
@@ -64,22 +67,54 @@ func (s *EmailService) SaveToken(userID uuid.UUID, userType, tipo, email string,
 	expiresAt := time.Now().Add(expiresIn)
 	tokenHash := hashToken(token)
 
-	_, err = s.db.Exec(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("erro ao salvar token: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err = tx.Exec(`
+		UPDATE auth_tokens
+		SET usado = TRUE, usado_em = CURRENT_TIMESTAMP
+		WHERE user_id = $1 AND user_type = $2 AND tipo = $3 AND usado = FALSE
+	`, userID, userType, tipo); err != nil {
+		return "", fmt.Errorf("erro ao invalidar tokens anteriores: %w", err)
+	}
+
+	if _, err = tx.Exec(`
 		INSERT INTO auth_tokens (token, user_id, user_type, tipo, email, expires_at, usado)
 		VALUES ($1, $2, $3, $4, $5, $6, FALSE)
-	`, tokenHash, userID, userType, tipo, email, expiresAt)
-	if err != nil {
+	`, tokenHash, userID, userType, tipo, email, expiresAt); err != nil {
+		return "", fmt.Errorf("erro ao salvar token: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
 		return "", fmt.Errorf("erro ao salvar token: %w", err)
 	}
 
 	return token, nil
 }
 
+// InvalidarTokensPendentes marca como usados todos os tokens ainda pendentes do
+// utilizador para o tipo indicado. Chamado depois de um reset de senha concluído
+// para que nenhum outro link de recuperação continue válido (SEC-03/SEC-09).
+func (s *EmailService) InvalidarTokensPendentes(userID uuid.UUID, userType, tipo string) error {
+	_, err := s.db.Exec(`
+		UPDATE auth_tokens
+		SET usado = TRUE, usado_em = CURRENT_TIMESTAMP
+		WHERE user_id = $1 AND user_type = $2 AND tipo = $3 AND usado = FALSE
+	`, userID, userType, tipo)
+	if err != nil {
+		return fmt.Errorf("erro ao invalidar tokens pendentes: %w", err)
+	}
+	return nil
+}
+
 // VerifyToken valida e consome um token de autenticação de forma atômica.
 //
 // FIX SVC-03: erro do UPDATE não é silenciado — token não reutilizável.
 // SEC-09: Consumo atômico com UPDATE ... WHERE usado=FALSE (evita race condition).
-//         Compara SHA-256(token) com o hash armazenado.
+//
+//	Compara SHA-256(token) com o hash armazenado.
 func (s *EmailService) VerifyToken(token, tipo string) (*TokenInfo, error) {
 	tokenHash := hashToken(token)
 

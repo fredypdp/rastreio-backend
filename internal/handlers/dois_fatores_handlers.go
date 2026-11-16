@@ -411,7 +411,10 @@ func ReenviarLoginDoisFatores(c *gin.Context) {
 		utils.RespondWithError(c, http.StatusUnauthorized, services.ErrDoisFatoresDesafioInvalido.Error(), nil)
 		return
 	}
-	if _, msg, bloqueado := func(tipo, status string) (bool, string, bool) { msg, blocked := avaliarStatusLogin(tipo, status); return false, msg, blocked }(ident.Tipo, ident.Status); bloqueado {
+	if _, msg, bloqueado := func(tipo, status string) (bool, string, bool) {
+		msg, blocked := avaliarStatusLogin(tipo, status)
+		return false, msg, blocked
+	}(ident.Tipo, ident.Status); bloqueado {
 		utils.RespondWithError(c, http.StatusUnauthorized, msg, nil)
 		return
 	}

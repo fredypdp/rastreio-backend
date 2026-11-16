@@ -111,8 +111,12 @@ func TestAcademiaCadastroPublicoRouteIsPublic(t *testing.T) {
 	if routeLine == "" {
 		t.Fatal("rota POST /academia/cadastro não encontrada em cmd/server/main.go")
 	}
-	if strings.Contains(routeLine, "middleware.") {
-		t.Fatalf("rota /academia/cadastro deve ser pública, sem middleware de autenticação: %q", routeLine)
+	// A rota é pública (sem autenticação); o limite de taxa por IP (SEC-08,
+	// Tarefa 127) é o único middleware permitido.
+	for _, proibido := range []string{"AuthMiddleware", "RequireAcademia", "RequireAdmin", "RequireEstudante", "RequireFPP"} {
+		if strings.Contains(routeLine, proibido) {
+			t.Fatalf("rota /academia/cadastro deve ser pública, sem middleware de autenticação (%s): %q", proibido, routeLine)
+		}
 	}
 	if !strings.Contains(routeLine, "router.POST(") {
 		t.Fatalf("rota /academia/cadastro deve ser registrada diretamente em router.POST, fora de grupos autenticados: %q", routeLine)

@@ -37,6 +37,16 @@ func AlterarSenha(c *gin.Context) {
 		return
 	}
 
+	// Tarefa 127 (SEC-04/SEC-10): se a conta ainda tem a senha TEMPORÁRIA, a troca
+	// encerra todas as sessões emitidas antes (quem entrou primeiro com a senha
+	// temporária perde o acesso) e o titular recebe um token novo na resposta.
+	motivo := aggregates.MotivoSenhaAlteracaoUsuario
+	if uid, ok := userID.(uuid.UUID); ok {
+		if tipo, ok := userType.(string); ok && contaComSenhaTemporaria(getDbClient(c), tipo, uid) {
+			motivo = aggregates.MotivoSenhaTrocaTemporaria
+		}
+	}
+
 	// ── Admin ──────────────────────────────────────────────────────────────
 	if userType == "admin" {
 		uid := userID.(uuid.UUID)
@@ -66,7 +76,7 @@ func AlterarSenha(c *gin.Context) {
 			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
 			return
 		}
-		if err := admin.AlterarSenha(string(hashedPassword), uid, "alteracao_usuario"); err != nil {
+		if err := admin.AlterarSenha(string(hashedPassword), uid, motivo); err != nil {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
@@ -76,7 +86,7 @@ func AlterarSenha(c *gin.Context) {
 			return
 		}
 		log.Printf("Senha alterada (event sourcing) para admin: %v", uid)
-		c.JSON(http.StatusOK, gin.H{"message": "Senha alterada com sucesso!"})
+		responderSenhaAlterada(c, motivo, uid, "admin")
 		return
 	}
 
@@ -109,7 +119,7 @@ func AlterarSenha(c *gin.Context) {
 			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
 			return
 		}
-		if err := academia.AlterarSenha(string(hashedPassword), uid, "alteracao_usuario"); err != nil {
+		if err := academia.AlterarSenha(string(hashedPassword), uid, motivo); err != nil {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
@@ -119,7 +129,7 @@ func AlterarSenha(c *gin.Context) {
 			return
 		}
 		log.Printf("Senha alterada (event sourcing) para academia: %v", uid)
-		c.JSON(http.StatusOK, gin.H{"message": "Senha alterada com sucesso!"})
+		responderSenhaAlterada(c, motivo, uid, "academia")
 		return
 	}
 
@@ -156,7 +166,7 @@ func AlterarSenha(c *gin.Context) {
 			utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
 			return
 		}
-		if err := estudante.AlterarSenha(string(hashedPassword)); err != nil {
+		if err := estudante.AlterarSenhaComMotivo(string(hashedPassword), motivo); err != nil {
 			utils.RespondWithInternalError(c, err)
 			return
 		}
@@ -166,7 +176,7 @@ func AlterarSenha(c *gin.Context) {
 			return
 		}
 		log.Printf("Senha alterada (event sourcing) para estudante: %v", uid)
-		c.JSON(http.StatusOK, gin.H{"message": "Senha alterada com sucesso!"})
+		responderSenhaAlterada(c, motivo, uid, "estudante")
 		return
 	}
 
@@ -391,4 +401,39 @@ func BuscarUsuario(c *gin.Context) {
 	}
 
 	utils.RespondWithNotFoundError(c, "usuário")
+}
+
+// contaComSenhaTemporaria indica se a conta ainda tem deve_alterar_senha ligado.
+func contaComSenhaTemporaria(client *db.Client, userType string, id uuid.UUID) bool {
+	tabelas := map[string]string{
+		"admin":     "projection_admins",
+		"academia":  "projection_academias",
+		"estudante": "projection_estudantes",
+	}
+	tabela, ok := tabelas[userType]
+	if !ok || client == nil {
+		return false
+	}
+	var deve bool
+	if err := client.DB().QueryRow(
+		`SELECT COALESCE(deve_alterar_senha, FALSE) FROM `+tabela+` WHERE id = $1`, id,
+	).Scan(&deve); err != nil {
+		return false
+	}
+	return deve
+}
+
+// responderSenhaAlterada devolve a resposta de sucesso da troca de senha. Na
+// troca da senha temporária as sessões anteriores foram encerradas, por isso a
+// resposta traz um token novo (emitido depois do evento) para o próprio titular.
+func responderSenhaAlterada(c *gin.Context, motivo string, uid uuid.UUID, userType string) {
+	resposta := gin.H{"message": "Senha alterada com sucesso!"}
+	if motivo == aggregates.MotivoSenhaTrocaTemporaria {
+		if token, err := middleware.GenerateToken(uid, userType); err == nil {
+			resposta["token"] = token
+		} else {
+			log.Printf("[WARN] AlterarSenha: não foi possível emitir novo token: %v", err)
+		}
+	}
+	c.JSON(http.StatusOK, resposta)
 }

@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -298,9 +300,15 @@ func TestIntegrationSolicitarRecuperacaoSenhaNaoAlteraSenhaEEnviaLink(t *testing
 	if strings.Contains(strings.ToLower(msg.HTML), "senha temporária") || strings.Contains(strings.ToLower(msg.Texto), "senha temporária") {
 		t.Fatal("o e-mail de recuperação não pode conter senha")
 	}
+	// SEC-09: só o SHA-256 do token fica na base; o token em claro nunca.
+	var emClaro int
+	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM auth_tokens WHERE token = $1`, m[1]).Scan(&emClaro); err != nil || emClaro != 0 {
+		t.Fatalf("o token do link não pode estar guardado em claro (linhas=%d, err=%v)", emClaro, err)
+	}
+	soma := sha256.Sum256([]byte(m[1]))
 	var usado bool
-	if err := client.DB().QueryRow(`SELECT usado FROM auth_tokens WHERE token = $1 AND tipo = 'recuperacao_senha' AND user_id = $2`, m[1], userID).Scan(&usado); err != nil {
-		t.Fatalf("o token do link não está persistido: %v", err)
+	if err := client.DB().QueryRow(`SELECT usado FROM auth_tokens WHERE token = $1 AND tipo = 'recuperacao_senha' AND user_id = $2`, hex.EncodeToString(soma[:]), userID).Scan(&usado); err != nil {
+		t.Fatalf("o hash do token do link não está persistido: %v", err)
 	}
 	if usado {
 		t.Fatal("o token acabou de ser emitido e não pode estar usado")

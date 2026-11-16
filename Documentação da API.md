@@ -626,8 +626,9 @@ Quando a requisição envia `Authorization: Bearer <jwt_token>` válido, a API p
 - Toda conta criada por terceiros (estudante, academia, administrador) nasce com uma **senha temporária** de 8 caracteres alfanuméricos sorteados com `crypto/rand` (sem os ambíguos `I l O o 0 1`), de **troca obrigatória** no primeiro acesso. Não existe senha padrão derivada do código nem senha fixa por perfil.
 - A senha temporária chega ao titular por **SMS** (estudante e academia, pelo envio padronizado de comunicação) ou por **e-mail** via Brevo (administrador). Só o hash é gravado no ledger; a senha em claro **nunca** aparece em resposta HTTP nem em log. O SMS só é enviado com `ENV=production`; fora disso nada é enviado nem registado (ver `CREDENCIAIS_LOG_DEV` em `.env.example`).
 - Enquanto a conta usa a senha temporária (`deve_alterar_senha = true`), o servidor responde `403` com `"code": "SENHA_TEMPORARIA"` em **todas** as rotas autenticadas, exceto `GET /meu-perfil`, `PUT /alterar-senha` e `POST /logout`. A flag é consequência do ledger (`SenhaTemporariaDefinida` liga; o evento de troca de senha desliga conforme o motivo) e é reconstruída em qualquer rebuild.
-- Motivos do evento de troca de senha: `alteracao_usuario` (o titular trocou; também é o valor assumido em eventos antigos sem motivo), `reset_senha` (recuperação por link; desliga a flag e invalida as sessões anteriores) e `credenciais_reenviadas` (reenvio; liga a flag e invalida as sessões anteriores).
-- `sessoes_validas_desde`: tokens emitidos antes deste instante (comparação em segundos) passam a receber `401 "sessão encerrada: faça login novamente"`. Só é atualizada por `reset_senha` e `credenciais_reenviadas`.
+- Motivos do evento de troca de senha: `alteracao_usuario` (o titular trocou; também é o valor assumido em eventos antigos sem motivo), `reset_senha` (recuperação por link; desliga a flag e invalida as sessões anteriores) `troca_senha_temporaria` (o titular trocou a senha ainda temporária; desliga a flag e invalida as sessões anteriores) e `credenciais_reenviadas` (reenvio; liga a flag e invalida as sessões anteriores).
+- `sessoes_validas_desde`: tokens emitidos antes deste instante (comparação em segundos) passam a receber `401 "sessão encerrada: faça login novamente"`. É atualizada por `reset_senha`, `credenciais_reenviadas` e `troca_senha_temporaria`; a troca normal (`alteracao_usuario`) não a altera.
+- Códigos de erro de autenticação: todo `401` do `AuthMiddleware` traz `"code": "SESSAO_INVALIDA"` (token ausente/inválido/expirado, conta bloqueada, sessão encerrada); o `401` de negócio (ex.: senha atual errada) não o traz. Se o estado da conta não puder ser consultado (erro de banco) o middleware **falha fechado** com `503`. Estudante **desvinculado** (`inativo`) lê tudo, paga e gere a conta, mas toda outra escrita responde `403` com `"code": "CONTA_DESVINCULADA"`. A academia só entra com a conta `ativa`.
 - Todas as alterações de senha passam pelo ledger (evento)
 
 ### 3.3 Hash Chain do Ledger
@@ -738,7 +739,7 @@ Encerra a sessão do usuário autenticado no cliente.
 
 Cria o primeiro admin FPP do sistema. Bloqueado após o primeiro uso (retorna 403).
 
-**Proteção**: pública | Advisory lock PostgreSQL (impede race condition)
+**Proteção**: header `X-Bootstrap-Token` (ou `BOOTSTRAP_TOKEN`) igual à variável de ambiente `BOOTSTRAP_TOKEN` (comparação em tempo constante; `BOOTSTRAP_TOKEN_DEV` só fora de produção) | Advisory lock PostgreSQL (impede race condition)
 
 **Request:**
 
@@ -771,7 +772,9 @@ Cria o primeiro admin FPP do sistema. Bloqueado após o primeiro uso (retorna 40
 **Erros:**
 
 - `400` — campos obrigatórios ausentes
-- `403` — sistema já possui administradores
+- `401` — token de bootstrap ausente ou inválido
+- `403` — sistema já possui administradores, ou `BOOTSTRAP_TOKEN` não configurado no servidor (rota desativada)
+- `422` — senha fora da regra comum (8 a 128 caracteres)
 - `409` — email já cadastrado
 
 ---
@@ -1095,11 +1098,20 @@ Altera a senha do usuário autenticado. É também a troca obrigatória da senha
 }
 ```
 
+Quando a conta ainda usava a **senha temporária** (`deve_alterar_senha = true`), a troca encerra todas as sessões emitidas antes (motivo `troca_senha_temporaria`) e a resposta traz um token novo, a usar daí em diante:
+
+```json
+{
+  "message": "Senha alterada com sucesso!",
+  "token": "jwt"
+}
+```
+
 **Erros:**
 
 - `400` — campos obrigatórios ausentes
 - `422` — nova senha inválida (menos de 8 caracteres) ou igual à senha atual
-- `401` — senha atual incorreta
+- `401` — senha atual incorreta (sem o código `SESSAO_INVALIDA`: não encerra a sessão local)
 
 ---
 
@@ -1464,9 +1476,9 @@ Quando o `alvara` não é enviado, a resposta também inclui `aviso` com a URL d
 
 Permite que uma academia se autocadastre na plataforma **sem autenticação prévia**, via `multipart/form-data`. Usa exatamente as mesmas regras de validação de `POST /dominis/academia/cadastro`: `nif` é obrigatório e tem 10 dígitos (não é único — ver nota acima); `alvara` é opcional e, quando enviado, deve ser PDF válido de até 10MB, armazenado em `{codigo_academia}/Documentação formal/`. Caso não seja enviado no cadastro, use posteriormente `POST /documentos/academias/{codigo_academia}/alvara/upload`. A academia é sempre criada com status `inativo` — apenas um admin com role `adm` ou `fpp` pode ativá-la, via `PUT /dominis/academia/:codigo/ativar`. Login antes da ativação retorna erro de "academia inativa".
 
-**Proteção**: nenhuma (rota pública)
+**Proteção**: nenhuma autenticação (rota pública) | limite de taxa por IP
 
-**Diferença em relação ao cadastro por admin**: exige o campo `senha` (string, 6–128 caracteres). Essa senha é definida como a senha de acesso da academia. Diferentemente do fluxo administrativo (senha temporária aleatória por SMS, de troca obrigatória), aqui a senha é a escolhida pela própria academia e não há senha temporária.
+**Diferença em relação ao cadastro por admin**: exige o campo `senha` (string, 8–128 caracteres). Essa senha é definida como a senha de acesso da academia. Diferentemente do fluxo administrativo (senha temporária aleatória por SMS, de troca obrigatória), aqui a senha é a escolhida pela própria academia e não há senha temporária.
 
 **Request:**
 
@@ -1514,7 +1526,8 @@ Quando o `alvara` não é enviado, o campo `aviso` também informa a URL de uplo
 
 **Erros:**
 
-- `400` — `nivel` inválido, `type` inválido, `nif` ausente/inválido, `alvara` não PDF/acima de 10MB quando enviado, campos obrigatórios ausentes, `anos_academicos` inválidos, `senha` ausente/vazia ou fora do intervalo de 6–128 caracteres
+- `400` — `nivel` inválido, `type` inválido, `nif` ausente/inválido, `alvara` não PDF/acima de 10MB quando enviado, campos obrigatórios ausentes, `anos_academicos` inválidos, `senha` ausente/vazia ou fora do intervalo de 8–128 caracteres
+- `429` — limite de taxa por IP (rajada de 10 cadastros, reposição de 1 a cada 3 minutos) para impedir o envio em massa de avisos aos administradores
 
 ---
 
@@ -3468,7 +3481,7 @@ curl -X POST https://api.exemplo.ao/academia/estudante/ABC1234/documentos \
 
 ### GET /estudantes
 
-Lista estudantes. Retorna apenas os da academia (para academia) ou todos (para admin). Cada item traz `deve_alterar_senha` (boolean): `true` enquanto o estudante ainda usa a senha temporária (indicador de "credenciais não confirmadas").
+Lista estudantes. Retorna apenas os da academia — atuais e anteriores, conforme `vinculo` — (para academia) ou todos (para admin). Cada item traz `deve_alterar_senha` (boolean): `true` enquanto o estudante ainda usa a senha temporária (indicador de "credenciais não confirmadas").
 
 **Proteção**: autenticado + academia ou admin
 
@@ -3492,6 +3505,7 @@ Lista estudantes. Retorna apenas os da academia (para academia) ou todos (para a
 - `com_turma` — booleano (`true`/`false`) para filtrar estudantes com ou sem turma.
 - `limit` — quantidade máxima por página (padrão: 50, teto fixo: 100).
 - `offset` — deslocamento de paginação (padrão: 0).
+- `vinculo` — `atual` (vinculado agora: `ativo`/`pendente_documentos`), `anterior` (já esteve vinculado e saiu) ou `todos` (padrão: atuais e anteriores). Para academia aplica-se à própria academia; para admin, com `codigo_academia` aplica-se a essas academias e sem ele distingue vinculados de desvinculados. Valor inválido: `422`.
 
 > Os filtros acima são **combináveis** entre si (AND), permitindo consultas compostas.
 > Exemplos:
@@ -3518,7 +3532,9 @@ Lista estudantes. Retorna apenas os da academia (para academia) ou todos (para a
 }
 ```
 
-`total` é a quantidade de estudantes retornados na página atual. `total_geral` é a contagem total de estudantes no escopo do usuário e filtros aplicados, ignorando `limit`/`offset`.
+`total` é a quantidade de estudantes retornados na página atual. `total_geral` é a contagem total de estudantes no escopo do usuário e filtros aplicados, ignorando `limit`/`offset`. O campo `vinculo` da resposta repete o filtro aplicado (`atual`, `anterior` ou `todos`); cada item traz `vinculo` com a relação **real** do estudante com a academia consultada (`atual` ou `anterior`).
+
+**Estudantes que já seguiram para outra academia** (apenas na listagem de uma academia): aparecem só em `vinculo=todos`/`anterior`, **sem filtros nem busca**, e com apenas `nome`, `codigo_estudante`, `vinculo` e `acesso: "reduzido"` (os demais campos vão `null`). Filtros e `busca` nunca os alcançam, para não revelar dados da academia atual.
 
 **Erros de validação (400):**
 
@@ -3535,7 +3551,9 @@ Lista estudantes. Retorna apenas os da academia (para academia) ou todos (para a
 
 Consulta um estudante por código. Quando o estudante possui documentos, a resposta inclui `documentos` com `path`, `file_url` e `download_url`; o `download_url` é sempre uma rota autenticada do backend (`/documentos/estudantes/{codigo_estudante}/{campo}/download`) para permitir que o cliente baixe o PDF sem depender de links diretos do storage.
 
-**Proteção**: autenticado + academia (apenas próprios) ou admin
+**Proteção**: autenticado + academia (com vínculo atual ou anterior com o estudante) ou admin
+
+**Tipos de acesso da academia (`tipo_acesso`)**: `atual` (estudante vinculado: perfil completo) ou `anterior` (já esteve vinculado e saiu: **perfil reduzido**). O perfil reduzido traz apenas `id`, `nome`, `codigo_estudante`, `status` (sempre `"desvinculado"`) e `periodos_vinculo` (`codigo_academia`, `vinculado_em`, `desvinculado_em`, `vinculo_ativo`) **só da academia que consulta**: não revela contactos, BI, documentos, estado escolar nem a academia onde o estudante está agora. Academia que nunca teve vínculo recebe `403`.
 
 **Path Params:**
 
@@ -5792,7 +5810,7 @@ Lista o histórico imutável de eventos de um estudante.
 
 **Proteção:** autenticado.
 
-**Autorização:** admin consulta qualquer estudante; estudante consulta apenas o próprio código; academia consulta apenas estudantes vinculados à sua instituição.
+**Autorização:** admin consulta qualquer estudante; estudante consulta apenas o próprio código; academia consulta apenas estudantes que tenham (ou tiveram) vínculo com ela e **só recebe os eventos ocorridos dentro dos seus períodos de vínculo** (a academia atual não vê o que outra academia registou antes; a anterior não vê o que se passou depois da saída). Sem vínculo, `403`. Hashes de senha são ocultados no payload (`[REDACTED]`).
 
 **Path params:** `codigo` — código do estudante.
 
@@ -5820,7 +5838,7 @@ Consulta um evento imutável específico do ledger, incluindo payload e metadado
 
 **Proteção:** autenticado.
 
-**Autorização:** admin consulta qualquer evento; estudante e academia só consultam eventos associados a estudante próprio/da própria instituição. Sem posse, a resposta é `404` para não revelar a existência do evento.
+**Autorização:** admin consulta qualquer evento; estudante e academia só consultam eventos associados a estudante próprio/da própria instituição. A academia (atual ou anterior) só vê eventos ocorridos **dentro dos seus períodos de vínculo** com o estudante. Sem posse, ou fora do período, a resposta é `404` para não revelar a existência do evento. Hashes de senha são sempre ocultados no payload (`[REDACTED]`).
 
 **Path params:** `event_id` — UUID do evento.
 

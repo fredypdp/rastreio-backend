@@ -40,8 +40,13 @@ var agora = time.Now
 
 // verificarIntervaloReenvio devolve erro (429) se a conta teve as sessões
 // invalidadas (reenvio ou reset) há menos de 10 minutos.
-func verificarIntervaloReenvio(desde sql.NullTime) (bool, time.Duration) {
-	if !desde.Valid {
+//
+// Tarefa 127: o intervalo só vale enquanto a senha temporária do último reenvio
+// continua por trocar (pendente = deve_alterar_senha). Quando o titular já trocou
+// a senha, sessoes_validas_desde passa a marcar essa troca e não pode travar um
+// reenvio legítimo logo a seguir.
+func verificarIntervaloReenvio(desde sql.NullTime, pendente bool) (bool, time.Duration) {
+	if !desde.Valid || !pendente {
 		return false, 0
 	}
 	decorrido := agora().Sub(desde.Time)
@@ -82,12 +87,14 @@ func ReenviarCredenciaisEstudante(c *gin.Context) {
 		nome, codigoAcademia                      string
 		telEst, telEnc, anoFund, anoMedio, anoSup sql.NullString
 		desde                                     sql.NullTime
+		pendente                                  bool
 	)
 	err := getDbClient(c).DB().QueryRow(`
 		SELECT id::text, nome, COALESCE(codigo_academia,''), telefone, telefone_encarregado,
-		       ano_escolar_fundamental, ano_escolar_medio, ano_superior, sessoes_validas_desde
+		       ano_escolar_fundamental, ano_escolar_medio, ano_superior, sessoes_validas_desde,
+		       COALESCE(deve_alterar_senha, FALSE)
 		  FROM projection_estudantes WHERE codigo_estudante = $1`, codigo,
-	).Scan(&idStr, &nome, &codigoAcademia, &telEst, &telEnc, &anoFund, &anoMedio, &anoSup, &desde)
+	).Scan(&idStr, &nome, &codigoAcademia, &telEst, &telEnc, &anoFund, &anoMedio, &anoSup, &desde, &pendente)
 	if err == sql.ErrNoRows {
 		utils.RespondWithNotFoundError(c, "estudante")
 		return
@@ -119,7 +126,7 @@ func ReenviarCredenciaisEstudante(c *gin.Context) {
 		return
 	}
 
-	if bloqueado, restante := verificarIntervaloReenvio(desde); bloqueado {
+	if bloqueado, restante := verificarIntervaloReenvio(desde, pendente); bloqueado {
 		responderIntervaloReenvio(c, restante)
 		return
 	}
@@ -187,11 +194,12 @@ func ReenviarCredenciaisAcademia(c *gin.Context) {
 		idStr, nome string
 		telefone    sql.NullString
 		desde       sql.NullTime
+		pendente    bool
 	)
 	err := getDbClient(c).DB().QueryRow(`
-		SELECT id::text, nome, telefone, sessoes_validas_desde
+		SELECT id::text, nome, telefone, sessoes_validas_desde, COALESCE(deve_alterar_senha, FALSE)
 		  FROM projection_academias WHERE codigo_academia = $1`, codigo,
-	).Scan(&idStr, &nome, &telefone, &desde)
+	).Scan(&idStr, &nome, &telefone, &desde, &pendente)
 	if err == sql.ErrNoRows {
 		utils.RespondWithNotFoundError(c, "academia")
 		return
@@ -200,7 +208,7 @@ func ReenviarCredenciaisAcademia(c *gin.Context) {
 		utils.RespondWithInternalError(c, err)
 		return
 	}
-	if bloqueado, restante := verificarIntervaloReenvio(desde); bloqueado {
+	if bloqueado, restante := verificarIntervaloReenvio(desde, pendente); bloqueado {
 		responderIntervaloReenvio(c, restante)
 		return
 	}
@@ -273,10 +281,12 @@ func ReenviarCredenciaisAdmin(c *gin.Context) {
 	var (
 		nome, email, role string
 		desde             sql.NullTime
+		pendente          bool
 	)
 	err = getDbClient(c).DB().QueryRow(`
-		SELECT nome, email, role, sessoes_validas_desde FROM projection_admins WHERE id::text = $1`, alvoID.String(),
-	).Scan(&nome, &email, &role, &desde)
+		SELECT nome, email, role, sessoes_validas_desde, COALESCE(deve_alterar_senha, FALSE)
+		  FROM projection_admins WHERE id::text = $1`, alvoID.String(),
+	).Scan(&nome, &email, &role, &desde, &pendente)
 	if err == sql.ErrNoRows {
 		utils.RespondWithNotFoundError(c, "administrador")
 		return
@@ -285,7 +295,7 @@ func ReenviarCredenciaisAdmin(c *gin.Context) {
 		utils.RespondWithInternalError(c, err)
 		return
 	}
-	if bloqueado, restante := verificarIntervaloReenvio(desde); bloqueado {
+	if bloqueado, restante := verificarIntervaloReenvio(desde, pendente); bloqueado {
 		responderIntervaloReenvio(c, restante)
 		return
 	}

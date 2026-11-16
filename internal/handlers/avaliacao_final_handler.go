@@ -1062,9 +1062,8 @@ func GetAvaliacoesFinaisEstudante(c *gin.Context) {
 	if userType == "academia" {
 		academiaProj := getAcademiaProjection(c)
 		academiaDTO, _ := academiaProj.GetByID(userID)
-		if estudante.CodigoAcademia == nil || academiaDTO == nil ||
-			*estudante.CodigoAcademia != academiaDTO.CodigoAcademia {
-			utils.RespondWithForbiddenError(c, "Estudante não pertence a esta academia")
+		if academiaDTO == nil {
+			utils.RespondWithForbiddenError(c, "academia não encontrada")
 			return
 		}
 		// SEC-12 handler defense in depth: bloquear se academia inativa

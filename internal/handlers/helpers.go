@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -313,6 +314,13 @@ func acessoAcademiaAoEstudante(c *gin.Context, codigoAcademia string, estudante 
 		return SemAcesso, nil, err
 	}
 	if len(periodos) == 0 {
+		// Rede de segurança: enquanto a projeção de vínculos ainda não alcançou o
+		// ledger (logo após o deploy) a academia registada no estudante mantém o
+		// acesso ATUAL, que é exatamente a regra anterior ao SEC-15. Sem períodos,
+		// os eventos ficam vedados (filtrarEventosPorPeriodos falha fechado).
+		if estudante.CodigoAcademia != nil && *estudante.CodigoAcademia == codigoAcademia && estudanteVinculado(estudante.Status) {
+			return AcessoAtual, nil, nil
+		}
 		return SemAcesso, nil, nil
 	}
 
@@ -335,9 +343,12 @@ func estudanteVinculado(status string) bool {
 // filtrarEventosPorPeriodos filtra uma lista de eventos mantendo apenas aqueles
 // cujo occurred_at cai dentro de algum dos períodos de vínculo fornecidos.
 // Inclui os limites: occurred_at >= vinculado_em e (desvinculado_em == nil ou occurred_at <= desvinculado_em).
+//
+// Sem períodos conhecidos NENHUM evento é devolvido (falha fechada): devolver
+// tudo exporia o histórico de outras academias.
 func filtrarEventosPorPeriodos(eventos []db.Event, periodos []projections.EstudanteVinculoDTO) []db.Event {
 	if len(periodos) == 0 {
-		return eventos
+		return []db.Event{}
 	}
 	filtrados := make([]db.Event, 0, len(eventos))
 	for _, e := range eventos {
@@ -348,10 +359,16 @@ func filtrarEventosPorPeriodos(eventos []db.Event, periodos []projections.Estuda
 	return filtrados
 }
 
+// margemInicioVinculo tolera a diferença entre occurred_at (momento em que o
+// agregado gerou o evento) e recorded_at (momento da gravação no ledger).
+const margemInicioVinculo = 2 * time.Second
+
 // eventoDentroDoPeriodo verifica se o evento ocorreu dentro de algum dos períodos de vínculo.
 func eventoDentroDoPeriodo(evento *db.Event, periodos []projections.EstudanteVinculoDTO) bool {
 	for _, p := range periodos {
-		if evento.OccurredAt.Before(p.VinculadoEm) {
+		// O evento que abre o vínculo é gravado milissegundos depois de ocorrer:
+		// a margem evita esconder à academia o próprio evento de criação.
+		if evento.OccurredAt.Before(p.VinculadoEm.Add(-margemInicioVinculo)) {
 			continue
 		}
 		if p.DesvinculadoEm != nil && evento.OccurredAt.After(*p.DesvinculadoEm) {

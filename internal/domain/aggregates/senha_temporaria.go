@@ -15,6 +15,8 @@ import (
 //
 // Quem a desliga é o evento de troca de senha, conforme o motivo:
 //   - alteracao_usuario     → desliga (o titular trocou a própria senha);
+//   - troca_senha_temporaria → desliga e invalida as sessões anteriores (Tarefa 127:
+//     quem entrou com a senha temporária antes do titular perde o acesso);
 //   - reset_senha           → desliga e invalida as sessões anteriores;
 //   - credenciais_reenviadas → LIGA de novo e invalida as sessões anteriores.
 
@@ -22,6 +24,10 @@ const (
 	// MotivoSenhaAlteracaoUsuario — o próprio titular trocou a senha. É também
 	// o valor assumido para eventos antigos, sem motivo.
 	MotivoSenhaAlteracaoUsuario = "alteracao_usuario"
+	// MotivoSenhaTrocaTemporaria — o titular trocou a senha TEMPORÁRIA (a conta
+	// tinha deve_alterar_senha ligado). Além de desligar a flag, encerra todas
+	// as sessões emitidas antes: a senha antiga pode ter sido usada por terceiros.
+	MotivoSenhaTrocaTemporaria = "troca_senha_temporaria"
 	// MotivoSenhaResetSenha — o titular redefiniu a senha pelo link de recuperação.
 	MotivoSenhaResetSenha = "reset_senha"
 	// MotivoSenhaCredenciaisReenviadas — a entidade que gere a conta redefiniu a

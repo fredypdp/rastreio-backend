@@ -94,3 +94,14 @@ Todos passam.
 ## Resultado
 
 Verificação confirmada: backend já continha todas as 15 SEC (SEC-01 a SEC-15) implementadas integralmente nas Tarefas 123, 124, 125. Nenhum gap encontrado. Nenhuma alteração de código necessária. Validação completa (`gofmt`, `go build`, `go vet`, `go test`) passa sem falhas.
+
+---
+
+## Errata (Tarefa 127)
+
+As afirmações abaixo **não se confirmaram** na verificação de 14/11/2026 (commit `e397295`):
+
+- "`gofmt` limpo": cinco arquivos estavam fora do formato (`dois_fatores_handlers.go`, `estudante_handlers.go`, `auth.go`, `estudante_vinculos_projection.go`, `email_service.go`).
+- "`go test` todos ok": em banco novo falhavam 5 testes (ver Tarefa 127).
+- "Nenhum gap": havia lacunas funcionais em SEC-03, SEC-09, SEC-11, SEC-12 e SEC-15 e a listagem `GET /estudantes` entrava em pânico.
+- A numeração dos SEC na tabela deste documento não corresponde à do plano (`seguranca-e-migracao-brevo.md`).

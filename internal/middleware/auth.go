@@ -3,6 +3,7 @@ package middleware
 import (
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,8 +21,8 @@ import (
 )
 
 type Claims struct {
-	UserID     uuid.UUID `json:"user_id"`
-	UserType   string    `json:"user_type"`
+	UserID   uuid.UUID `json:"user_id"`
+	UserType string    `json:"user_type"`
 	jwt.RegisteredClaims
 }
 
@@ -73,8 +74,8 @@ func GenerateToken(userID uuid.UUID, userType string) (string, error) {
 	expiryHours := getJWTExpiryHours()
 
 	claims := Claims{
-		UserID:     userID,
-		UserType:   userType,
+		UserID:   userID,
+		UserType: userType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expiryHours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -96,6 +97,24 @@ func GenerateToken(userID uuid.UUID, userType string) (string, error) {
 // senha temporária e tenta aceder a qualquer rota fora da lista abaixo. O
 // frontend usa-o para redirecionar para a troca obrigatória (SEC-04).
 const CodigoSenhaTemporaria = "SENHA_TEMPORARIA"
+
+// CodigoSessaoInvalida acompanha todo 401 de autenticação (token ausente,
+// inválido, expirado, conta bloqueada ou sessão encerrada). O frontend usa-o
+// para terminar a sessão local e voltar ao login sem confundir com um 401 de
+// negócio (por exemplo, a senha atual errada em PUT /alterar-senha).
+const CodigoSessaoInvalida = "SESSAO_INVALIDA"
+
+// errEstadoIndisponivel indica que o estado da conta não pôde ser consultado
+// (erro de banco). O AuthMiddleware falha FECHADO: sem saber se a conta está
+// bloqueada, com troca de senha pendente ou com a sessão encerrada, não deixa
+// passar (503).
+var errEstadoIndisponivel = errors.New("estado da conta indisponível")
+
+// responderSessaoInvalida envia 401 com o código SESSAO_INVALIDA.
+func responderSessaoInvalida(c *gin.Context, mensagem string, err error) {
+	utils.RespondWithErrorData(c, http.StatusUnauthorized, mensagem, err, gin.H{"code": CodigoSessaoInvalida})
+	c.Abort()
+}
 
 // rotaTrocaSenhaObrigatoria diz se a rota pode ser usada com a senha temporária
 // ainda ativa: ler o próprio perfil, trocar a senha e encerrar a sessão — nada
@@ -131,6 +150,12 @@ func sessaoInvalidadaPorReset(emitidoEm *jwt.NumericDate, desde sql.NullTime) bo
 // "inativo" (desvinculado) pode acessar. Todas as leituras (GET/HEAD/OPTIONS)
 // são permitidas. Para escrita, apenas uma allowlist explícita de rotas feitas
 // para o estudante desvinculado ou de pagamento.
+// RotaPermitidaEstudanteInativo expõe a lista de escrita permitida ao estudante
+// desvinculado (inativo) para os testes de varredura do router.
+func RotaPermitidaEstudanteInativo(method, fullPath string) bool {
+	return rotaPermitidaEstudanteInativo(method, fullPath)
+}
+
 func rotaPermitidaEstudanteInativo(method, fullPath string) bool {
 	// Consultar tudo o que o envolve (GET, HEAD, OPTIONS)
 	switch method {
@@ -168,7 +193,9 @@ func rotaPermitidaEstudanteInativo(method, fullPath string) bool {
 //
 // Regras de status por tipo (SEC-12/13):
 //   - admin: só "ativo"
-//   - academia: só "ativo" (exceto rotas de conta que não têm gate de estado)
+//   - academia: só "ativo", no login e em TODAS as rotas (inclusive as de conta).
+//     A decisão D4 do plano (entrar em qualquer estado) vale só para o
+//     estudante; para a academia mantém-se o bloqueio, que é o mais seguro.
 //   - estudante: qualquer status EXCETO "deletado"; "inativo" tem escrita
 //     restrita por método (rotaPermitidaEstudanteInativo)
 //
@@ -186,16 +213,14 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		if authHeader == "" {
 			log.Printf("❌ [AuthMiddleware] Token não fornecido - IP: %s", c.ClientIP())
-			utils.RespondWithError(c, http.StatusUnauthorized, "token não fornecido", nil)
-			c.Abort()
+			responderSessaoInvalida(c, "token não fornecido", nil)
 			return
 		}
 
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		if tokenString == authHeader {
 			log.Printf("❌ [AuthMiddleware] Formato de token inválido (sem 'Bearer ')")
-			utils.RespondWithError(c, http.StatusUnauthorized, "formato de token inválido", nil)
-			c.Abort()
+			responderSessaoInvalida(c, "formato de token inválido", nil)
 			return
 		}
 
@@ -206,8 +231,7 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		if err != nil || !token.Valid {
 			log.Printf("❌ [AuthMiddleware] Token inválido ou expirado: %v - IP: %s", err, c.ClientIP())
-			utils.RespondWithError(c, http.StatusUnauthorized, "token inválido ou expirado", nil)
-			c.Abort()
+			responderSessaoInvalida(c, "token inválido ou expirado", nil)
 			return
 		}
 
@@ -223,12 +247,19 @@ func AuthMiddleware() gin.HandlerFunc {
 		// statusErr != nil significa que o usuário foi encontrado mas o status
 		// bloqueia o acesso (deletado para todos, inativo para admin/academia).
 		// Para estudante inativo, statusErr é nil (o estado vem em estado.Status).
+		if errors.Is(statusErr, errEstadoIndisponivel) {
+			// Falha fechada (Tarefa 127): sem o estado da conta não há como aplicar
+			// bloqueio, troca de senha obrigatória nem sessões encerradas.
+			log.Printf("❌ [AuthMiddleware] Estado da conta indisponível — pedido recusado (503) - UserID: %s, Type: %s", claims.UserID, claims.UserType)
+			utils.RespondWithError(c, http.StatusServiceUnavailable,
+				"serviço temporariamente indisponível. Tente novamente em instantes.", nil)
+			c.Abort()
+			return
+		}
 		if statusErr != nil {
 			log.Printf("❌ [AuthMiddleware] Usuário bloqueado por status - UserID: %s, Type: %s: %v",
 				claims.UserID, claims.UserType, statusErr)
-			utils.RespondWithError(c, http.StatusUnauthorized,
-				"conta inativa ou não encontrada. Entre em contato com o suporte.", statusErr)
-			c.Abort()
+			responderSessaoInvalida(c, "conta inativa ou não encontrada. Entre em contato com o suporte.", statusErr)
 			return
 		}
 
@@ -237,8 +268,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			// sessões que já existiam.
 			if sessaoInvalidadaPorReset(claims.IssuedAt, estado.SessoesValidasDesde) {
 				log.Printf("❌ [AuthMiddleware] Sessão invalidada por redefinição de senha - UserID: %s, Type: %s", claims.UserID, claims.UserType)
-				utils.RespondWithError(c, http.StatusUnauthorized, "sessão encerrada: faça login novamente", nil)
-				c.Abort()
+				responderSessaoInvalida(c, "sessão encerrada: faça login novamente", nil)
 				return
 			}
 			// SEC-04: com a senha temporária ainda ativa, só perfil/trocar senha/logout.
@@ -269,11 +299,6 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-func statusInativo(err error) bool { _, ok := err.(*statusInativoError); return ok }
-func rotaFinanceiraRestrita(path string) bool {
-	return strings.HasPrefix(path, "/financeiro/mensalidades/estudante/") || path == "/financeiro/mensalidades/pagamento"
-}
-
 // OptionalAuthMiddleware autentica a requisição quando um token Bearer é enviado,
 // mas permite o acesso sem Authorization. Tokens presentes continuam sendo
 // validados para preservar o comportamento seguro de rotas que têm resposta
@@ -289,8 +314,7 @@ func OptionalAuthMiddleware() gin.HandlerFunc {
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		if tokenString == authHeader {
 			log.Printf("❌ [OptionalAuthMiddleware] Formato de token inválido (sem 'Bearer ')")
-			utils.RespondWithError(c, http.StatusUnauthorized, "formato de token inválido", nil)
-			c.Abort()
+			responderSessaoInvalida(c, "formato de token inválido", nil)
 			return
 		}
 
@@ -301,24 +325,27 @@ func OptionalAuthMiddleware() gin.HandlerFunc {
 
 		if err != nil || !token.Valid {
 			log.Printf("❌ [OptionalAuthMiddleware] Token inválido ou expirado: %v - IP: %s", err, c.ClientIP())
-			utils.RespondWithError(c, http.StatusUnauthorized, "token inválido ou expirado", nil)
-			c.Abort()
+			responderSessaoInvalida(c, "token inválido ou expirado", nil)
 			return
 		}
 
 		estado, err := consultarEstadoUsuario(c, claims.UserID, claims.UserType)
+		if errors.Is(err, errEstadoIndisponivel) {
+			// Rota pública: sem o estado da conta a requisição segue como anónima
+			// (nunca com a visão ampliada de utilizador autenticado).
+			log.Printf("⚠️ [OptionalAuthMiddleware] Estado da conta indisponível — a seguir como anónimo")
+			c.Next()
+			return
+		}
 		if err != nil {
 			log.Printf("❌ [OptionalAuthMiddleware] Usuário inativo ou não encontrado - UserID: %s, Type: %s: %v",
 				claims.UserID, claims.UserType, err)
-			utils.RespondWithError(c, http.StatusUnauthorized,
-				"conta inativa ou não encontrada. Entre em contato com o suporte.", err)
-			c.Abort()
+			responderSessaoInvalida(c, "conta inativa ou não encontrada. Entre em contato com o suporte.", err)
 			return
 		}
 		if estado != nil {
 			if sessaoInvalidadaPorReset(claims.IssuedAt, estado.SessoesValidasDesde) {
-				utils.RespondWithError(c, http.StatusUnauthorized, "sessão encerrada: faça login novamente", nil)
-				c.Abort()
+				responderSessaoInvalida(c, "sessão encerrada: faça login novamente", nil)
 				return
 			}
 			// Senha temporária ainda ativa: a rota é pública, mas a sessão não
@@ -351,8 +378,10 @@ type estadoUsuario struct {
 //   - usuário inexistente → (nil, sql.ErrNoRows);
 //   - status bloqueado    → (estado, *statusInativoError) — o estado vem junto
 //     porque a sessão restrita do estudante inativo ainda precisa dele;
-//   - erro de banco ou dbClient ausente → (nil, nil): degradação graciosa
-//     documentada (FIX E4-CI-03), com log de aviso.
+//   - erro de banco       → (nil, errEstadoIndisponivel): falha fechada
+//     (Tarefa 127; substitui a degradação graciosa do FIX E4-CI-03);
+//   - dbClient ausente (erro de configuração do router) → (nil, nil): o
+//     handler seguinte falhará com 500 em getDbClient().
 //
 // FIX AUTH-01 (E4-AA-02): admin é verificado aqui, não apenas em RequireAdmin.
 //
@@ -405,9 +434,8 @@ func consultarEstadoUsuario(c *gin.Context, userID uuid.UUID, userType string) (
 		return nil, sql.ErrNoRows
 	}
 	if err != nil {
-		// FIX E4-CI-03: em caso de erro de banco permitimos a passagem com aviso.
 		log.Printf("⚠️ [AuthMiddleware] Erro ao verificar status do usuário tipo %s: %v", userType, err)
-		return nil, nil
+		return nil, errEstadoIndisponivel
 	}
 	return &est, finalizarVerificacaoStatusUsuario(userType, est.Status, nil)
 }
@@ -418,11 +446,7 @@ func finalizarVerificacaoStatusUsuario(userType, status string, err error) error
 	}
 	if err != nil {
 		log.Printf("⚠️ [AuthMiddleware] Erro ao verificar status do usuário tipo %s: %v", userType, err)
-		// FIX E4-CI-03: em caso de erro de banco (ex: timeout), permitimos a passagem
-		// com aviso para não derrubar o serviço inteiro por instabilidade pontual do BD.
-		// Trade-off: durante degradação, usuários desativados podem passar — logado para
-		// auditoria e alertas do SIEM.
-		return nil
+		return errEstadoIndisponivel
 	}
 
 	// SEC-13: "deletado" bloqueia para todos os tipos

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/subtle"
 	"log"
 	"net/http"
 	"os"
@@ -20,8 +21,9 @@ import (
 //   - Após o primeiro uso a rota fica bloqueada (retorna 403).
 //   - Advisory lock PostgreSQL serializa requisições concorrentes.
 //   - A senha NÃO é retornada na resposta.
-//   - SEC-11: Requer header BOOTSTRAP_TOKEN igual à variável de ambiente
-//     BOOTSTRAP_TOKEN (ou BOOTSTRAP_TOKEN_DEV em não-produção).
+//   - SEC-11: Requer o header X-Bootstrap-Token (ou BOOTSTRAP_TOKEN) igual à
+//     variável de ambiente BOOTSTRAP_TOKEN (ou BOOTSTRAP_TOKEN_DEV em
+//     não-produção): 403 se a variável não existir, 401 se o token falhar.
 //
 // FIX E4-LN-02: o advisory lock era mantido retido DURANTE o polling síncrono
 // (até 10 segundos), o que bloqueava concorrentes e mantinha uma conexão de
@@ -33,7 +35,10 @@ import (
 // tornando o período de espera pela projeção um problema puramente de
 // responsividade da resposta HTTP, sem impacto em outras requisições.
 func BootstrapAdminFPP(c *gin.Context) {
-	// SEC-11: Validar header BOOTSTRAP_TOKEN antes de qualquer processamento
+	// SEC-11: validar o token de bootstrap antes de qualquer processamento.
+	//  - sem BOOTSTRAP_TOKEN configurado no servidor → 403 (rota desativada);
+	//  - token ausente ou errado                      → 401;
+	//  - comparação em tempo constante (crypto/subtle).
 	expectedToken := os.Getenv("BOOTSTRAP_TOKEN")
 	// Permitir BOOTSTRAP_TOKEN_DEV apenas em ambientes não-produção
 	if expectedToken == "" {
@@ -41,12 +46,20 @@ func BootstrapAdminFPP(c *gin.Context) {
 			expectedToken = os.Getenv("BOOTSTRAP_TOKEN_DEV")
 		}
 	}
-	providedToken := c.GetHeader("BOOTSTRAP_TOKEN")
-	if expectedToken == "" || providedToken == "" || providedToken != expectedToken {
+	if expectedToken == "" {
+		log.Printf("❌ [BOOTSTRAP] Rota desativada: BOOTSTRAP_TOKEN não configurado (IP: %s)", c.ClientIP())
+		c.JSON(http.StatusForbidden, gin.H{"error": "bootstrap desativado neste ambiente"})
+		return
+	}
+	// O nome com sublinhado é descartado por vários proxies (nginx por defeito):
+	// X-Bootstrap-Token é o nome recomendado; BOOTSTRAP_TOKEN continua aceito.
+	providedToken := c.GetHeader("X-Bootstrap-Token")
+	if providedToken == "" {
+		providedToken = c.GetHeader("BOOTSTRAP_TOKEN")
+	}
+	if providedToken == "" || subtle.ConstantTimeCompare([]byte(providedToken), []byte(expectedToken)) != 1 {
 		log.Printf("❌ [BOOTSTRAP] Token inválido ou ausente (IP: %s)", c.ClientIP())
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "acesso negado: token de bootstrap inválido",
-		})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "acesso negado: token de bootstrap inválido"})
 		return
 	}
 
@@ -65,6 +78,13 @@ func BootstrapAdminFPP(c *gin.Context) {
 			"error":   "nome, email, telefone e senha são obrigatórios",
 			"example": gin.H{"nome": "Admin FPP", "email": "admin@dominio.com", "telefone": "923456789", "senha": "SenhaForte@123"},
 		})
+		return
+	}
+
+	// A senha do primeiro administrador segue a mesma regra de todas as demais
+	// (ValidateSenha) e é validada antes de qualquer acesso ao banco.
+	if err := utils.ValidateSenha(req.Senha); err != nil {
+		utils.RespondWithValidationError(c, err)
 		return
 	}
 

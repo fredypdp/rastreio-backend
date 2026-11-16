@@ -34,6 +34,7 @@ func setSenhaTemporaria(conn execer, tabela string, event db.Event) error {
 //
 //	alteracao_usuario (ou vazio, eventos antigos) → deve_alterar_senha = FALSE
 //	reset_senha                                   → FALSE e sessões anteriores invalidadas
+//	troca_senha_temporaria                        → FALSE e sessões anteriores invalidadas
 //	credenciais_reenviadas                        → TRUE  e sessões anteriores invalidadas
 func aplicarSenhaAlterada(conn execer, tabela, novoHash, motivo string, event db.Event) error {
 	if !tabelasDoisFatores[tabela] {
@@ -48,7 +49,7 @@ func aplicarSenhaAlterada(conn execer, tabela, novoHash, motivo string, event db
 			  WHERE id = $5`,
 			novoHash, event.OccurredAt, event.EventVersion, event.EventID, event.AggregateID)
 		return err
-	case aggregates.MotivoSenhaResetSenha:
+	case aggregates.MotivoSenhaResetSenha, aggregates.MotivoSenhaTrocaTemporaria:
 		_, err := conn.Exec(
 			`UPDATE `+tabela+`
 			    SET senha_hash = $1, deve_alterar_senha = FALSE, sessoes_validas_desde = $2,
