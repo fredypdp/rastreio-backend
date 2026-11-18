@@ -26,6 +26,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 4. Uma dependência só está liberada quando a Parte de que depende está **Implementada** (ou quando o item específico de que se depende está `[x]`).
 5. Se a implementação mudar uma regra, corrija a regra no texto e anote em **Registro de andamento** (última seção).
 6. O documento da tarefa e o texto do commit citam a Parte e os itens fechados (ex.: "Plano: Parte 5, itens 3 e 4").
+7. Ou de preferência (prefiro assim), marcar com ✅, principalmente no fim do título da parte implementada
 
 **Outras orientações**
 - Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a próxima tarefa livre é a **128** (a 127 está em Lista de Tarefas).
@@ -100,7 +101,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 10. **Mensagens sensíveis são genéricas** quando o assunto é assinatura (Parte 9).
 11. **Todo recurso novo declara a categoria de assinatura que o protege** (Parte 9). Depois da Parte 9, nada nasce sem proteção.
 12. **Notificação de SMS paga pela academia nasce desligada.** O que o sistema "recomenda" não vem ligado por padrão (evita gasto indesejado).
-13. **Cada parte atualiza a Documentação da API.md** e entrega migrations que rodam do zero.
+13. **Cada parte atualiza a Documentação da API.md** (e a sua versão, no formato de Versionamento Semântico) e entrega migrations que rodam do zero.
 14. **Cada parte atualiza este plano** (ver "Como acompanhar o andamento").
 
 ---
