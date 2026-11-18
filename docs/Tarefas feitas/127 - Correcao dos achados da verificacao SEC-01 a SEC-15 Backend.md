@@ -1,6 +1,6 @@
 # Tarefa 127 — Correção dos achados da verificação de segurança SEC-01 a SEC-15 (backend)
 
-**Estado:** pendente
+**Estado:** feito
 **Repositório:** https://github.com/fredypdp/rastreio-backend
 **Gerado sobre:** `main` @ `e397295`
 **Entrega:** arquivos completos e atualizados na pasta `rastreio-backend/`, com os mesmos caminhos do repositório (mais 2 arquivos a apagar à mão, listados abaixo)

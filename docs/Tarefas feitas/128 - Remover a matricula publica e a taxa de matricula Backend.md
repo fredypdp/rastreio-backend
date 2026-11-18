@@ -1,6 +1,6 @@
 # Tarefa 128 — Remover a matrícula pública e a taxa de matrícula (Parte 1 do Plano de Atualizações) (backend)
 
-**Estado:** pendente
+**Estado:** feito
 **Repositório:** https://github.com/fredypdp/rastreio-backend
 **Gerado sobre:** `main` @ `127006a`
 **Entrega:** arquivos completos e atualizados na pasta `rastreio-backend/`, com os mesmos caminhos do repositório. **9 arquivos precisam ser apagados** (lista em "Como aplicar").
