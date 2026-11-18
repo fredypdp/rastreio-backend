@@ -277,7 +277,7 @@ func aplicarAlteracaoNIFAprovada(c *gin.Context, sol *projections.SolicitacaoAlt
 
 func generateUniqueCodigoSolicitacaoAlteracaoNIF(client *db.Client) (string, error) {
 	for i := 0; i < 20; i++ {
-		code, err := generateUniqueCodigoSolicitacao(client)
+		code, err := gerarCodigoSolicitacao()
 		if err != nil {
 			return "", err
 		}

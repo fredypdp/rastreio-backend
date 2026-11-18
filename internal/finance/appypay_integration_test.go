@@ -100,17 +100,42 @@ func integrationClient(t *testing.T) *db.Client {
 	return client
 }
 
-func seedMatriculaPendente(t *testing.T, client *db.Client, academia string, valor float64) string {
-	t.Helper()
-	codigo := "SOL" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
-	_, err := client.DB().Exec(`INSERT INTO projection_solicitacoes_matricula
-		(id,codigo_solicitacao,codigo_academia,nome,genero,data_nascimento,email,telefone,telefone_encarregado,bilhete_identidade,bilhete_identidade_encarregado,ano_escolar_fundamental,status,documentos,codigo_estudante_gerado,valor_matricula,metodos_pagamento_matricula,created_at,updated_at)
-		VALUES ($1,$2,$3,'Estudante de integração','feminino','2012-01-02',$4,$5,$6,$7,$8,'6_ano_fundamental','aprovada_pendente_pagamento_matricula','{}'::jsonb,$9,$10,ARRAY['REF'],CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
-		uuid.New(), codigo, academia, codigo+"@example.test", "244"+codigo[3:], "923"+codigo[3:], "BI-"+codigo, "BI-RESP-"+codigo, "EST"+codigo[3:7], valor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return codigo
+// obrigacaoTeste identifica uma cobrança de teste: o código da inscrição de
+// serviço extra (taxa de inscrição) a que ela fica ligada e o valor fixado.
+// Os testes de provedor, webhook e reconciliação só precisam de "uma cobrança
+// REF/GPO aguardando pagamento" e a emitem pelo mesmo gerarCobranca usado
+// pelos pagamentos de mensalidade e de serviço extra.
+type obrigacaoTeste struct {
+	Codigo string
+	Valor  float64
+}
+
+// cobrancaTeste espelha o formato {Charge QRCodeResult} das views de pagamento.
+type cobrancaTeste struct {
+	Charge QRCodeResult
+}
+
+func novaObrigacaoTeste(valor float64) obrigacaoTeste {
+	return obrigacaoTeste{Codigo: uuid.NewString(), Valor: valor}
+}
+
+func (s *Service) iniciarCobrancaTeste(ctx context.Context, academia string, ob obrigacaoTeste, metodo, telefone string) (cobrancaTeste, error) {
+	res, err := s.gerarCobranca(ctx, gerarCobrancaInput{
+		CodigoAcademia:             academia,
+		MetodoPagamento:            metodo,
+		Amount:                     ob.Valor,
+		Description:                "Cobrança de teste de integração",
+		MerchantTransactionID:      merchantID(),
+		Telefone:                   telefone,
+		CodigoInscricaoServico:     ob.Codigo,
+		TipoLancamentoServicoExtra: "taxa_inscricao",
+	}, "teste:"+ob.Codigo, "solicitante", "127.0.0.1")
+	return cobrancaTeste{Charge: res}, err
+}
+
+// cancelarCobrancaTeste cancela a cobrança em aberto ligada à obrigação.
+func (s *Service) cancelarCobrancaTeste(ctx context.Context, ob obrigacaoTeste, motivo, actorID, actorType, ip string) error {
+	return s.CancelarCobrancaTaxaInscricaoServicoAberta(ctx, ob.Codigo, motivo, actorID, actorType, ip)
 }
 
 func TestIntegrationAcceptWebhookIsIdempotent(t *testing.T) {
@@ -141,7 +166,7 @@ func TestIntegrationAcceptWebhookIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestIntegrationMatriculaPagamentoFixaValorImpedeDuplicidadeECancelaEmCascata(t *testing.T) {
+func TestIntegrationWebhookTardioMantemCancelamentoERegistraConflito(t *testing.T) {
 	client := integrationClient(t)
 	t.Setenv("ENV", "test")
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
@@ -150,56 +175,12 @@ func TestIntegrationMatriculaPagamentoFixaValorImpedeDuplicidadeECancelaEmCascat
 	service.SetHTTPClient(&http.Client{Transport: &appyPayMockTransport{status: "Pending"}})
 	academia := "MAT" + uuid.NewString()[:8]
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
-	codigo := seedMatriculaPendente(t, client, academia, 1250.50)
-
-	var estudantes int
-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM projection_estudantes WHERE codigo_estudante=$1`, "EST"+codigo[3:7]).Scan(&estudantes); err != nil {
-		t.Fatal(err)
-	}
-	if estudantes != 0 {
-		t.Fatal("solicitacao pendente criou estudante antes do pagamento")
-	}
-	primeira, err := service.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
+	codigo := novaObrigacaoTeste(900)
+	charge, err := service.iniciarCobrancaTeste(context.Background(), academia, codigo, "REF", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var valor float64
-	if err = client.DB().QueryRow(`SELECT (payload->>'amount')::float8 FROM financeiro_cobrancas WHERE id=$1`, primeira.Charge.ID).Scan(&valor); err != nil {
-		t.Fatal(err)
-	}
-	if valor != 1250.50 {
-		t.Fatalf("valor da cobrança = %.2f, queria o valor fixado 1250.50", valor)
-	}
-	if _, err = service.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1"); err == nil {
-		t.Fatal("segunda cobrança de matrícula aberta foi aceita")
-	}
-	if err = service.CancelarCobrancaMatriculaAberta(context.Background(), codigo, "solicitação cancelada", uuid.NewString(), "academia", "127.0.0.1"); err != nil {
-		t.Fatal(err)
-	}
-	var status string
-	if err = client.DB().QueryRow(`SELECT payload->>'status' FROM financeiro_cobrancas WHERE id=$1`, primeira.Charge.ID).Scan(&status); err != nil {
-		t.Fatal(err)
-	}
-	if status != "cancelada" {
-		t.Fatalf("cobrança após cancelamento = %q", status)
-	}
-}
-
-func TestIntegrationMatriculaWebhookTardioMantemCancelamentoERegistraConflito(t *testing.T) {
-	client := integrationClient(t)
-	t.Setenv("ENV", "test")
-	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
-	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
-	service := NewService(client)
-	service.SetHTTPClient(&http.Client{Transport: &appyPayMockTransport{status: "Pending"}})
-	academia := "MAT" + uuid.NewString()[:8]
-	configureIntegrationCredential(t, service, ContextoAcademia, academia)
-	codigo := seedMatriculaPendente(t, client, academia, 900)
-	charge, err := service.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = service.CancelarCobrancaMatriculaAberta(context.Background(), codigo, "solicitação cancelada", uuid.NewString(), "academia", "127.0.0.1"); err != nil {
+	if err = service.cancelarCobrancaTeste(context.Background(), codigo, "solicitação cancelada", uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
 	accepted, _, err := service.AcceptWebhook(context.Background(), ProvedorAppyPay, "REF", charge.Charge.ProviderChargeID, WebhookOwner{CredentialID: uuid.New(), ContextoTipo: ContextoAcademia, CodigoAcademia: academia}, map[string]any{"id": charge.Charge.ProviderChargeID, "responseStatus": map[string]any{"status": "Success", "code": float64(100)}})
@@ -207,14 +188,14 @@ func TestIntegrationMatriculaWebhookTardioMantemCancelamentoERegistraConflito(t 
 		t.Fatalf("webhook tardio = accepted %t, err %v", accepted, err)
 	}
 	var status, codigoNoEvento string
-	if err = client.DB().QueryRow(`SELECT payload->>'status',payload->>'codigo_solicitacao' FROM financeiro_cobrancas WHERE id=$1`, charge.Charge.ID).Scan(&status, &codigoNoEvento); err != nil {
+	if err = client.DB().QueryRow(`SELECT payload->>'status',payload->>'codigo_inscricao_servico' FROM financeiro_cobrancas WHERE id=$1`, charge.Charge.ID).Scan(&status, &codigoNoEvento); err != nil {
 		t.Fatal(err)
 	}
-	if status != "cancelada" || codigoNoEvento != codigo {
+	if status != "cancelada" || codigoNoEvento != codigo.Codigo {
 		t.Fatalf("webhook tardio alterou cobrança: status=%q codigo=%q", status, codigoNoEvento)
 	}
 	var conflitos int
-	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND aggregate_id=$1 AND event_type='CobrancaConflitoPosCancelamento' AND payload->>'codigo_solicitacao'=$2`, charge.Charge.ID, codigo).Scan(&conflitos); err != nil {
+	if err = client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND aggregate_id=$1 AND event_type='CobrancaConflitoPosCancelamento' AND payload->>'codigo_inscricao_servico'=$2`, charge.Charge.ID, codigo.Codigo).Scan(&conflitos); err != nil {
 		t.Fatal(err)
 	}
 	if conflitos != 1 {
@@ -270,8 +251,8 @@ func TestIntegrationAcceptWebhookConfirmaSucessoQuandoConsultaAoVivoConcorda(t *
 	service.SetHTTPClient(&http.Client{Transport: &methodAwareMockTransport{getStatus: "Success"}})
 	academia := "MAT" + uuid.NewString()[:8]
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
-	codigo := seedMatriculaPendente(t, client, academia, 900)
-	charge, err := service.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
+	codigo := novaObrigacaoTeste(900)
+	charge, err := service.iniciarCobrancaTeste(context.Background(), academia, codigo, "REF", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,8 +285,8 @@ func TestIntegrationAcceptWebhookNaoConfirmaSucessoQuandoConsultaAoVivoDiscorda(
 	service.SetHTTPClient(&http.Client{Transport: &methodAwareMockTransport{getStatus: "Pending"}})
 	academia := "MAT" + uuid.NewString()[:8]
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
-	codigo := seedMatriculaPendente(t, client, academia, 900)
-	charge, err := service.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
+	codigo := novaObrigacaoTeste(900)
+	charge, err := service.iniciarCobrancaTeste(context.Background(), academia, codigo, "REF", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +309,7 @@ func TestIntegrationAcceptWebhookNaoConfirmaSucessoQuandoConsultaAoVivoDiscorda(
 // indisponível, timeout), AcceptWebhook cai para confiar no webhook em vez
 // de bloquear a confirmação — nunca deixa uma cobrança presa por causa de
 // uma falha temporária do próprio double-check (mesmo raciocínio do Bug 1
-// já corrigido, em que o webhook nunca efetivava a matrícula).
+// já corrigido, em que o webhook nunca confirmava a mensalidade).
 func TestIntegrationAcceptWebhookConfirmaSucessoQuandoConsultaAoVivoFalha(t *testing.T) {
 	client := integrationClient(t)
 	t.Setenv("ENV", "test")
@@ -338,8 +319,8 @@ func TestIntegrationAcceptWebhookConfirmaSucessoQuandoConsultaAoVivoFalha(t *tes
 	service.SetHTTPClient(&http.Client{Transport: &methodAwareMockTransport{getErr: errors.New("upstream indisponível (simulado)")}})
 	academia := "MAT" + uuid.NewString()[:8]
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
-	codigo := seedMatriculaPendente(t, client, academia, 900)
-	charge, err := service.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
+	codigo := novaObrigacaoTeste(900)
+	charge, err := service.iniciarCobrancaTeste(context.Background(), academia, codigo, "REF", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,8 +348,8 @@ func TestIntegrationAcceptWebhookReflecteEstadoNaoSucesso(t *testing.T) {
 	service.SetHTTPClient(&http.Client{Transport: &appyPayMockTransport{status: "Pending"}})
 	academia := "MAT" + uuid.NewString()[:8]
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
-	codigo := seedMatriculaPendente(t, client, academia, 900)
-	charge, err := service.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
+	codigo := novaObrigacaoTeste(900)
+	charge, err := service.iniciarCobrancaTeste(context.Background(), academia, codigo, "REF", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,9 +483,9 @@ func TestIntegrationCreateGPOQRCodeCriacaoNuncaEClassificadaComoPagamentoSucedid
 	// Documentação.md): responseStatus.status="Active", code=103 — o
 	// literal "Active" já deixa claro que o QR foi só CRIADO, ninguém
 	// pagou. Antes da correção, o código 103 fazia CreateGPOQRCode devolver
-	// Status="Success", e o chamador (IniciarPagamentoMatricula /
-	// IniciarPagamentoMensalidades) efetivava a matrícula ou dava a
-	// mensalidade como paga imediatamente — sem nenhum pagamento real.
+	// Status="Success", e o chamador (IniciarPagamentoMensalidades /
+	// pagamentos de serviço extra) dava a cobrança como paga
+	// imediatamente — sem nenhum pagamento real.
 	client := integrationClient(t)
 	t.Setenv("ENV", "test")
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")

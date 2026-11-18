@@ -86,13 +86,11 @@ func TestDocumentoRoutesRequireAuthentication(t *testing.T) {
 	for _, path := range []string{
 		"/documentos/academias/ACA001/alvara/download",
 		"/documentos/estudantes/EST001/bi_estudante/download",
-		"/documentos/solicitacoes-matricula/SOL001/bi_estudante/download",
 		"/estudante/documentos",
 		"/estudante/documentos/bi_estudante/download",
 		"/academia/documentos",
 		"/academia/documentos/academia/alvara/download",
 		"/academia/documentos/estudantes/EST001/bi_estudante/download",
-		"/academia/documentos/solicitacoes-matricula/SOL001/bi_estudante/download",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		w := httptest.NewRecorder()
@@ -387,6 +385,51 @@ func TestLegacyPaymentRoutesAreRemoved(t *testing.T) {
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("expected protected %s %s to return 401 without a token, got %d", tc.method, tc.path, w.Code)
+		}
+	}
+}
+
+// Plano de Atualizações, Parte 1: a matrícula pública (solicitação de matrícula
+// feita pelo próprio estudante) e a taxa de matrícula foram removidas. Nenhuma
+// dessas rotas pode voltar a existir — nem sequer protegida por autenticação
+// (404, e não 401/403).
+func TestPublicEnrollmentRoutesAreRemoved(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := setupRouter()
+
+	const codigo = "ABC12345678"
+
+	removed := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/solicitacao-matricula"},
+		{http.MethodGet, "/solicitacao-matricula/busca"},
+		{http.MethodGet, "/solicitacao-matricula/" + codigo + "/status"},
+		{http.MethodPost, "/solicitacao-matricula/" + codigo + "/pagamento-matricula"},
+		{http.MethodGet, "/academia/documento/ACA001/documentos-extra"},
+		{http.MethodGet, "/academia/solicitacoes-matricula"},
+		{http.MethodGet, "/academia/solicitacao-matricula/" + codigo},
+		{http.MethodPut, "/academia/solicitacao-matricula/" + codigo + "/aprovar"},
+		{http.MethodPut, "/academia/solicitacao-matricula/" + codigo + "/reprovar"},
+		{http.MethodPut, "/academia/solicitacao-matricula/" + codigo + "/cancelar"},
+		{http.MethodGet, "/academia/documentos/solicitacoes-matricula/" + codigo + "/bi_estudante/download"},
+		{http.MethodGet, "/solicitacoes-matricula"},
+		{http.MethodGet, "/documentos/solicitacoes-matricula/" + codigo + "/bi_estudante/download"},
+		{http.MethodGet, "/dominis/solicitacoes-matricula"},
+		{http.MethodPost, "/financeiro/matriculas/configuracoes"},
+		{http.MethodPut, "/financeiro/matriculas/configuracoes"},
+		{http.MethodGet, "/financeiro/matriculas/configuracoes"},
+		{http.MethodDelete, "/financeiro/matriculas/configuracoes"},
+	}
+	for _, tc := range removed {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected %s %s to be removed with 404, got %d", tc.method, tc.path, w.Code)
 		}
 	}
 }

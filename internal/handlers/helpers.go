@@ -148,10 +148,6 @@ func getStorageProvider(c *gin.Context) storage.StorageProvider {
 	return provider
 }
 
-func getSolicitacaoMatriculaProjection(c *gin.Context) *projections.SolicitacaoMatriculaProjection {
-	return projections.NewSolicitacaoMatriculaProjection(getDbClient(c))
-}
-
 func getSolicitacaoAlteracaoNIFAcademiaProjection(c *gin.Context) *projections.SolicitacaoAlteracaoNIFAcademiaProjection {
 	return projections.NewSolicitacaoAlteracaoNIFAcademiaProjection(getDbClient(c))
 }

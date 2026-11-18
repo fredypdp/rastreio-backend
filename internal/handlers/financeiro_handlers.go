@@ -176,16 +176,10 @@ func ConsultarCobranca(c *gin.Context) {
 		financeError(c, err)
 		return
 	}
-	// A cobrança pode ser de matrícula: diferente de uma cobrança de
-	// mensalidade (confirmada via confirmMensalidadeCharge dentro do
-	// próprio ConsultCharge), a efetivação do vínculo de matrícula
-	// (criação do estudante e transição da solicitação) não faz parte do
-	// pacote financeiro e precisa ser acionada aqui, exatamente como já é
-	// feito em ReceberWebhook e na criação síncrona da cobrança em
-	// IniciarPagamentoMatricula. Sem isto, uma cobrança de matrícula que só
-	// é confirmada pela AppyPay quando alguém consulta o status (fluxo
-	// normal para GPO/REF, que nunca retornam "success" na criação) nunca
-	// efetiva a matrícula.
+	// Uma cobrança confirmada pela AppyPay só quando alguém consulta o status
+	// (fluxo normal para GPO/REF, que nunca retornam "success" na criação)
+	// precisa ter os efeitos de pagamento (serviço extra) aplicados aqui,
+	// exatamente como já é feito em ReceberWebhook.
 	if strings.EqualFold(strings.TrimSpace(out.Status), "success") {
 		if err := aplicarEfeitosPagamento(c, c.Param("id"), id.String(), t, c.ClientIP()); err != nil {
 			utils.RespondWithInternalError(c, err)
@@ -195,7 +189,7 @@ func ConsultarCobranca(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// ListarCobrancas lista cobranças (mensalidade, matrícula ou avulsa)
+// ListarCobrancas lista cobranças (mensalidade, serviço extra ou avulsa)
 // do contexto autorizado, com filtros opcionais por estado e origem e
 // paginação — resolve o Problema 1 documentado em
 // docs/Lista de Tarefas/Problemas de Backend - Modulo de Pagamentos.md.
@@ -297,7 +291,7 @@ func ListarCobrancas(c *gin.Context) {
 }
 
 // ConsultarCobrancasEstudante lista TODAS as cobranças (mensalidade,
-// matrícula ou avulsa) já associadas a um estudante, em qualquer estado —
+// serviço extra ou avulsa) já associadas a um estudante, em qualquer estado —
 // diferente de ListarCobrancas (academia/admin, dentro do próprio
 // contexto), esta rota é acessível ao próprio estudante para consultar o seu
 // histórico completo de pagamentos, exatamente como ConsultarMensalidadesEstudante

@@ -264,7 +264,7 @@ func extractProviderOutcome(v map[string]any) providerOutcome {
 // "status"/"state" na raiz do payload — ver seção "Merchant Webhooks" de
 // docs/Parceiros e integrações/AppyPay Documentação.md). Qualquer código
 // fora deste pacote que precise reagir a um sucesso da AppyPay (por exemplo,
-// um handler HTTP de webhook decidindo se efetiva uma matrícula) deve
+// um handler HTTP de webhook decidindo se confirma uma mensalidade) deve
 // chamar esta função em vez de reimplementar sua própria leitura do
 // payload — ver docs/Debbugs/Auditoria de conformidade AppyPay (autenticação
 // e geração de cobrança).md para o bug que isto substitui.
@@ -456,7 +456,7 @@ func (p *appyPayProvider) CriarQRCode(ctx context.Context, cred credencialProved
 		// mas ali "Success" quer dizer "a operação de API pedida (criar o
 		// QR) teve sucesso", não "o pagamento foi recebido". Sem esta
 		// correção, a criação do QR seria tratada como pagamento recebido e
-		// a matrícula/mensalidade seria efetivada sem pagamento real.
+		// a mensalidade seria efetivada sem pagamento real.
 		//
 		// Código/mensagem/fonte do provedor continuam preservados em
 		// outcome para auditoria; só o status usado nas decisões de

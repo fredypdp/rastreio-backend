@@ -139,8 +139,8 @@ func (s *Service) statusAoVivoSeDisponivel(ctx context.Context, row chargeRow) (
 
 // reconciliarPagamentoDescoberto aplica, em melhor esforço, os efeitos
 // financeiros de um pagamento que acabou de ser descoberto fora do fluxo
-// normal (mensalidade e lançamento de serviço extra). Os efeitos de matrícula
-// e taxa de inscrição vivem na camada de handlers.
+// normal (mensalidade e lançamento de serviço extra). Os efeitos da taxa de
+// inscrição vivem na camada de handlers.
 func (s *Service) reconciliarPagamentoDescoberto(ctx context.Context, chargeID uuid.UUID, actorID, actorType, ip string) {
 	_ = s.confirmMensalidadeCharge(ctx, chargeID, actorID, actorType, ip)
 	codigo, tipo, mes, ano, err := s.DadosServicoExtraDaCobranca(ctx, chargeID.String())

@@ -143,20 +143,4 @@ func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testin
 	if ctxMes.Writer.Status() != http.StatusNoContent {
 		t.Fatalf("RemoverMesInicioCobranca: esperava 204, obteve %d: %s", ctxMes.Writer.Status(), recMes.Body.String())
 	}
-
-	// 4) Configuração de matrícula.
-	if _, err := FinanceiroService.ConfigureMatricula(ctx.Request.Context(), finance.MatriculaConfiguracaoInput{
-		CodigoAcademia: academiaDona, Nivel: finance.NivelFundamental, AnoAcademico: "7_ano_fundamental",
-		Valor: 15000, MetodosPagamento: []string{"GPO_QR"}, ModoVigencia: finance.ModoVigenciaAPartirDaAtualizacao,
-	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
-		t.Fatalf("ConfigureMatricula falhou: %v", err)
-	}
-	ctxMat, recMat := newDeleteJSONContext(http.MethodDelete, "/financeiro/matriculas/configuracoes", map[string]any{
-		"codigo_academia": academiaDona, "nivel": finance.NivelFundamental, "ano_academico": "7_ano_fundamental",
-	})
-	setActor(ctxMat, academiaDona)
-	RemoverConfiguracaoMatricula(ctxMat)
-	if ctxMat.Writer.Status() != http.StatusNoContent {
-		t.Fatalf("RemoverConfiguracaoMatricula: esperava 204, obteve %d: %s", ctxMat.Writer.Status(), recMat.Body.String())
-	}
 }

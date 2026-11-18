@@ -286,6 +286,42 @@ func TestValidateEventTypeRejectsRemovedPaymentEvents(t *testing.T) {
 	}
 }
 
+// Plano, Parte 1: a matrícula pública e a taxa de matrícula foram removidas.
+// Os tipos abaixo deixam de ser aceitos para gravação no ledger.
+func TestValidateEventTypeRejectsRemovedPublicEnrollmentEvents(t *testing.T) {
+	t.Parallel()
+
+	removed := []string{
+		"SolicitacaoMatriculaCriada",
+		"SolicitacaoMatriculaAprovada",
+		"SolicitacaoMatriculaAprovadaPendentePagamento",
+		"SolicitacaoMatriculaReprovada",
+		"SolicitacaoMatriculaCancelada",
+		"SolicitacaoMatriculaVinculada",
+		"SolicitacaoMatriculaValorPendenteAtualizado",
+		"MatriculaConfigurada",
+		"MatriculaConfiguracaoRemovida",
+	}
+
+	for _, eventType := range removed {
+		eventType := eventType
+		t.Run(eventType, func(t *testing.T) {
+			t.Parallel()
+			if err := ValidateEventType(eventType); err == nil {
+				t.Fatalf("ValidateEventType(%q) retornou nil, want erro", eventType)
+			}
+		})
+	}
+}
+
+func TestValidateAggregateTypeRejectsRemovedSolicitacaoMatricula(t *testing.T) {
+	t.Parallel()
+
+	if err := ValidateAggregateType("SolicitacaoMatricula"); err == nil {
+		t.Fatal("ValidateAggregateType(\"SolicitacaoMatricula\") retornou nil, want erro")
+	}
+}
+
 func TestValidateAggregateTypeAcceptsFinanceiro(t *testing.T) {
 	t.Parallel()
 

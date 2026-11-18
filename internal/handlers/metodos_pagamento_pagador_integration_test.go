@@ -39,69 +39,6 @@ func listaDe(corpo map[string]any, chave string) []any {
 	return l
 }
 
-func TestIntegrationHandlersStatusMatriculaExplicaPorQueNaoHaMetodos(t *testing.T) {
-	client, setActor := provedoresHandlersSetup(t)
-	codigo, _, _ := seedSolicitacaoMatriculaParaBusca(t, client)
-	// Academia ÚNICA por execução (e não a fixa do seed): os eventos de credencial
-	// ficam no ledger, e duas credenciais ativas da mesma academia fariam o
-	// Rebuild das outras suítes violar o índice único numa 2ª execução no mesmo banco.
-	academia := "MTS" + uuid.NewString()[:6]
-	seedAcademiaParaCategoriaServico(t, client, academia)
-	if _, err := client.DB().Exec(`UPDATE projection_solicitacoes_matricula SET codigo_academia=$1 WHERE codigo_solicitacao=$2`, academia, codigo); err != nil {
-		t.Fatal(err)
-	}
-
-	definir := func(metodos string) {
-		if _, err := client.DB().Exec(`UPDATE projection_solicitacoes_matricula SET metodos_pagamento_matricula=`+metodos+` WHERE codigo_solicitacao=$1`, codigo); err != nil {
-			t.Fatal(err)
-		}
-	}
-	status := func() map[string]any {
-		ctx, rec := newDeleteJSONContext(http.MethodGet, "/solicitacoes-matricula/"+codigo+"/status", nil)
-		ctx.Set("dbClient", client)
-		ctx.Params = gin.Params{{Key: "codigo", Value: codigo}}
-		ConsultarStatusSolicitacaoMatricula(ctx)
-		var corpo map[string]any
-		decodeJSON(t, rec, &corpo)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status: %d %s", rec.Code, rec.Body.String())
-		}
-		return corpo
-	}
-
-	definir(`ARRAY['REF','XYZ']`)
-	corpo := status()
-	if len(listaDe(corpo, "metodos_pagamento")) != 0 || avisoDe(t, corpo, "metodos_pagamento_aviso") != finance.AvisoProvedorNaoConfigurado {
-		t.Fatalf("sem provedor: %v", corpo)
-	}
-
-	ctx, rec := newDeleteJSONContext(http.MethodPost, "/financeiro/credenciais", credenciaisAppyPayNeutras(academia))
-	setActor(ctx, academia)
-	ConfigurarCredencial(ctx)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("configurar: %d %s", rec.Code, rec.Body.String())
-	}
-
-	// Há método suportado: nada a explicar, o campo nem aparece.
-	corpo = status()
-	if m := listaDe(corpo, "metodos_pagamento"); len(m) != 1 || m[0] != "REF" {
-		t.Fatalf("com a AppyPay: %v", corpo)
-	}
-	if _, existe := corpo["metodos_pagamento_aviso"]; existe {
-		t.Fatalf("com métodos disponíveis não deve haver aviso: %v", corpo)
-	}
-
-	definir(`ARRAY['XYZ']`)
-	if corpo = status(); avisoDe(t, corpo, "metodos_pagamento_aviso") != finance.AvisoMetodosNaoSuportados {
-		t.Fatalf("só métodos não suportados: %v", corpo)
-	}
-
-	definir(`ARRAY[]::text[]`)
-	if corpo = status(); avisoDe(t, corpo, "metodos_pagamento_aviso") != finance.AvisoNenhumMetodoHabilitado {
-		t.Fatalf("nenhum método habilitado: %v", corpo)
-	}
-}
-
 func semearServicoPago(t *testing.T, client *db.Client, academia, nome string, metodos, metodosTaxa string, comTaxa bool) uuid.UUID {
 	t.Helper()
 	id := uuid.New()

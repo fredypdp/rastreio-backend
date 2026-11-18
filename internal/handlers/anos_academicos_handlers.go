@@ -138,24 +138,20 @@ func alterarAnosFundamental(c *gin.Context, academiaDTO *projections.AcademiaDTO
 }
 
 type dependenciasAnoFundamental struct {
-	EstudantesAtivos               int
-	SolicitacoesMatriculaPendentes int
-	MateriasAtivas                 int
-	CategoriasNotaAtivas           int
-	RegrasAvaliacaoFinalAtivas     int
+	EstudantesAtivos           int
+	MateriasAtivas             int
+	CategoriasNotaAtivas       int
+	RegrasAvaliacaoFinalAtivas int
 }
 
 func (d dependenciasAnoFundamental) total() int {
-	return d.EstudantesAtivos + d.SolicitacoesMatriculaPendentes + d.MateriasAtivas + d.CategoriasNotaAtivas + d.RegrasAvaliacaoFinalAtivas
+	return d.EstudantesAtivos + d.MateriasAtivas + d.CategoriasNotaAtivas + d.RegrasAvaliacaoFinalAtivas
 }
 
 func (d dependenciasAnoFundamental) resumo() string {
 	partes := []string{}
 	if d.EstudantesAtivos > 0 {
 		partes = append(partes, fmt.Sprintf("%d estudante(s) ativo(s)", d.EstudantesAtivos))
-	}
-	if d.SolicitacoesMatriculaPendentes > 0 {
-		partes = append(partes, fmt.Sprintf("%d solicitação(ões) de matrícula pendente(s)", d.SolicitacoesMatriculaPendentes))
 	}
 	if d.MateriasAtivas > 0 {
 		partes = append(partes, fmt.Sprintf("%d matéria(s) ativa(s)", d.MateriasAtivas))
@@ -189,10 +185,6 @@ func contarDependenciasAtivasAnosFundamental(c *gin.Context, codigoAcademia stri
 	deps := dependenciasAnoFundamental{}
 	var err error
 	deps.EstudantesAtivos, err = getEstudanteProjection(c).CountActiveByFundamentalAnos(codigoAcademia, anos)
-	if err != nil {
-		return deps, err
-	}
-	deps.SolicitacoesMatriculaPendentes, err = getSolicitacaoMatriculaProjection(c).CountPendingByFundamentalAnos(codigoAcademia, anos)
 	if err != nil {
 		return deps, err
 	}

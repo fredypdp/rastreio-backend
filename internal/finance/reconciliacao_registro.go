@@ -33,7 +33,7 @@ type pendenteReconciliacao struct {
 	// ausente...) para o recuo exponencial. Um erro nunca muda a cobrança.
 	Falhas int
 	// EfeitoPendente indica que a cobrança já foi gravada como paga mas os
-	// efeitos de negócio (matrícula, serviço extra) ainda não foram aplicados
+	// efeitos de negócio (serviço extra) ainda não foram aplicados
 	// com sucesso; eles são repetidos (são idempotentes) até darem certo.
 	EfeitoPendente bool
 }

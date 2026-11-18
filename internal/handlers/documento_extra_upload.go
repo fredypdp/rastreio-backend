@@ -147,7 +147,7 @@ func storagePathDocumentoExtra(baseDir, catalogID, tipo string) (string, string)
 // a chave "documento_extra.<id do catálogo>". `downloadURL` monta a URL de
 // download definitiva para cada campo — reaproveita as MESMAS rotas
 // genéricas de download já existentes para os documentos fixos
-// (estudanteDocumentoDownloadURL / solicitacaoDocumentoDownloadURL etc.),
+// (estudanteDocumentoDownloadURL / academiaEstudanteDocumentoDownloadURL etc.),
 // já que elas resolvem "campo" por lookup direto na chave do mapa
 // Documentos (ver documentoEstudantePorCampoEscopo) — chaves com ponto,
 // como a nossa, já são um padrão existente (ex.: "nivel.ano.campo" para

@@ -3,8 +3,8 @@
 //
 // Monetary contract: every monetary value in this package and in payment
 // phases 2, 3 and 4 is float64. This deliberately mirrors AppyPay's
-// number<double> contract. New internal fields (such as ValorMensalidade and
-// ValorMatricula) must use float64 plus roundAmount and amountsEqual below;
+// number<double> contract. New internal fields (such as ValorMensalidade)
+// must use float64 plus roundAmount and amountsEqual below;
 // cents, strings, decimal libraries, and local rounding rules are forbidden.
 package finance
 
@@ -86,7 +86,6 @@ type ChargeRequest struct {
 	// These fields are auditable Spuri metadata and are not forwarded to AppyPay.
 	Mensalidades               []MensalidadeSelecaoMes `json:"mensalidades,omitempty"`
 	CodigoEstudante            string                  `json:"codigo_estudante,omitempty"`
-	CodigoSolicitacao          string                  `json:"codigo_solicitacao,omitempty"`
 	CodigoInscricaoServico     string                  `json:"codigo_inscricao_servico,omitempty"`
 	TipoLancamentoServicoExtra string                  `json:"tipo_lancamento_servico_extra,omitempty"`
 	MesReferencia              *int                    `json:"mes_referencia,omitempty"`
@@ -108,7 +107,6 @@ type QRCodeRequest struct {
 	// Mensalidades is ledger metadata only; it is never sent to AppyPay.
 	Mensalidades               []MensalidadeSelecaoMes `json:"mensalidades,omitempty"`
 	CodigoEstudante            string                  `json:"codigo_estudante,omitempty"`
-	CodigoSolicitacao          string                  `json:"codigo_solicitacao,omitempty"`
 	CodigoInscricaoServico     string                  `json:"codigo_inscricao_servico,omitempty"`
 	TipoLancamentoServicoExtra string                  `json:"tipo_lancamento_servico_extra,omitempty"`
 	MesReferencia              *int                    `json:"mes_referencia,omitempty"`
@@ -155,11 +153,11 @@ type CobrancaResumo struct {
 	ContextoTipo          string `json:"contexto_tipo"`
 	CodigoAcademia        string `json:"codigo_academia,omitempty"`
 	// Origem é derivada do payload da cobrança, nunca persistida
-	// separadamente: "matricula" quando há codigo_solicitacao,
-	// "mensalidade" quando há codigo_estudante (e não há
-	// codigo_solicitacao), "avulsa" nos demais casos (cobrança criada
-	// diretamente via POST /financeiro/appypay/cobrancas ou /appypay/qr-codes
-	// sem vínculo a mensalidade nem matrícula).
+	// separadamente: "servico_extra" quando há codigo_inscricao_servico,
+	// "mensalidade" quando há codigo_estudante (e não há inscrição de
+	// serviço), "avulsa" nos demais casos (cobrança criada diretamente via
+	// POST /financeiro/appypay/cobrancas ou /appypay/qr-codes sem vínculo a
+	// mensalidade nem serviço extra).
 	Origem string `json:"origem"`
 	Status string `json:"status"`
 	// CodigoProvedor/MensagemProvedor/FonteProvedor/CategoriaMotivo: ver o
@@ -196,7 +194,6 @@ type CobrancaResumo struct {
 	// indistinguível de um GPO comum nesta listagem.
 	MetodoPagamento            string                  `json:"metodo_pagamento,omitempty"`
 	CodigoEstudante            string                  `json:"codigo_estudante,omitempty"`
-	CodigoSolicitacao          string                  `json:"codigo_solicitacao,omitempty"`
 	CodigoInscricaoServico     string                  `json:"codigo_inscricao_servico,omitempty"`
 	TipoLancamentoServicoExtra string                  `json:"tipo_lancamento_servico_extra,omitempty"`
 	MesReferencia              *int                    `json:"mes_referencia,omitempty"`
@@ -322,7 +319,7 @@ func (s *Service) CreateCharge(ctx context.Context, in ChargeRequest, actorID, a
 		// depois, por webhook ou consulta (AcceptWebhook/consultCharge —
 		// nenhum dos dois é tocado por este bloco). Nunca confiar numa
 		// classificação "Success" vinda da chamada de criação para REF: o
-		// pior cenário de aceitar por engano é uma matrícula/mensalidade
+		// pior cenário de aceitar por engano é uma mensalidade
 		// efetivada sem pagamento real, e o custo de bloquear é zero, porque
 		// um REF genuíno sempre confirma depois mesmo assim. Regra da
 		// plataforma, válida para qualquer provedor.
@@ -501,7 +498,7 @@ func (s *Service) CancelCharge(ctx context.Context, contexto, academia, identifi
 // cobranças de mensalidade vinculadas a esse escopo (turma, curso, ano
 // acadêmico ou ano letivo) — ver chargeIDsEscopoMensalidade. Como esse
 // escopo só existe para cobranças de ORIGEM mensalidade, usar qualquer um
-// desses quatro filtros exclui automaticamente cobranças de matrícula e
+// desses quatro filtros exclui automaticamente cobranças de serviço extra e
 // avulsas do resultado; isso é intencional. Quando nenhum dos quatro é
 // informado, o comportamento é idêntico ao anterior à tarefa 58.
 // mes (tarefa 60) restringe adicionalmente a um mês de calendário (1-12)
@@ -628,7 +625,7 @@ func estadosCobrancaEquivalentes(estados []string) []string {
 
 // origensClause monta a cláusula SQL "AND (...)" que filtra
 // financeiro_cobrancas pelo tipo de cobrança derivado do payload
-// (mensalidade, matrícula ou avulsa) — a mesma derivação usada por
+// (mensalidade, serviço extra ou avulsa) — a mesma derivação usada por
 // scanCobrancaResumo. Devolve "" (sem filtro) quando origens está vazio.
 // Extraída durante a tarefa 49 para ser compartilhada por ListCobrancas e
 // ListCobrancasEstudante e nunca divergir entre as duas.
@@ -639,14 +636,12 @@ func origensClause(origens []string) (string, error) {
 	clauses := make([]string, 0, len(origens))
 	for _, origem := range origens {
 		switch origem {
-		case "matricula":
-			clauses = append(clauses, "COALESCE(payload->>'codigo_solicitacao','') <> ''")
 		case "servico_extra":
-			clauses = append(clauses, "(COALESCE(payload->>'codigo_solicitacao','') = '' AND COALESCE(payload->>'codigo_inscricao_servico','') <> '')")
+			clauses = append(clauses, "COALESCE(payload->>'codigo_inscricao_servico','') <> ''")
 		case "mensalidade":
-			clauses = append(clauses, "(COALESCE(payload->>'codigo_solicitacao','') = '' AND COALESCE(payload->>'codigo_inscricao_servico','') = '' AND COALESCE(payload->>'codigo_estudante','') <> '')")
+			clauses = append(clauses, "(COALESCE(payload->>'codigo_inscricao_servico','') = '' AND COALESCE(payload->>'codigo_estudante','') <> '')")
 		case "avulsa":
-			clauses = append(clauses, "(COALESCE(payload->>'codigo_solicitacao','') = '' AND COALESCE(payload->>'codigo_inscricao_servico','') = '' AND COALESCE(payload->>'codigo_estudante','') = '')")
+			clauses = append(clauses, "(COALESCE(payload->>'codigo_inscricao_servico','') = '' AND COALESCE(payload->>'codigo_estudante','') = '')")
 		default:
 			return "", fmt.Errorf("tipo de cobrança inválido: %s", origem)
 		}
@@ -692,11 +687,8 @@ func scanCobrancaResumo(rows *sql.Rows) (CobrancaResumo, error) {
 	dto.PagamentoExterno, _ = payload["pagamento_externo"].(bool)
 	dto.ReferenciaExterna, _ = payload["pagamento_externo_referencia"].(string)
 	dto.CodigoEstudante, _ = payload["codigo_estudante"].(string)
-	dto.CodigoSolicitacao, _ = payload["codigo_solicitacao"].(string)
 	dto.CodigoInscricaoServico, _ = payload["codigo_inscricao_servico"].(string)
 	switch {
-	case dto.CodigoSolicitacao != "":
-		dto.Origem = "matricula"
 	case dto.CodigoInscricaoServico != "":
 		dto.Origem = "servico_extra"
 	case dto.CodigoEstudante != "":
@@ -735,7 +727,7 @@ func (s *Service) ListCobrancasEstudante(ctx context.Context, codigoEstudante st
 	if codigoEstudante == "" {
 		return nil, errors.New("código do estudante é obrigatório")
 	}
-	where := `WHERE (payload->>'codigo_estudante' = $1 OR payload->>'codigo_solicitacao' IN (SELECT codigo_solicitacao FROM projection_solicitacoes_matricula WHERE codigo_estudante_gerado = $1))`
+	where := `WHERE payload->>'codigo_estudante' = $1`
 	args := []any{codigoEstudante}
 	i := 2
 	if somenteAcademia != nil {
@@ -1033,7 +1025,7 @@ func (s *Service) liberarSnapshotsSeCobrancaTerminal(ctx context.Context, event 
 // reportou, em vez de bloquear a confirmação: um GET indisponível não pode
 // deixar uma cobrança presa sem nunca confirmar um pagamento que a própria
 // AppyPay já reportou como bem-sucedido no webhook (o mesmo raciocínio do
-// Bug 1 já corrigido, em que o webhook nunca efetivava a matrícula).
+// Bug 1 já corrigido, em que o webhook nunca confirmava a mensalidade).
 func (s *Service) liveChargeStatus(ctx context.Context, charge chargeRow) (status string, ok bool) {
 	prov, cred, err := s.provedorDaCobranca(ctx, charge)
 	if err != nil {
@@ -1400,7 +1392,7 @@ func validMerchantID(value string) bool {
 }
 
 func chargePayload(id uuid.UUID, in ChargeRequest, providerID, status string, response map[string]any) map[string]any {
-	return map[string]any{"charge_id": id.String(), "contexto_tipo": in.ContextoTipo, "codigo_academia": in.CodigoAcademia, "codigo_estudante": in.CodigoEstudante, "codigo_solicitacao": in.CodigoSolicitacao,
+	return map[string]any{"charge_id": id.String(), "contexto_tipo": in.ContextoTipo, "codigo_academia": in.CodigoAcademia, "codigo_estudante": in.CodigoEstudante,
 		"codigo_inscricao_servico": in.CodigoInscricaoServico, "tipo_lancamento_servico_extra": in.TipoLancamentoServicoExtra, "mes_referencia": in.MesReferencia, "ano_referencia": in.AnoReferencia, "mensalidades": in.Mensalidades, "amount": roundAmount(in.Amount), "currency": in.Currency, "description": in.Description, "merchant_transaction_id": in.MerchantTransactionID, "payment_method": in.PaymentMethod, "payment_info": in.PaymentInfo, "options": in.Options, "notify": in.Notify, "async": in.Async, "provider_charge_id": providerID, "status": status, "response": sanitize(response)}
 }
 
@@ -1409,7 +1401,7 @@ func qrCodePayload(id uuid.UUID, in QRCodeRequest, typ, providerID, status strin
 	if in.MinAmount != nil {
 		minAmount = roundAmount(*in.MinAmount)
 	}
-	return map[string]any{"charge_id": id.String(), "contexto_tipo": in.ContextoTipo, "codigo_academia": in.CodigoAcademia, "codigo_estudante": in.CodigoEstudante, "codigo_solicitacao": in.CodigoSolicitacao,
+	return map[string]any{"charge_id": id.String(), "contexto_tipo": in.ContextoTipo, "codigo_academia": in.CodigoAcademia, "codigo_estudante": in.CodigoEstudante,
 		"codigo_inscricao_servico": in.CodigoInscricaoServico, "tipo_lancamento_servico_extra": in.TipoLancamentoServicoExtra, "mes_referencia": in.MesReferencia, "ano_referencia": in.AnoReferencia, "amount": roundAmount(in.Amount), "currency": in.Currency, "description": in.Description, "merchant_transaction_id": in.MerchantTransactionID, "provider_charge_id": providerID, "status": status, "payment_method": "GPO", "qr_code_type": typ, "mensalidades": in.Mensalidades, "min_amount": minAmount, "max_transactions": in.MaxTransactions, "start_date": in.StartDate, "end_date": in.EndDate, "response": sanitize(response)}
 }
 

@@ -81,8 +81,8 @@ func TestIntegrationEditarCredenciaisComPendentesCriaSnapshotQueConcluiAsPendent
 	// Uma cobrança NOVA usa a credencial editada (o token em cache do cliente
 	// antigo não pode ser reaproveitado para o ID ativo).
 	antes = len(a.transporte.clientes())
-	codigo2 := seedMatriculaPendente(t, a.client, academia, 900)
-	if _, err := s.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigo2, MetodoPagamento: "REF"}, "127.0.0.1"); err != nil {
+	codigo2 := novaObrigacaoTeste(900)
+	if _, err := s.iniciarCobrancaTeste(context.Background(), academia, codigo2, "REF", ""); err != nil {
 		t.Fatal(err)
 	}
 	usados = a.transporte.clientes()[antes:]
@@ -159,8 +159,8 @@ func TestIntegrationSnapshotPorEdicaoSobreviveAoRebuildDaProjecao(t *testing.T) 
 	academia, id := novaCobrancaREFRecon(t, a, "cliente-rb1")
 	// Uma segunda cobrança já PAGA antes da edição: não depende mais de credencial
 	// nenhuma e não pode ser reapontada para o snapshot (nem ao vivo, nem no replay).
-	codigoPaga := seedMatriculaPendente(t, a.client, academia, 900)
-	viewPaga, err := s.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigoPaga, MetodoPagamento: "REF"}, "127.0.0.1")
+	codigoPaga := novaObrigacaoTeste(900)
+	viewPaga, err := s.iniciarCobrancaTeste(context.Background(), academia, codigoPaga, "REF", "")
 	if err != nil {
 		t.Fatal(err)
 	}

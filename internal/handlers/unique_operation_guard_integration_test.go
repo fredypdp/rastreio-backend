@@ -42,12 +42,6 @@ func TestStudentCreationHandlersReserveBIUniquenessGuard(t *testing.T) {
 	mustContain(t, direct, `biGuard.Release()`)
 	mustContain(t, direct, `biGuard.Consume(estudante.GetID())`)
 
-	matricula := readHandlerSource(t, "internal/handlers/solicitacao_matricula_handlers.go")
-	mustContain(t, matricula, `"estudante:bilhete_identidade"`)
-	mustContain(t, matricula, `db.CanonicalGuardKey(*agg.BilheteIdentidade)`)
-	mustContain(t, matricula, `errors.Is(err, db.ErrUniqueOperationInProgress)`)
-	mustContain(t, matricula, `biGuard.Release()`)
-	mustContain(t, matricula, `biGuard.Consume(est.GetID())`)
 }
 
 func readHandlerSource(t *testing.T, path string) string {

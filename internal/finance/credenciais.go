@@ -413,8 +413,7 @@ func (s *Service) ProvedorAtivo(ctx context.Context, contexto, academia string) 
 }
 
 // PossuiProvedorConfigurado informa se o contexto tem um provedor ativo com
-// credenciais — condição para habilitar cobranças (propina, matrícula, serviço
-// pago).
+// credenciais — condição para habilitar cobranças (propina, serviço pago).
 func (s *Service) PossuiProvedorConfigurado(ctx context.Context, contexto, academia string) (bool, error) {
 	_, err := s.loadCredential(ctx, contexto, academia)
 	if err != nil {

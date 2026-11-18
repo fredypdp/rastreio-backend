@@ -12,7 +12,6 @@ import (
 type MatriculaValidationContext string
 
 const (
-	MatriculaContextSolicitacao    MatriculaValidationContext = "solicitacao_matricula"
 	MatriculaContextCadastroDireto MatriculaValidationContext = "cadastro_direto_academia"
 )
 

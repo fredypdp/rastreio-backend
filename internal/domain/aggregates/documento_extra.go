@@ -18,8 +18,8 @@ var TiposDocumentoExtraPermitidos = map[string]bool{"pdf": true, "jpg": true}
 
 // DocumentoExtra é a definição, mantida pela academia, de um documento
 // adicional (além dos fixos do sistema: BI, cédula, declaração, certificados)
-// exigido — ou apenas oferecido — no cadastro direto e na solicitação de
-// matrícula do estudante, para um ou mais anos_academicos.
+// exigido — ou apenas oferecido — no cadastro do estudante feito pela
+// academia, para um ou mais anos_academicos.
 //
 // Cada estudante que efetivamente envia o arquivo correspondente tem esse
 // envio registrado em projection_estudantes.documentos, na chave
@@ -127,7 +127,7 @@ func (d *DocumentoExtra) Apply(event DomainEvent) error {
 
 // validarAnoAcademicoDocumentoExtra valida um único valor de ano_academico
 // usando os mesmos validadores por sufixo já usados para os documentos fixos
-// de matrícula (solicitacao_matricula.go).
+// de matrícula (documentos_matricula.go).
 func validarAnoAcademicoDocumentoExtra(anoAcademico string) error {
 	switch {
 	case strings.HasSuffix(anoAcademico, "_ano_fundamental"):

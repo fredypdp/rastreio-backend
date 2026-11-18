@@ -23,7 +23,7 @@ import (
 // cobrança agora?" para cada cobrança ainda pendente e, se ela mudou de estado
 // (paga, falhada, cancelada, expirada), aplica a resposta pelo MESMO caminho
 // da consulta manual (aplicarConsulta) e dispara os MESMOS efeitos do webhook
-// (propina paga, matrícula confirmada, serviço extra, liberação de snapshots).
+// (propina paga, serviço extra, liberação de snapshots).
 // É a rede de segurança de webhooks perdidos, atrasados ou de servidor fora do
 // ar, e a base para provedores sem webhook.
 //
@@ -54,7 +54,7 @@ type CobrancaConfirmada struct {
 }
 
 // EfeitosPagamento aplica os efeitos de negócio de uma cobrança paga que não
-// vivem no pacote finance (efetivação de matrícula, vínculo de serviço extra).
+// vivem no pacote finance (vínculo de serviço extra).
 // Deve ser idempotente: é repetida até dar certo. Injetada por quem conhece
 // esses módulos (ver handlers.NovosEfeitosPagamento).
 type EfeitosPagamento func(ctx context.Context, c CobrancaConfirmada) error
@@ -612,7 +612,7 @@ func (r *reconciliador) verificar(ctx context.Context, p pendenteReconciliacao) 
 }
 
 // aplicarEfeitos executa o que um pagamento confirmado dispara: a propina e,
-// via EfeitosPagamento, matrícula e serviço extra. Falhou = continua pendente
+// via EfeitosPagamento, o serviço extra. Falhou = continua pendente
 // de efeito e será repetido (tudo aqui é idempotente).
 func (r *reconciliador) aplicarEfeitos(ctx context.Context, p pendenteReconciliacao) resultadoVerificacao {
 	if err := r.s.confirmMensalidadeCharge(ctx, p.ID, reconciliacaoAtorID, reconciliacaoAtorTipo, reconciliacaoIP); err != nil {

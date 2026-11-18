@@ -102,50 +102,26 @@ func geraDigitos(n int) string {
 	return digitos[:n]
 }
 
-func seedSolicitacaoMatriculaPendenteComLedger(t *testing.T, client *db.Client, academia string, valor float64) (codigo, codigoEstudante string) {
+// novaCobrancaAvulsaREF emite uma cobrança REF avulsa (sem mensalidade nem
+// serviço extra) pelo caminho normal do serviço financeiro. Os testes de
+// webhook, consulta e pagamento externo só precisam de "uma cobrança aguardando
+// pagamento" de uma academia já configurada.
+func novaCobrancaAvulsaREF(t *testing.T, service *finance.Service, academia string, valor float64) finance.ChargeResult {
 	t.Helper()
-	codigo = "SOL" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
-	codigoEstudante = "EST" + codigo[3:7]
-	email := strings.ToLower(codigo) + "@example.test"
-	telefone := geraDigitos(9)
-	telefoneResp := geraDigitos(9)
-	bi := "BI-" + codigo
-	biResp := "BI-RESP-" + codigo
-	ano := "1_ano_fundamental"
-	docs := map[string]aggregates.DocumentoMatricula{
-		"bi_estudante":   {Tipo: "bi_estudante", Path: "docs/bi-estudante.pdf"},
-		"bi_encarregado": {Tipo: "bi_encarregado", Path: "docs/bi-encarregado.pdf"},
-	}
-	sol := aggregates.NewSolicitacaoMatricula()
-	if err := sol.Criar(codigo, academia, "Estudante Webhook", "feminino", time.Date(2017, 1, 2, 0, 0, 0, 0, time.UTC), &email, &telefone, &telefoneResp, &bi, &biResp, &ano, nil, nil, nil, nil, docs, []string{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := sol.Aprovar(uuid.New(), codigoEstudante); err != nil {
-		t.Fatal(err)
-	}
-	if err := sol.MarcarPendentePagamentoMatricula(valor, []string{"REF"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.NewAggregateRepository(client).SaveWithAudit(sol, db.AuditContext{UserID: "integration-test", UserType: "sistema", IP: "127.0.0.1"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := projections.NewSolicitacaoMatriculaProjection(client).Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	return codigo, codigoEstudante
-}
-
-func seedSolicitacaoMatriculaParaBusca(t *testing.T, client *db.Client) (codigo, telefone, email string) {
-	t.Helper()
-	codigo = "SOL" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
-	telefone, email = "244"+codigo[3:], strings.ToLower(codigo)+"@example.test"
-	_, err := client.DB().Exec(`INSERT INTO projection_solicitacoes_matricula
-		(id,codigo_solicitacao,codigo_academia,nome,genero,data_nascimento,email,telefone,telefone_encarregado,bilhete_identidade,bilhete_identidade_encarregado,ano_escolar_fundamental,status,documentos,codigo_estudante_gerado,valor_matricula,metodos_pagamento_matricula,created_at,updated_at)
-		VALUES ($1,$2,'ACA-BUSCA','Estudante buscável','feminino','2012-01-02',$3,$4,'923000000',$5,$6,'6_ano_fundamental','aprovada_pendente_pagamento_matricula','{}'::jsonb,'EST0001',1250,ARRAY['REF'],CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, uuid.New(), codigo, email, telefone, "BI-"+codigo, "BI-RESP-"+codigo)
+	charge, err := service.CreateCharge(context.Background(), finance.ChargeRequest{
+		ContextoTipo:          finance.ContextoAcademia,
+		CodigoAcademia:        academia,
+		Amount:                valor,
+		Currency:              "AOA",
+		Description:           "Cobrança avulsa de teste de integração",
+		MerchantTransactionID: "HND" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12],
+		PaymentMethod:         "REF",
+		PaymentInfo:           map[string]any{},
+	}, "integration-test", "sistema", "127.0.0.1")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("CreateCharge falhou: %v", err)
 	}
-	return codigo, telefone, email
+	return charge
 }
 
 func integrationFinanceClient(t *testing.T) *db.Client {
@@ -197,36 +173,6 @@ func TestIntegrationFinanceRejectsAcademyChargeOutsideScope(t *testing.T) {
 	ConsultarCobranca(ctx)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("academia externa recebeu status %d, quer 404: %s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestIntegrationBuscaPublicaMatriculaExigeDoisCamposENaoExibePagamento(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
-	codigo, telefone, email := seedSolicitacaoMatriculaParaBusca(t, client)
-
-	buscar := func(query string) *httptest.ResponseRecorder {
-		recorder := httptest.NewRecorder()
-		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodGet, "/solicitacoes-matricula/buscar?"+query, nil)
-		ctx.Set("dbClient", client)
-		BuscarSolicitacoesMatricula(ctx)
-		return recorder
-	}
-	twoFields := buscar("telefone=" + telefone + "&email=" + email)
-	if twoFields.Code != http.StatusOK || !strings.Contains(twoFields.Body.String(), codigo) {
-		t.Fatalf("busca com dois campos = %d: %s", twoFields.Code, twoFields.Body.String())
-	}
-	if strings.Contains(twoFields.Body.String(), "valor_matricula") || strings.Contains(twoFields.Body.String(), "metodos_pagamento") {
-		t.Fatalf("busca pública expôs dados de pagamento: %s", twoFields.Body.String())
-	}
-	umCampo := buscar("telefone=" + telefone)
-	if umCampo.Code != http.StatusBadRequest || strings.Contains(umCampo.Body.String(), codigo) {
-		t.Fatalf("busca com um único campo deveria exigir mais identificadores (400): %d %s", umCampo.Code, umCampo.Body.String())
-	}
-	doisCamposSemMatch := buscar("telefone=" + telefone + "&email=outro@example.test")
-	if doisCamposSemMatch.Code != http.StatusOK || strings.Contains(doisCamposSemMatch.Body.String(), codigo) {
-		t.Fatalf("busca com dois campos que não combinam não deveria retornar a solicitação: %d %s", doisCamposSemMatch.Code, doisCamposSemMatch.Body.String())
 	}
 }
 
@@ -288,7 +234,7 @@ func TestIntegrationFinanceFPPAdminCannotCancelAcademyCharge(t *testing.T) {
 	}
 }
 
-func TestIntegrationReceberWebhookAppyPayEfetivaVinculoMatricula(t *testing.T) {
+func TestIntegrationReceberWebhookAppyPayConfirmaCobrancaEEhIdempotente(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	client := integrationFinanceClient(t)
 	t.Setenv("ENV", "test")
@@ -297,7 +243,6 @@ func TestIntegrationReceberWebhookAppyPayEfetivaVinculoMatricula(t *testing.T) {
 
 	academia := "WH" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
 	seedAcademiaParaMatriculaWebhook(t, client, academia)
-	codigo, codigoEstudante := seedSolicitacaoMatriculaPendenteComLedger(t, client, academia, 750)
 
 	service := finance.NewService(client)
 	service.SetHTTPClient(&http.Client{Transport: handlerAppyPayMockTransport{}})
@@ -309,10 +254,7 @@ func TestIntegrationReceberWebhookAppyPayEfetivaVinculoMatricula(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	charge, err := service.IniciarPagamentoMatricula(context.Background(), finance.MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	charge := novaCobrancaAvulsaREF(t, service, academia, 750)
 
 	previousService := FinanceiroService
 	FinanceiroService = service
@@ -325,14 +267,14 @@ func TestIntegrationReceberWebhookAppyPayEfetivaVinculoMatricula(t *testing.T) {
 	})
 	router.POST("/financeiro/appypay/webhooks/ref", ReceberWebhook(finance.ProvedorAppyPay, "REF"))
 
-	eventID := charge.Charge.ProviderChargeID
+	eventID := charge.ProviderChargeID
 	// Formato real de um webhook da AppyPay (ver seção "Merchant Webhooks" de
 	// docs/Parceiros e integrações/AppyPay Documentação.md): o status vem
 	// dentro de "responseStatus", nunca em um campo solto "status"/"state"
 	// na raiz do payload.
 	payload, _ := json.Marshal(map[string]any{
 		"id":                    eventID,
-		"merchantTransactionId": charge.Charge.MerchantTransactionID,
+		"merchantTransactionId": charge.MerchantTransactionID,
 		"amount":                750,
 		"responseStatus": map[string]any{
 			"successful": true,
@@ -355,44 +297,22 @@ func TestIntegrationReceberWebhookAppyPayEfetivaVinculoMatricula(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("webhook retornou %d: %s", first.Code, first.Body.String())
 	}
-	if err := projections.NewSolicitacaoMatriculaProjection(client).Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	if err := projections.NewEstudanteProjection(client).Rebuild(); err != nil {
-		t.Fatal(err)
-	}
 	var status string
-	if err := client.DB().QueryRow(`SELECT status FROM projection_solicitacoes_matricula WHERE codigo_solicitacao=$1`, codigo).Scan(&status); err != nil {
+	if err := client.DB().QueryRow(`SELECT payload->>'status' FROM financeiro_cobrancas WHERE id=$1`, charge.ID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status != "aprovada" {
-		t.Fatalf("status da solicitação = %q, queria aprovada", status)
-	}
-	var estudantes int
-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM projection_estudantes WHERE codigo_estudante=$1 AND codigo_academia=$2 AND ano_escolar_fundamental='1_ano_fundamental'`, codigoEstudante, academia).Scan(&estudantes); err != nil {
-		t.Fatal(err)
-	}
-	if estudantes != 1 {
-		t.Fatalf("estudantes criados = %d, queria 1", estudantes)
+	if status != "Success" {
+		t.Fatalf("status da cobrança após o webhook = %q, queria Success", status)
 	}
 	second := postWebhook()
 	if second.Code != http.StatusOK {
 		t.Fatalf("webhook idempotente retornou %d: %s", second.Code, second.Body.String())
 	}
-	if err := projections.NewEstudanteProjection(client).Rebuild(); err != nil {
+	var recebidos int
+	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='WebhookProvedorRecebido' AND payload->>'event_id'=$1`, eventID).Scan(&recebidos); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM projection_estudantes WHERE codigo_estudante=$1`, codigoEstudante).Scan(&estudantes); err != nil {
-		t.Fatal(err)
-	}
-	if estudantes != 1 {
-		t.Fatalf("webhook duplicou estudante: %d", estudantes)
-	}
-	var vinculacoes int
-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='SolicitacaoMatricula' AND aggregate_id=(SELECT id FROM projection_solicitacoes_matricula WHERE codigo_solicitacao=$1) AND event_type='SolicitacaoMatriculaVinculada'`, codigo).Scan(&vinculacoes); err != nil {
-		t.Fatal(err)
-	}
-	if vinculacoes != 1 {
-		t.Fatalf("eventos de vinculação = %d, queria 1", vinculacoes)
+	if recebidos != 1 {
+		t.Fatalf("webhook repetido gravou %d eventos no ledger, queria 1", recebidos)
 	}
 }

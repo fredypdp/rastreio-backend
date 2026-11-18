@@ -13,8 +13,8 @@ import (
 )
 
 // executarEfeitosPagamentoConfirmado aplica os efeitos de uma cobrança paga
-// que vivem na camada de handlers (efetivação da matrícula, taxa de inscrição
-// e lançamentos de serviço extra) — a mesma sequência de
+// que vivem na camada de handlers (taxa de inscrição e lançamentos de
+// serviço extra) — a mesma sequência de
 // ConsultarCobrancaAppyPay e ReceberWebhookAppyPay. É idempotente e não faz
 // nada quando a cobrança não está com status Success.
 func executarEfeitosPagamentoConfirmado(c *gin.Context, identifier, actorID, actorType string) error {
@@ -22,11 +22,6 @@ func executarEfeitosPagamentoConfirmado(c *gin.Context, identifier, actorID, act
 	paga, err := FinanceiroService.CobrancaEstaPaga(ctx, identifier)
 	if err != nil || !paga {
 		return err
-	}
-	if codigo, err := FinanceiroService.CodigoSolicitacaoDaCobranca(ctx, identifier); err == nil && codigo != "" {
-		if err := efetivarVinculoMatriculaPaga(c, codigo); err != nil {
-			return err
-		}
 	}
 	if codigo, tipo, mes, ano, err := FinanceiroService.DadosServicoExtraDaCobranca(ctx, identifier); err == nil && codigo != "" {
 		switch tipo {

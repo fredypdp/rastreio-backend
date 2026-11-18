@@ -38,32 +38,6 @@ func TestMensalidadePagamentoViewIncludesQRCodeArr(t *testing.T) {
 	}
 }
 
-// TestMatriculaPagamentoViewIncludesQRCodeArr é o equivalente de
-// TestMensalidadePagamentoViewIncludesQRCodeArr para o fluxo de matrícula.
-func TestMatriculaPagamentoViewIncludesQRCodeArr(t *testing.T) {
-	view := MatriculaPagamentoView{
-		Charge: QRCodeResult{
-			ChargeResult: ChargeResult{ID: uuid.New(), MerchantTransactionID: "M2", Status: "criada"},
-			QRCodeArr:    "base64-qr-matricula",
-		},
-	}
-	raw, err := json.Marshal(view)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	cobranca, ok := decoded["cobranca"].(map[string]any)
-	if !ok {
-		t.Fatalf("campo cobranca ausente ou com formato inesperado: %s", raw)
-	}
-	if cobranca["qrCodeArr"] != "base64-qr-matricula" {
-		t.Fatalf("qrCodeArr não chegou na resposta de pagamento de matrícula: %s", raw)
-	}
-}
-
 // TestMensalidadePagamentoViewOmiteQRCodeArrParaOutrosMetodos garante que a
 // correção não introduz o campo qrCodeArr (mesmo vazio) para métodos que não
 // são GPO_QR — QRCodeResult tem omitempty em QRCodeArr especificamente para

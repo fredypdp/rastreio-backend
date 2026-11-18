@@ -25,14 +25,6 @@ func estudanteDocumentoProprioDownloadURL(campo string) string {
 	return fmt.Sprintf("/estudante/documentos/%s/download", campo)
 }
 
-func solicitacaoDocumentoDownloadURL(codigoSolicitacao, campo string) string {
-	return fmt.Sprintf("/documentos/solicitacoes-matricula/%s/%s/download", codigoSolicitacao, campo)
-}
-
-func academiaSolicitacaoDocumentoDownloadURL(codigoSolicitacao, campo string) string {
-	return fmt.Sprintf("/academia/documentos/solicitacoes-matricula/%s/%s/download", codigoSolicitacao, campo)
-}
-
 func solicitacaoEdicaoDocumentoDownloadURL(codigoSolicitacao string) string {
 	return fmt.Sprintf("/estudante/solicitacoes-edicao/%s/documento/download", codigoSolicitacao)
 }
@@ -122,13 +114,6 @@ func ListarDocumentosAcademia(c *gin.Context) {
 		utils.RespondWithInternalError(c, err)
 		return
 	}
-	limit := parseBoundedInt(c.Query("limit"), 1000, 1, 1000)
-	offset := parseBoundedInt(c.Query("offset"), 0, 0, 1_000_000)
-	solicitacoes, err := getSolicitacaoMatriculaProjection(c).List(nil, []string{codigoAcademia}, limit, offset)
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
 
 	estudantesDocs := make([]gin.H, 0, len(estudantes))
 	for _, estudante := range estudantes {
@@ -140,16 +125,6 @@ func ListarDocumentosAcademia(c *gin.Context) {
 		})
 	}
 
-	solicitacoesDocs := make([]gin.H, 0, len(solicitacoes.Solicitacoes))
-	for _, sol := range solicitacoes.Solicitacoes {
-		solicitacoesDocs = append(solicitacoesDocs, gin.H{
-			"codigo_solicitacao": sol.CodigoSolicitacao,
-			"nome":               sol.Nome,
-			"status":             sol.Status,
-			"documentos":         documentosComDownloadSolicitacaoAcademia(sol.CodigoSolicitacao, sol.Documentos),
-		})
-	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"codigo_academia": academia.CodigoAcademia,
 		"documentos": gin.H{
@@ -158,12 +133,8 @@ func ListarDocumentosAcademia(c *gin.Context) {
 				"nome":            academia.Nome,
 				"documentos":      documentosComDownloadAcademiaPropria(academia.CodigoAcademia),
 			},
-			"estudantes":             estudantesDocs,
-			"solicitacoes_matricula": solicitacoesDocs,
-			"total_estudantes":       len(estudantesDocs),
-			"total_solicitacoes":     solicitacoes.Total,
-			"limit_solicitacoes":     limit,
-			"offset_solicitacoes":    offset,
+			"estudantes":       estudantesDocs,
+			"total_estudantes": len(estudantesDocs),
 		},
 	})
 }
@@ -216,10 +187,6 @@ func DownloadDocumentoEstudanteAcademia(c *gin.Context) {
 	streamDocumentoEstudante(c, strings.TrimSpace(c.Param("codigo")), strings.TrimSpace(c.Param("campo")))
 }
 
-func DownloadDocumentoSolicitacaoMatriculaAcademia(c *gin.Context) {
-	streamDocumentoSolicitacaoMatricula(c, strings.TrimSpace(c.Param("codigo")), strings.TrimSpace(c.Param("campo")))
-}
-
 func DownloadDocumentoSolicitacaoEdicaoEstudante(c *gin.Context) {
 	streamDocumentoSolicitacaoEdicao(c, strings.TrimSpace(c.Param("codigo")), false)
 }
@@ -250,34 +217,6 @@ func streamDocumentoEstudante(c *gin.Context, codigoEstudante, campo string) {
 		return
 	}
 	doc, ok := documentoEstudantePorCampoEscopo(estudante.Documentos, campo, strings.TrimSpace(c.Query("nivel")), strings.TrimSpace(c.Query("ano_academico")))
-	if !ok || strings.TrimSpace(doc.Path) == "" {
-		utils.RespondWithNotFoundError(c, "documento")
-		return
-	}
-	streamDocumento(c, campo, doc)
-}
-
-// DownloadDocumentoSolicitacaoMatricula streams an enrollment-request document
-// for academy/admin users authorized to inspect that request.
-func DownloadDocumentoSolicitacaoMatricula(c *gin.Context) {
-	streamDocumentoSolicitacaoMatricula(c, strings.TrimSpace(c.Param("codigo")), strings.TrimSpace(c.Param("campo")))
-}
-
-func streamDocumentoSolicitacaoMatricula(c *gin.Context, codigoSolicitacao, campo string) {
-	sol, err := getSolicitacaoMatriculaProjection(c).GetByCodigo(codigoSolicitacao)
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-	if sol == nil {
-		utils.RespondWithNotFoundError(c, "solicitação")
-		return
-	}
-	if !canAccessSolicitacaoDocument(c, sol.CodigoAcademia) {
-		utils.RespondWithForbiddenError(c, "sem permissão para baixar documento desta solicitação")
-		return
-	}
-	doc, ok := documentoEstudantePorCampoEscopo(sol.Documentos, campo, strings.TrimSpace(c.Query("nivel")), strings.TrimSpace(c.Query("ano_academico")))
 	if !ok || strings.TrimSpace(doc.Path) == "" {
 		utils.RespondWithNotFoundError(c, "documento")
 		return
@@ -476,19 +415,6 @@ func canAccessSolicitacaoEdicaoDocument(c *gin.Context, codigoEstudante, codigoA
 	}
 }
 
-func canAccessSolicitacaoDocument(c *gin.Context, codigoAcademia string) bool {
-	userType, _ := middleware.GetUserType(c)
-	if userType == "admin" {
-		return true
-	}
-	if userType != "academia" {
-		return false
-	}
-	userID, _ := middleware.GetUserID(c)
-	academia, _ := getAcademiaProjection(c).GetByID(userID)
-	return academia != nil && academia.CodigoAcademia == codigoAcademia
-}
-
 func documentoEstudantePorCampoEscopo(documentos map[string]aggregates.DocumentoMatricula, campo, nivel, anoAcademico string) (aggregates.DocumentoMatricula, bool) {
 	campo = strings.TrimSpace(campo)
 	nivel = strings.TrimSpace(nivel)
@@ -614,18 +540,6 @@ func documentosComDownloadEstudanteProprio(documentos map[string]aggregates.Docu
 func documentosComDownloadEstudanteAcademia(codigoEstudante string, documentos map[string]aggregates.DocumentoMatricula) map[string]aggregates.DocumentoMatricula {
 	return documentosComDownload(documentos, func(campo string) string {
 		return academiaEstudanteDocumentoDownloadURL(codigoEstudante, campo)
-	})
-}
-
-func documentosComDownloadSolicitacao(codigoSolicitacao string, documentos map[string]aggregates.DocumentoMatricula) map[string]aggregates.DocumentoMatricula {
-	return documentosComDownload(documentos, func(campo string) string {
-		return solicitacaoDocumentoDownloadURL(codigoSolicitacao, campo)
-	})
-}
-
-func documentosComDownloadSolicitacaoAcademia(codigoSolicitacao string, documentos map[string]aggregates.DocumentoMatricula) map[string]aggregates.DocumentoMatricula {
-	return documentosComDownload(documentos, func(campo string) string {
-		return academiaSolicitacaoDocumentoDownloadURL(codigoSolicitacao, campo)
 	})
 }
 

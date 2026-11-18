@@ -12,8 +12,8 @@ import (
 )
 
 // aplicarEfeitosPagamento executa os efeitos de negócio de uma cobrança
-// confirmada como paga que NÃO vivem no pacote finance: efetivação da matrícula
-// e vínculo/lançamento do serviço extra. A propina é confirmada dentro do
+// confirmada como paga que NÃO vivem no pacote finance: vínculo e lançamento
+// do serviço extra. A propina é confirmada dentro do
 // próprio Service. É a definição única desses efeitos, usada pelo webhook, pela
 // consulta manual e pelo job de reconciliação; todos os passos são idempotentes
 // (reaplicar sobre uma cobrança já efetivada não muda nada), por isso o
@@ -23,11 +23,6 @@ import (
 // cobrança.
 func aplicarEfeitosPagamento(c *gin.Context, identificador, actorID, actorType, ip string) error {
 	ctx := c.Request.Context()
-	if codigo, err := FinanceiroService.CodigoSolicitacaoDaCobranca(ctx, identificador); err == nil && codigo != "" {
-		if err := efetivarVinculoMatriculaPaga(c, codigo); err != nil {
-			return err
-		}
-	}
 	if codigo, tipo, mes, ano, err := FinanceiroService.DadosServicoExtraDaCobranca(ctx, identificador); err == nil && codigo != "" {
 		switch tipo {
 		case "taxa_inscricao":

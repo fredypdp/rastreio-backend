@@ -15,7 +15,6 @@ import (
 
 	"spuri/internal/db"
 	"spuri/internal/finance"
-	"spuri/internal/projections"
 )
 
 // handlerStatusTransport simula a AppyPay com um status de consulta mutável
@@ -35,13 +34,11 @@ func (t handlerStatusTransport) RoundTrip(req *http.Request) (*http.Response, er
 }
 
 type pagamentoExternoHandlerFixture struct {
-	client          *db.Client
-	router          *gin.Engine
-	academia        string
-	codigo          string // solicitação de matrícula
-	codigoEstudante string
-	chargeID        string
-	providerStatus  *string
+	client         *db.Client
+	router         *gin.Engine
+	academia       string
+	chargeID       string
+	providerStatus *string
 }
 
 func newPagamentoExternoHandlerRouter(client *db.Client, userType, academia string) *gin.Engine {
@@ -60,9 +57,9 @@ func newPagamentoExternoHandlerRouter(client *db.Client, userType, academia stri
 	return router
 }
 
-// newMatriculaPendenteFixture cria uma academia, uma solicitação de matrícula
-// aprovada aguardando pagamento e uma cobrança REF aguardando pagamento.
-func newMatriculaPendenteFixture(t *testing.T) *pagamentoExternoHandlerFixture {
+// newCobrancaPendenteFixture cria uma academia com credencial do provedor e uma
+// cobrança REF avulsa aguardando pagamento.
+func newCobrancaPendenteFixture(t *testing.T) *pagamentoExternoHandlerFixture {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	client := integrationFinanceClient(t)
@@ -72,7 +69,6 @@ func newMatriculaPendenteFixture(t *testing.T) *pagamentoExternoHandlerFixture {
 
 	academia := "PE" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
 	seedAcademiaParaMatriculaWebhook(t, client, academia)
-	codigo, codigoEstudante := seedSolicitacaoMatriculaPendenteComLedger(t, client, academia, 750)
 
 	status := "Pending"
 	service := finance.NewService(client)
@@ -82,17 +78,14 @@ func newMatriculaPendenteFixture(t *testing.T) *pagamentoExternoHandlerFixture {
 	}, "integration-test", "sistema", "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
-	charge, err := service.IniciarPagamentoMatricula(context.Background(), finance.MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	charge := novaCobrancaAvulsaREF(t, service, academia, 750)
 	previous := FinanceiroService
 	FinanceiroService = service
 	t.Cleanup(func() { FinanceiroService = previous })
 
 	return &pagamentoExternoHandlerFixture{
 		client: client, router: newPagamentoExternoHandlerRouter(client, "academia", academia), academia: academia,
-		codigo: codigo, codigoEstudante: codigoEstudante, chargeID: charge.Charge.ID.String(), providerStatus: &status,
+		chargeID: charge.ID.String(), providerStatus: &status,
 	}
 }
 
@@ -104,19 +97,13 @@ func (f *pagamentoExternoHandlerFixture) post(path, body string) *httptest.Respo
 	return rec
 }
 
-func (f *pagamentoExternoHandlerFixture) estudantes(t *testing.T) int {
+func (f *pagamentoExternoHandlerFixture) statusCobranca(t *testing.T) string {
 	t.Helper()
-	if err := projections.NewSolicitacaoMatriculaProjection(f.client).Rebuild(); err != nil {
+	var status string
+	if err := f.client.DB().QueryRow(`SELECT payload->>'status' FROM financeiro_cobrancas WHERE id=$1`, f.chargeID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if err := projections.NewEstudanteProjection(f.client).Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	var n int
-	if err := f.client.DB().QueryRow(`SELECT COUNT(*) FROM projection_estudantes WHERE codigo_estudante=$1 AND codigo_academia=$2`, f.codigoEstudante, f.academia).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
+	return status
 }
 
 func (f *pagamentoExternoHandlerFixture) eventos(t *testing.T, evento string) int {
@@ -128,10 +115,10 @@ func (f *pagamentoExternoHandlerFixture) eventos(t *testing.T, evento string) in
 	return n
 }
 
-// O pagamento marcado como externo dispara os MESMOS efeitos do webhook: a
-// matrícula é efetivada e o estudante criado, exatamente uma vez.
-func TestIntegrationPagamentoExternoMatriculaEfetivaVinculoComoWebhook(t *testing.T) {
-	f := newMatriculaPendenteFixture(t)
+// O pagamento marcado como externo confirma a cobrança pelo MESMO pipeline do
+// webhook, exatamente uma vez.
+func TestIntegrationPagamentoExternoConfirmaCobrancaComoWebhook(t *testing.T) {
+	f := newCobrancaPendenteFixture(t)
 
 	rec := f.post("/financeiro/appypay/cobrancas/"+f.chargeID+"/pago-externamente", `{"referencia_externa":"DEP-123","observacao":"depósito no balcão"}`)
 	if rec.Code != http.StatusOK {
@@ -141,24 +128,17 @@ func TestIntegrationPagamentoExternoMatriculaEfetivaVinculoComoWebhook(t *testin
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out["status"] != "Success" {
 		t.Fatalf("resposta inesperada: %s (%v)", rec.Body.String(), err)
 	}
-	if n := f.estudantes(t); n != 1 {
-		t.Fatalf("a matrícula deveria ter sido efetivada (1 estudante), obteve %d", n)
-	}
-	var status string
-	if err := f.client.DB().QueryRow(`SELECT status FROM projection_solicitacoes_matricula WHERE codigo_solicitacao=$1`, f.codigo).Scan(&status); err != nil || status != "aprovada" {
-		t.Fatalf("status da solicitação = %q (%v), queria aprovada", status, err)
+	if got := f.statusCobranca(t); got != "Success" {
+		t.Fatalf("status da cobrança = %q, queria Success", got)
 	}
 	if n := f.eventos(t, "CobrancaPagamentoExternoRegistrado"); n != 1 {
 		t.Fatalf("esperava 1 evento de pagamento externo, obteve %d", n)
 	}
 
-	// repetir é idempotente: 200, ja_registrado, sem segundo estudante nem segundo evento
+	// repetir é idempotente: 200, ja_registrado, sem segundo evento
 	rec = f.post("/financeiro/appypay/cobrancas/"+f.chargeID+"/pago-externamente", `{}`)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ja_registrado":true`) {
 		t.Fatalf("repetição: status = %d: %s", rec.Code, rec.Body.String())
-	}
-	if n := f.estudantes(t); n != 1 {
-		t.Fatalf("a repetição duplicou o estudante: %d", n)
 	}
 	if n := f.eventos(t, "CobrancaPagamentoExternoRegistrado"); n != 1 {
 		t.Fatalf("a repetição gravou outro evento: %d", n)
@@ -171,9 +151,9 @@ func TestIntegrationPagamentoExternoMatriculaEfetivaVinculoComoWebhook(t *testin
 }
 
 // Se a AppyPay já confirmou o pagamento (aguardando confirmação local), o
-// endpoint responde 409 — mas ainda completa os efeitos que o webhook faria.
-func TestIntegrationPagamentoExternoComProvedorJaPagoRespondeConflitoECompletaEfeitos(t *testing.T) {
-	f := newMatriculaPendenteFixture(t)
+// endpoint responde 409 — mas ainda reflete o pagamento na cobrança, como o webhook faria.
+func TestIntegrationPagamentoExternoComProvedorJaPagoRespondeConflitoEReflitePagamento(t *testing.T) {
+	f := newCobrancaPendenteFixture(t)
 	*f.providerStatus = "Success"
 
 	rec := f.post("/financeiro/appypay/cobrancas/"+f.chargeID+"/pago-externamente", `{}`)
@@ -183,28 +163,28 @@ func TestIntegrationPagamentoExternoComProvedorJaPagoRespondeConflitoECompletaEf
 	if n := f.eventos(t, "CobrancaPagamentoExternoRegistrado"); n != 0 {
 		t.Fatalf("não deveria existir evento de pagamento externo: %d", n)
 	}
-	if n := f.estudantes(t); n != 1 {
-		t.Fatalf("o pagamento já confirmado no provedor deveria ter efetivado a matrícula, obteve %d estudantes", n)
+	if got := f.statusCobranca(t); got != "Success" {
+		t.Fatalf("o pagamento já confirmado no provedor deveria ter sido refletido na cobrança, status = %q", got)
 	}
 }
 
 // Cancelar uma cobrança cujo pagamento já está no provedor devolve 409 e
-// completa os efeitos (antes da correção a matrícula ficava sem efetivar).
-func TestIntegrationCancelarCobrancaComPagamentoNoProvedorCompletaEfeitos(t *testing.T) {
-	f := newMatriculaPendenteFixture(t)
+// reflete o pagamento na cobrança.
+func TestIntegrationCancelarCobrancaComPagamentoNoProvedorReflitePagamento(t *testing.T) {
+	f := newCobrancaPendenteFixture(t)
 	*f.providerStatus = "Success"
 
 	rec := f.post("/financeiro/appypay/cobrancas/"+f.chargeID+"/cancelar", `{"motivo":"teste"}`)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, queria 409: %s", rec.Code, rec.Body.String())
 	}
-	if n := f.estudantes(t); n != 1 {
-		t.Fatalf("o pagamento descoberto no cancelamento deveria ter efetivado a matrícula, obteve %d estudantes", n)
+	if got := f.statusCobranca(t); got != "Success" {
+		t.Fatalf("o pagamento descoberto no cancelamento deveria ter sido refletido na cobrança, status = %q", got)
 	}
 }
 
 func TestIntegrationPagamentoExternoSoAcademiaDona(t *testing.T) {
-	f := newMatriculaPendenteFixture(t)
+	f := newCobrancaPendenteFixture(t)
 	for _, role := range []string{"admin", "estudante", "gerente"} {
 		router := newPagamentoExternoHandlerRouter(f.client, role, f.academia)
 		for _, path := range []string{
@@ -226,7 +206,7 @@ func TestIntegrationPagamentoExternoSoAcademiaDona(t *testing.T) {
 }
 
 func TestIntegrationPagamentoExternoMensalidadesExigeVinculoDoEstudante(t *testing.T) {
-	f := newMatriculaPendenteFixture(t)
+	f := newCobrancaPendenteFixture(t)
 	rec := f.post("/financeiro/mensalidades/obrigacoes/pago-externamente", `{"codigo_estudante":"EST-INEXISTENTE","meses":[{"ano_letivo":"2025_2026","mes":9}]}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, queria 403: %s", rec.Code, rec.Body.String())

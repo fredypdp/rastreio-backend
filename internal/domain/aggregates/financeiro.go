@@ -53,8 +53,6 @@ const (
 	ObrigacaoServicoExtraAnulada         = "ObrigacaoServicoExtraAnulada"
 	ObrigacaoServicoExtraReativada       = "ObrigacaoServicoExtraReativada"
 	ServicoExtraLancamentoPago           = "ServicoExtraLancamentoPago"
-	MatriculaConfigurada                 = "MatriculaConfigurada"
-	MatriculaConfiguracaoRemovida        = "MatriculaConfiguracaoRemovida"
 )
 
 // eventosFinanceirosLegados mapeia os nomes de evento gravados antes da

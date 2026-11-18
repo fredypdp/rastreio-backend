@@ -203,17 +203,17 @@ func TestIntegrationListarCobrancasAppyPayFiltroEstadoExcluiPendenciasSinteticas
 		t.Fatalf("estado=Failed não deveria trazer nenhuma pendência sintética (nenhuma cobrança real existe nesta academia): %s", comFiltro.Body.String())
 	}
 
-	// tipo=matricula (excluindo mensalidade) também deve excluir as
+	// tipo=servico_extra (excluindo mensalidade) também deve excluir as
 	// pendências, já que toda pendência sintética é sempre mensalidade.
-	comTipoMatricula := call("tipo=matricula&ano_letivo=2026_2027&mes=3")
-	var bodyTipoMatricula struct {
+	comTipoServicoExtra := call("tipo=servico_extra&ano_letivo=2026_2027&mes=3")
+	var bodyTipoServicoExtra struct {
 		TotalGeral int `json:"total_geral"`
 	}
-	if err := json.Unmarshal(comTipoMatricula.Body.Bytes(), &bodyTipoMatricula); err != nil {
+	if err := json.Unmarshal(comTipoServicoExtra.Body.Bytes(), &bodyTipoServicoExtra); err != nil {
 		t.Fatal(err)
 	}
-	if bodyTipoMatricula.TotalGeral != 0 {
-		t.Fatalf("tipo=matricula não deveria trazer pendências sintéticas de mensalidade: %s", comTipoMatricula.Body.String())
+	if bodyTipoServicoExtra.TotalGeral != 0 {
+		t.Fatalf("tipo=servico_extra não deveria trazer pendências sintéticas de mensalidade: %s", comTipoServicoExtra.Body.String())
 	}
 
 	// E, de volta, estado=pendente (o próprio valor das pendências)

@@ -50,7 +50,7 @@ func bindNivelEscolarRequest(c *gin.Context, req *nivelEscolarRequest) error {
 // permanentemente (ver rejectAcademiaDadosRestrictedFields) — esta é a única
 // via de alteração. Antes de aplicar, valida que não há dependências ativas
 // (estudantes, turmas, cursos, matérias, categorias de nota, regras de
-// avaliação final e solicitações de matrícula pendentes) vinculadas ao
+// avaliação final) vinculadas ao
 // domínio (fundamental/médio) que a academia está deixando de suportar.
 func AtualizarNivelEscolarAcademia(c *gin.Context) {
 	academiaDTO, ok := academiaAutenticada(c)
@@ -162,18 +162,17 @@ func AtualizarNivelEscolarAcademia(c *gin.Context) {
 }
 
 type dependenciasNivelEscolar struct {
-	EstudantesAtivos               int
-	TurmasAtivas                   int
-	CursosAtivos                   int
-	MateriasAtivas                 int
-	CategoriasNotaAtivas           int
-	RegrasAvaliacaoFinalAtivas     int
-	SolicitacoesMatriculaPendentes int
+	EstudantesAtivos           int
+	TurmasAtivas               int
+	CursosAtivos               int
+	MateriasAtivas             int
+	CategoriasNotaAtivas       int
+	RegrasAvaliacaoFinalAtivas int
 }
 
 func (d dependenciasNivelEscolar) total() int {
 	return d.EstudantesAtivos + d.TurmasAtivas + d.CursosAtivos + d.MateriasAtivas +
-		d.CategoriasNotaAtivas + d.RegrasAvaliacaoFinalAtivas + d.SolicitacoesMatriculaPendentes
+		d.CategoriasNotaAtivas + d.RegrasAvaliacaoFinalAtivas
 }
 
 func (d dependenciasNivelEscolar) resumo() string {
@@ -195,9 +194,6 @@ func (d dependenciasNivelEscolar) resumo() string {
 	}
 	if d.RegrasAvaliacaoFinalAtivas > 0 {
 		partes = append(partes, fmt.Sprintf("%d regra(s) de avaliação final ativa(s)", d.RegrasAvaliacaoFinalAtivas))
-	}
-	if d.SolicitacoesMatriculaPendentes > 0 {
-		partes = append(partes, fmt.Sprintf("%d solicitação(ões) de matrícula pendente(s)", d.SolicitacoesMatriculaPendentes))
 	}
 	return strings.Join(partes, ", ")
 }
@@ -260,22 +256,6 @@ func contarDependenciasNivelEscolar(c *gin.Context, codigoAcademia, dominio stri
 		 WHERE codigo_academia = $1 AND nivel = $2 AND status = 'ativo'
 	`, codigoAcademia, dominio).Scan(&deps.RegrasAvaliacaoFinalAtivas); err != nil {
 		return deps, err
-	}
-
-	if dominio == "fundamental" {
-		if err := conn.QueryRow(`
-			SELECT COUNT(*) FROM projection_solicitacoes_matricula
-			 WHERE codigo_academia = $1 AND status = 'pendente' AND ano_escolar_fundamental IS NOT NULL
-		`, codigoAcademia).Scan(&deps.SolicitacoesMatriculaPendentes); err != nil {
-			return deps, err
-		}
-	} else {
-		if err := conn.QueryRow(`
-			SELECT COUNT(*) FROM projection_solicitacoes_matricula
-			 WHERE codigo_academia = $1 AND status = 'pendente' AND (ano_escolar_medio IS NOT NULL OR curso_medio_id IS NOT NULL)
-		`, codigoAcademia).Scan(&deps.SolicitacoesMatriculaPendentes); err != nil {
-			return deps, err
-		}
 	}
 
 	return deps, nil

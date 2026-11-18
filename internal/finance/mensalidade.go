@@ -903,8 +903,7 @@ func (s *Service) MetodosPagamentoMensalidade(ctx context.Context, academia stri
 
 // chargeAbertaStatusExcluidos é a lista (em minúsculas) de todo status
 // TERMINAL que uma cobrança real pode ter — usada para excluir cobranças
-// "em aberto" nas consultas SQL diretas abaixo e em matriculaTemCobrancaAberta/
-// CancelarCobrancaMatriculaAberta (matricula.go). Precisa ficar em sincronia
+// "em aberto" nas consultas SQL diretas abaixo e nas de serviço extra. Precisa ficar em sincronia
 // manual com isTerminalChargeStatus (appypay.go): as duas listam exatamente
 // os mesmos estados terminais, mas isTerminalChargeStatus não pode ser
 // chamada aqui porque estas são consultas SQL, não Go, sobre linhas que
@@ -915,7 +914,7 @@ func (s *Service) MetodosPagamentoMensalidade(ctx context.Context, academia stri
 // correção, uma cobrança com status bruto "Failed"/"Cancelled"/"Expired" da
 // AppyPay nunca entrava nesta lista e por isso ficava "presa" como em
 // aberto para sempre — bloqueando indefinidamente uma nova tentativa de
-// pagamento do mesmo mês/matrícula mesmo depois de a cobrança anterior já
+// pagamento do mesmo mês mesmo depois de a cobrança anterior já
 // ter definitivamente falhado no provedor.
 const chargeAbertaStatusExcluidos = `'success','cancelada','falhada','failed','cancelled','expired'`
 

@@ -119,30 +119,25 @@ func TestIntegrationGerarCobrancaMensalidadeGPOEnviaPhoneNumberNormalizado(t *te
 	}
 }
 
-// TestIntegrationGerarCobrancaMatriculaGPOEnviaPhoneNumberNormalizado é o
-// equivalente do teste acima para o fluxo de matrícula — prova que os dois
-// únicos chamadores de gerarCobranca continuam se comportando de forma
-// idêntica para o mesmo método de pagamento.
-func TestIntegrationGerarCobrancaMatriculaGPOEnviaPhoneNumberNormalizado(t *testing.T) {
+// TestIntegrationGerarCobrancaCobrancaTesteGPOEnviaPhoneNumberNormalizado é o
+// equivalente do teste acima para a cobrança emitida pelo helper de teste
+// (serviço extra) — prova que os chamadores de gerarCobranca se comportam de
+// forma idêntica para o mesmo método de pagamento.
+func TestIntegrationGerarCobrancaCobrancaTesteGPOEnviaPhoneNumberNormalizado(t *testing.T) {
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
 	client := integrationClient(t)
 	service := NewService(client)
 	ctx := context.Background()
 
 	academia := mensalidadeCodigo()
-	codigo := seedMatriculaPendente(t, client, academia, 750)
-	if _, err := client.DB().Exec(`UPDATE projection_solicitacoes_matricula SET metodos_pagamento_matricula='{GPO}' WHERE codigo_solicitacao=$1`, codigo); err != nil {
-		t.Fatal(err)
-	}
+	codigo := novaObrigacaoTeste(750)
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
 	transport := &capturingAppyPayTransport{}
 	service.SetHTTPClient(&http.Client{Transport: transport})
 
-	_, err := service.IniciarPagamentoMatricula(ctx, MatriculaPagamentoInput{
-		CodigoSolicitacao: codigo, MetodoPagamento: "GPO", Telefone: "  912345678  ",
-	}, "127.0.0.1")
+	_, err := service.iniciarCobrancaTeste(ctx, academia, codigo, "GPO", "  912345678  ")
 	if err != nil {
-		t.Fatalf("IniciarPagamentoMatricula falhou: %v", err)
+		t.Fatalf("iniciarCobrancaTeste falhou: %v", err)
 	}
 	if transport.lastPath == "" || !strings.HasSuffix(transport.lastPath, "/charges") {
 		t.Fatalf("esperava POST .../charges, obteve path=%q", transport.lastPath)
@@ -154,7 +149,7 @@ func TestIntegrationGerarCobrancaMatriculaGPOEnviaPhoneNumberNormalizado(t *test
 }
 
 // TestIntegrationGerarCobrancaREFNaoEnviaPhoneNumber prova que o método REF
-// (matrícula e mensalidade) nunca envia paymentInfo.phoneNumber — o campo
+// (mensalidade e serviço extra) nunca envia paymentInfo.phoneNumber — o campo
 // só existe para GPO. Cobre os dois chamadores de gerarCobranca no mesmo
 // teste para deixar explícito que é o mesmo comportamento nos dois fluxos.
 func TestIntegrationGerarCobrancaREFNaoEnviaPhoneNumber(t *testing.T) {
@@ -208,18 +203,16 @@ func TestIntegrationGerarCobrancaREFNaoEnviaPhoneNumber(t *testing.T) {
 		}
 	})
 
-	t.Run("matricula", func(t *testing.T) {
+	t.Run("servico_extra", func(t *testing.T) {
 		academia := mensalidadeCodigo()
-		codigo := seedMatriculaPendente(t, client, academia, 750)
+		codigo := novaObrigacaoTeste(750)
 		configureIntegrationCredential(t, service, ContextoAcademia, academia)
 		transport := &capturingAppyPayTransport{}
 		service.SetHTTPClient(&http.Client{Transport: transport})
 
-		_, err := service.IniciarPagamentoMatricula(ctx, MatriculaPagamentoInput{
-			CodigoSolicitacao: codigo, MetodoPagamento: "REF",
-		}, "127.0.0.1")
+		_, err := service.iniciarCobrancaTeste(ctx, academia, codigo, "REF", "")
 		if err != nil {
-			t.Fatalf("IniciarPagamentoMatricula falhou: %v", err)
+			t.Fatalf("iniciarCobrancaTeste falhou: %v", err)
 		}
 		pi := transport.paymentInfo()
 		if _, ok := pi["phoneNumber"]; ok {

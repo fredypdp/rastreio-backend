@@ -116,7 +116,7 @@ func (s *Service) escopoMensalidadeEstudantes(ctx context.Context, academia stri
 // mensalidades pertencem ao escopo pedido (turma/curso/ano_academico/
 // ano_letivo), resolvido via o mesmo escopoMensalidadeEstudantes usado por
 // PendenciasSemCobranca. Como financeiro_mensalidade_cobrancas só tem linha
-// para cobranças de ORIGEM mensalidade (nunca matrícula ou avulsa — ver
+// para cobranças de ORIGEM mensalidade (nunca serviço extra ou avulsa — ver
 // upsertMensalidadeCobrancas), este filtro naturalmente restringe o
 // resultado a cobranças de mensalidade quando usado; é uma decisão de design
 // deliberada, documentada na tarefa que introduziu este filtro.

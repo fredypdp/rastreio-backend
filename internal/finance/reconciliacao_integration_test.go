@@ -104,7 +104,7 @@ func (e *efeitosRecon) fn(_ context.Context, c CobrancaConfirmada) error {
 	e.chamadas = append(e.chamadas, c)
 	if e.falhasRestantes > 0 {
 		e.falhasRestantes--
-		return errors.New("efeito de matrícula falhou")
+		return errors.New("efeito de negócio falhou")
 	}
 	return nil
 }
@@ -172,8 +172,8 @@ func novaCobrancaREFRecon(t *testing.T, a *ambienteRecon, clientID string) (acad
 	t.Helper()
 	academia = "REC" + uuid.NewString()[:8]
 	configurarCredencialRecon(t, a.service, academia, clientID)
-	codigo := seedMatriculaPendente(t, a.client, academia, 900)
-	view, err := a.service.IniciarPagamentoMatricula(context.Background(), MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
+	codigo := novaObrigacaoTeste(900)
+	view, err := a.service.iniciarCobrancaTeste(context.Background(), academia, codigo, "REF", "")
 	if err != nil {
 		t.Fatal(err)
 	}

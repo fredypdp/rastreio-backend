@@ -106,13 +106,7 @@ var validEventTypes = map[string]bool{
 	"MateriaDadosAtualizados": true,
 	"MateriaPeriodoDefinido":  true,
 	"MateriaDeletada":         true,
-	// ── Solicitação de Matrícula ───────────────────────────────────────────────
-	"SolicitacaoMatriculaCriada":                         true,
-	"SolicitacaoMatriculaAprovada":                       true,
-	"SolicitacaoMatriculaAprovadaPendentePagamento":      true,
-	"SolicitacaoMatriculaReprovada":                      true,
-	"SolicitacaoMatriculaCancelada":                      true,
-	"SolicitacaoMatriculaVinculada":                      true,
+	// ── Solicitações de edição de dados e afins ────────────────────────────────
 	"SolicitacaoEdicaoDadoEstudanteCriada":               true,
 	"SolicitacaoEdicaoDadoEstudanteAprovada":             true,
 	"SolicitacaoEdicaoDadoEstudanteReprovada":            true,
@@ -167,14 +161,7 @@ var validEventTypes = map[string]bool{
 	// projection can consume a real payment event without any compatibility
 	// path or inferred payment state.
 	"MensalidadePaga": true,
-	// MatriculaConfigurada e MensalidadesCobrancaConfirmada já eram emitidos
-	// por internal/finance (matricula.go e mensalidade.go) e já eram
-	// tratados por FinanceiroProjection.Handle, mas faltavam nesta
-	// whitelist: todo SaveWithAudit/AppendTx para esses dois tipos de
-	// evento era rejeitado com "tipo de evento inválido" antes mesmo de
-	// tentar gravar no ledger.
-	"MatriculaConfigurada":           true,
-	"MatriculaConfiguracaoRemovida":  true,
+	// MensalidadesCobrancaConfirmada é emitido por internal/finance/mensalidade.go.
 	"MensalidadesCobrancaConfirmada": true,
 	// NotaCorrigida e FaltaCorrigida são emitidos por
 	// Estudante.CorrigirNota/CorrigirFalta (estudante_notas.go /
@@ -206,13 +193,8 @@ var validEventTypes = map[string]bool{
 	// aprovar nunca chegava a persistir a solicitação como aprovada.
 	"AcademiaNIFAlteradoPorSolicitacao": true,
 	// ── Descobertos por varredura estática (ver internal/db/safe_queries_test.go) ──
-	// Estes dois grupos tinham a mesma classe de bug — emitidos pelo domínio, tratados
-	// pela projeção correspondente, mas nunca chegaram a esta whitelist:
-	// SolicitacaoMatriculaValorPendenteAtualizado é emitido por
-	// SolicitacaoMatricula.AtualizarValorPendentePagamentoMatricula (solicitacao_matricula.go);
-	// ainda não há handler HTTP que chame esse método, mas ficaria sujeito ao mesmo 500
-	// no instante em que uma rota passasse a chamá-lo.
-	"SolicitacaoMatriculaValorPendenteAtualizado": true,
+	// Tinham a mesma classe de bug — emitidos pelo domínio, tratados pela
+	// projeção correspondente, mas nunca chegaram a esta whitelist:
 	// SumarioCriado/DadosAtualizados/Deletado são emitidos por aggregates.Sumario
 	// (sumario.go) e servidos por POST/PUT/DELETE /academia/sumario (rotas ativas em
 	// main.go) — toda criação, edição ou remoção de sumário de aula retornava 500.
@@ -241,7 +223,6 @@ var validAggregateTypes = map[string]bool{
 	"CategoriaServico":               true,
 	"MateriaDisciplinar":             true,
 	"Turma":                          true,
-	"SolicitacaoMatricula":           true,
 	"SolicitacaoEdicaoDadoEstudante": true,
 	"System":                         true,
 	"Financeiro":                     true,

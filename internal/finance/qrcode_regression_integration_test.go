@@ -55,29 +55,26 @@ func TestIntegrationPagamentoMensalidadeGPOQRDevolveQRCodeArr(t *testing.T) {
 	}
 }
 
-// TestIntegrationPagamentoMatriculaGPOQRDevolveQRCodeArr é o equivalente de
-// TestIntegrationPagamentoMensalidadeGPOQRDevolveQRCodeArr para o fluxo de
-// matrícula.
-func TestIntegrationPagamentoMatriculaGPOQRDevolveQRCodeArr(t *testing.T) {
+// TestIntegrationPagamentoGPOQRDevolveQRCodeArr é o equivalente de
+// TestIntegrationPagamentoMensalidadeGPOQRDevolveQRCodeArr para a cobrança
+// emitida pelo helper de teste (serviço extra).
+func TestIntegrationPagamentoGPOQRDevolveQRCodeArr(t *testing.T) {
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
 	client := integrationClient(t)
 	service := NewService(client)
 	ctx := context.Background()
 
 	academia := mensalidadeCodigo()
-	codigo := seedMatriculaPendente(t, client, academia, 750)
-	if _, err := client.DB().Exec(`UPDATE projection_solicitacoes_matricula SET metodos_pagamento_matricula='{GPO_QR}' WHERE codigo_solicitacao=$1`, codigo); err != nil {
-		t.Fatal(err)
-	}
+	codigo := novaObrigacaoTeste(750)
 
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
 	service.SetHTTPClient(&http.Client{Transport: &appyPayMockTransport{status: "Pending"}})
 
-	view, err := service.IniciarPagamentoMatricula(ctx, MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "GPO_QR"}, "127.0.0.1")
+	view, err := service.iniciarCobrancaTeste(ctx, academia, codigo, "GPO_QR", "")
 	if err != nil {
-		t.Fatalf("IniciarPagamentoMatricula falhou: %v", err)
+		t.Fatalf("iniciarCobrancaTeste falhou: %v", err)
 	}
 	if view.Charge.QRCodeArr == "" {
-		t.Fatalf("qrCodeArr não chegou na resposta de pagamento de matrícula GPO_QR: %#v", view.Charge)
+		t.Fatalf("qrCodeArr não chegou na resposta de pagamento GPO_QR: %#v", view.Charge)
 	}
 }

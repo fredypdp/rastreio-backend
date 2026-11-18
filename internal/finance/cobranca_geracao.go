@@ -7,11 +7,11 @@ import (
 
 // gerarCobrancaInput agrupa os parâmetros necessários para emitir uma nova
 // cobrança em nome de uma academia (contexto sempre ContextoAcademia), a
-// partir de uma obrigação já validada por quem chama (mensalidade ou taxa
-// de matrícula). CodigoEstudante, CodigoSolicitacao e Mensalidades são
-// metadados de auditoria opcionais: preencha apenas o(s) que fizer(em)
-// sentido para a origem da cobrança (CodigoEstudante para mensalidade,
-// CodigoSolicitacao para matrícula) e deixe os demais no valor zero —
+// partir de uma obrigação já validada por quem chama (mensalidade ou serviço
+// extra). CodigoEstudante e Mensalidades são metadados de auditoria
+// opcionais: preencha apenas o(s) que fizer(em) sentido para a origem da
+// cobrança (CodigoEstudante e Mensalidades para mensalidade) e deixe os
+// demais no valor zero —
 // ChargeRequest e QRCodeRequest já tratam esses campos como omitempty e
 // eles nunca são enviados à AppyPay (ver comentário de ChargeRequest em
 // appypay.go).
@@ -23,7 +23,6 @@ type gerarCobrancaInput struct {
 	MerchantTransactionID      string
 	Telefone                   string // usado apenas quando MetodoPagamento == "GPO"; ignorado nos demais casos
 	CodigoEstudante            string
-	CodigoSolicitacao          string
 	CodigoInscricaoServico     string
 	TipoLancamentoServicoExtra string
 	MesReferencia              *int
@@ -37,11 +36,10 @@ type gerarCobrancaInput struct {
 // CreateGPOQRCode (GPO_QR) ou CreateCharge (REF e GPO) — e monta o
 // paymentInfo.phoneNumber exigido pela AppyPay quando o método é GPO.
 //
-// É reutilizada tanto por IniciarPagamentoMatricula (matricula.go) quanto
-// por IniciarPagamentoMensalidades (mensalidade.go): as duas únicas
-// funções do sistema que iniciam uma cobrança nova a partir de uma
-// obrigação (matrícula ou mensalidade) e de um método de pagamento
-// escolhido pelo pagador. Nenhum outro lugar do módulo deve reimplementar
+// É reutilizada por IniciarPagamentoMensalidades (mensalidade.go) e pelos
+// pagamentos de serviço extra (servico_extra.go): as funções do sistema que
+// iniciam uma cobrança nova a partir de uma obrigação (mensalidade ou serviço
+// extra) e de um método de pagamento escolhido pelo pagador. Nenhum outro lugar do módulo deve reimplementar
 // esta decisão — ver o comentário de pacote no topo de appypay.go
 // ("Package finance is the only package allowed to call AppyPay's HTTP
 // API").
@@ -55,15 +53,14 @@ type gerarCobrancaInput struct {
 //
 // O retorno é sempre QRCodeResult (mesmo para REF/GPO, com QRCodeArr
 // vazio), para que o chamador nunca precise tratar dois tipos de retorno
-// diferentes — o mesmo motivo pelo qual MatriculaPagamentoView.Charge e
-// MensalidadePagamentoView.Charge já são declarados como QRCodeResult.
+// diferentes — o mesmo motivo pelo qual MensalidadePagamentoView.Charge já é
+// declarado como QRCodeResult.
 func (s *Service) gerarCobranca(ctx context.Context, in gerarCobrancaInput, actorID, actorType, ip string) (QRCodeResult, error) {
 	if in.MetodoPagamento == "GPO_QR" {
 		qr, err := s.CreateGPOQRCode(ctx, QRCodeRequest{
 			ContextoTipo:               ContextoAcademia,
 			CodigoAcademia:             in.CodigoAcademia,
 			CodigoEstudante:            in.CodigoEstudante,
-			CodigoSolicitacao:          in.CodigoSolicitacao,
 			CodigoInscricaoServico:     in.CodigoInscricaoServico,
 			TipoLancamentoServicoExtra: in.TipoLancamentoServicoExtra, MesReferencia: in.MesReferencia, AnoReferencia: in.AnoReferencia,
 			Amount:                in.Amount,
@@ -85,7 +82,6 @@ func (s *Service) gerarCobranca(ctx context.Context, in gerarCobrancaInput, acto
 		ContextoTipo:               ContextoAcademia,
 		CodigoAcademia:             in.CodigoAcademia,
 		CodigoEstudante:            in.CodigoEstudante,
-		CodigoSolicitacao:          in.CodigoSolicitacao,
 		CodigoInscricaoServico:     in.CodigoInscricaoServico,
 		TipoLancamentoServicoExtra: in.TipoLancamentoServicoExtra, MesReferencia: in.MesReferencia, AnoReferencia: in.AnoReferencia,
 		Mensalidades:          in.Mensalidades,

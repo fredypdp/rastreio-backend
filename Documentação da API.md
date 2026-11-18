@@ -13,19 +13,7 @@ Versão atual: 2.10.0
 6. [Academias](#6-academias)
 7. [Ano Letivo](#7-ano-letivo)
 8. [Estudantes](#8-estudantes)
-9. [Solicitação de Matrícula](#9-solicitação-de-matrícula)
-   - [9.1 `POST /solicitacao-matricula`](#91-post-solicitacao-matricula)
-   - [9.2 `GET /solicitacoes-matricula`](#92-get-solicitacoes-matricula)
-   - [9.3 `GET /academia/solicitacoes-matricula`](#93-get-academiasolicitacoes-matricula)
-   - [9.4 `GET /academia/solicitacao-matricula/:codigo`](#94-get-academiasolicitacao-matriculacodigo)
-   - [9.5 `PUT /academia/solicitacao-matricula/:codigo/aprovar`](#95-put-academiasolicitacao-matriculacodigoaprovar)
-   - [9.6 `PUT /academia/solicitacao-matricula/:codigo/reprovar`](#96-put-academiasolicitacao-matriculacodigoreprovar)
-   - [9.7 `GET /documentos/solicitacoes-matricula/:codigo/:campo/download`](#97-get-documentossolicitacoes-matriculacodigocampodownload)
-   - [9.8 `GET /academia/documentos/solicitacoes-matricula/:codigo/:campo/download`](#98-get-academiadocumentossolicitacoes-matriculacodigocampodownload)
-   - [9.9 `GET /solicitacao-matricula/busca`](#99-get-solicitacao-matriculabusca)
-   - [9.10 `GET /solicitacao-matricula/:codigo/status`](#910-get-solicitacao-matriculacodigostatus)
-   - [9.11 `POST /solicitacao-matricula/:codigo/pagamento-matricula`](#911-post-solicitacao-matriculacodigopagamento-matricula)
-   - [9.12 `PUT /academia/solicitacao-matricula/:codigo/cancelar`](#912-put-academiasolicitacao-matriculacodigocancelar)
+9. [Solicitação de Matrícula (removida)](#9-solicitação-de-matrícula-removida)
 10. [Cursos](#10-cursos)
     - [10.1 `GET /academia/cursos`](#101-get-academiacursos)
     - [10.2 `GET /academia/curso/:id`](#102-get-academiacursoid)
@@ -126,7 +114,6 @@ type Genero = 'masculino' | 'feminino'
 type TipoNota = 'escolar' | 'superior'
 type JobStatus = 'pending' | 'processing' | 'done' | 'failed'
 type JobEventType = 'job_enqueued' | 'job_progress' | 'job_done' | 'job_failed'
-type SolicitacaoMatriculaStatus = 'pendente' | 'aprovada' | 'reprovada' | 'cancelada' | 'aprovada_pendente_pagamento_matricula'
 ```
 
 **Períodos de nota:**
@@ -210,7 +197,7 @@ interface AcademiaDTO {
   tipo_ano_letivo?: string        // 'escolar' | 'superior'
   ano_letivo_ativado_em?: string  // RFC3339
   anos_letivos_lista: AnoLetivoItem[]
-  documentos?: Record<string, SolicitacaoMatriculaDocumentoDTO> // inclui alvara para usuários autenticados
+  documentos?: Record<string, DocumentoDTO> // inclui alvara para usuários autenticados
   created_at: string
   updated_at?: string
   version: number
@@ -256,7 +243,7 @@ interface EstudanteDTO {
   curso_superior_id?: string      // UUID
   total_notas?: number
   total_faltas?: number
-  documentos?: Record<string, SolicitacaoMatriculaDocumentoDTO>
+  documentos?: Record<string, DocumentoDTO>
   created_at: string
   updated_at: string
   version: number
@@ -272,46 +259,16 @@ interface EstudanteDTO {
 ---
 
 
-### 2.5 SolicitacaoMatricula
+### 2.5 Documento (DocumentoDTO)
 
 ```typescript
-interface SolicitacaoMatriculaDocumentoDTO {
+interface DocumentoDTO {
   path: string
   file_url: string
   // Rota autenticada do backend para download inline do PDF no escopo da consulta.
   download_url: string
 }
 
-interface SolicitacaoMatriculaDTO {
-  id: string
-  codigo_solicitacao: string
-  codigo_academia: string
-  nome: string
-  genero: Genero
-  data_nascimento: string
-  email?: string
-  telefone?: string
-  telefone_encarregado?: string
-  bilhete_identidade?: string
-  bilhete_identidade_encarregado?: string
-  ano_escolar_fundamental?: string
-  ano_escolar_medio?: string
-  curso_medio_id?: string
-  ano_superior?: string
-  curso_superior_id?: string
-  status: SolicitacaoMatriculaStatus
-  solicitacoes_semelhantes: string[] // calculado pelo backend; somente leitura
-  motivo_reprovacao?: string
-  documentos: Record<string, SolicitacaoMatriculaDocumentoDTO>
-  codigo_estudante_gerado?: string
-  valor_matricula?: number
-  metodos_pagamento_matricula?: string[]
-  aprovada_por?: string
-  reprovada_por?: string
-  created_at: string
-  updated_at: string
-  version: number
-}
 ```
 
 ### 2.6 Curso
@@ -1986,7 +1943,7 @@ Reprova uma solicitação pendente de alteração de `data_nascimento`.
 
 ### Regras automáticas de documentos de matrícula
 
-A obrigatoriedade dos documentos e as validações cadastrais comuns são aplicadas por uma política única compartilhada por `POST /solicitacao-matricula`, pela aprovação da solicitação e pelo cadastro direto `POST /academia/estudante/register`. As duas rotas normalizam os mesmos campos de estudante, encarregado, nível de ensino, telefones, bilhetes e documentos antes de qualquer gravação no ledger. A validação considera simultaneamente os campos textuais do request e os PDFs anexados:
+A obrigatoriedade dos documentos e as validações cadastrais comuns são aplicadas por uma política única, usada pelo cadastro direto `POST /academia/estudante/register`. A rota normaliza os campos de estudante, encarregado, nível de ensino, telefones, bilhetes e documentos antes de qualquer gravação no ledger. A validação considera simultaneamente os campos textuais do request e os PDFs anexados:
 
 - `1_ano_fundamental` não exige `declaracao` nem certificado acadêmico anterior.
 - Todo ano escolar sequencial com ano anterior exige `declaracao` acompanhada do campo textual `declaracao_ano_academico`, e esse valor deve ser exatamente o ano acadêmico imediatamente anterior ao ano pretendido.
@@ -2010,9 +1967,9 @@ A obrigatoriedade dos documentos e as validações cadastrais comuns são aplica
 
 **Ordem operacional e atomicidade documental:**
 
-- As duas rotas validam dados cadastrais comuns, regras de telefone por nível, presença documental, tipo, extensão, assinatura PDF e tamanho máximo antes de gravar eventos no ledger.
-- Os uploads obrigatórios são concluídos antes da criação de `SolicitacaoMatriculaCriada` ou `EstudanteCriadoComVinculo`.
-- Se validação ou upload falhar, nenhuma solicitação, estudante, matrícula, vínculo ou evento correlato é gravado no ledger.
+- A rota valida dados cadastrais comuns, regras de telefone por nível, presença documental, tipo, extensão, assinatura PDF e tamanho máximo antes de gravar eventos no ledger.
+- Os uploads obrigatórios são concluídos antes da criação de `EstudanteCriadoComVinculo`.
+- Se validação ou upload falhar, nenhum estudante, matrícula, vínculo ou evento correlato é gravado no ledger.
 - Se uma falha posterior ocorrer depois de upload parcial, o backend tenta remover o diretório de destino no storage e retorna o erro principal ao cliente.
 
 ---
@@ -3265,7 +3222,7 @@ Para implementar o cliente de forma segura:
 
 ### POST /academia/estudante/register
 
-Cadastra um novo estudante vinculado à academia autenticada. O cadastro direto usa `multipart/form-data` e aplica a mesma política documental da solicitação de matrícula para campos textuais e PDFs. JSON puro não é aceito. Para estudantes escolares/fundamental/médio, exige BI textual/PDF do encarregado e BI textual/PDF do estudante ou cédula; para ensino superior, exige BI textual/PDF do estudante e mantém o encarregado opcional.
+Cadastra um novo estudante vinculado à academia autenticada. O cadastro direto usa `multipart/form-data` e aplica a política documental de matrícula (abaixo) para campos textuais e PDFs. JSON puro não é aceito. Para estudantes escolares/fundamental/médio, exige BI textual/PDF do encarregado e BI textual/PDF do estudante ou cédula; para ensino superior, exige BI textual/PDF do estudante e mantém o encarregado opcional.
 
 **Proteção**: autenticado + academia ativa
 
@@ -3304,7 +3261,7 @@ Cadastra um novo estudante vinculado à academia autenticada. O cadastro direto 
 | `certificado_ensino_medio` | Exigido como alternativa à declaração somente para `1_ano_superior`. |
 | `documento_extra_<id>` | Documento configurado e ativo pela academia para o `ano_academico` do estudante. Substitua `<id>` pelo UUID retornado em `GET /academia/documentos-extra`; envie um campo por definição aplicável. É obrigatório somente quando o catálogo o define como `obrigatorio=true`. Aceita PDF ou JPG conforme o `tipo` configurado; ver seção 24. |
 
-Os documentos fixos devem ter `Content-Type: application/pdf`, extensão `.pdf`, assinatura `%PDF` e tamanho máximo de 10MB. Cada `documento_extra_<id>` segue o mesmo limite de 10MB, mas deve respeitar o tipo configurado: PDF (`application/pdf`, `.pdf`, assinatura `%PDF`) ou JPG (`image/jpeg` ou `image/jpg`, `.jpg`/`.jpeg`, assinatura JPEG). O cadastro direto usa a mesma validação compartilhada de matrícula aplicada por `POST /solicitacao-matricula` para dados comuns e documentos. Os documentos obrigatórios são validados e enviados para `{codigo_academia}/estudantes/{codigo_estudante}/documentos/` antes de qualquer gravação no ledger; somente após sucesso total dos uploads o evento `EstudanteCriadoComVinculo` é persistido com metadados normalizados em `documentos.<chave>.documento_id`, `documentos.<chave>.tipo`, `documentos.<chave>.nivel`, `documentos.<chave>.ano_academico`, `documentos.<chave>.versao`, `documentos.<chave>.path`, `documentos.<chave>.file_url` e `documentos.<chave>.download_url`. Para identificação, a chave continua sendo o tipo do arquivo (`bi_estudante`, `bi_encarregado`, `cedula_estudante`); para documentos acadêmicos, a chave segue `nivel.ano_academico.tipo`, como `medio.3_ano_medio.declaracao_3_ano_medio`. Se validação/upload falhar, nenhum estudante/vínculo é gravado; se a criação falhar após upload parcial, o backend remove o diretório definitivo do estudante para evitar ficheiros órfãos.
+Os documentos fixos devem ter `Content-Type: application/pdf`, extensão `.pdf`, assinatura `%PDF` e tamanho máximo de 10MB. Cada `documento_extra_<id>` segue o mesmo limite de 10MB, mas deve respeitar o tipo configurado: PDF (`application/pdf`, `.pdf`, assinatura `%PDF`) ou JPG (`image/jpeg` ou `image/jpg`, `.jpg`/`.jpeg`, assinatura JPEG). O cadastro direto usa a validação compartilhada de matrícula para dados comuns e documentos. Os documentos obrigatórios são validados e enviados para `{codigo_academia}/estudantes/{codigo_estudante}/documentos/` antes de qualquer gravação no ledger; somente após sucesso total dos uploads o evento `EstudanteCriadoComVinculo` é persistido com metadados normalizados em `documentos.<chave>.documento_id`, `documentos.<chave>.tipo`, `documentos.<chave>.nivel`, `documentos.<chave>.ano_academico`, `documentos.<chave>.versao`, `documentos.<chave>.path`, `documentos.<chave>.file_url` e `documentos.<chave>.download_url`. Para identificação, a chave continua sendo o tipo do arquivo (`bi_estudante`, `bi_encarregado`, `cedula_estudante`); para documentos acadêmicos, a chave segue `nivel.ano_academico.tipo`, como `medio.3_ano_medio.declaracao_3_ano_medio`. Se validação/upload falhar, nenhum estudante/vínculo é gravado; se a criação falhar após upload parcial, o backend remove o diretório definitivo do estudante para evitar ficheiros órfãos.
 
 **Request — campos de texto principais (exemplo escolar; requer anexar os PDFs obrigatórios do quadro acima):**
 
@@ -4206,473 +4163,18 @@ Só o próprio estudante pode deletar a própria conta — não há um caminho p
 
 ---
 
-## 9. Solicitação de Matrícula
+## 9. Solicitação de Matrícula (removida)
 
-O escopo de solicitação de matrícula registra pedidos externos de ingresso em uma academia, armazena os PDFs obrigatórios, expõe a fila para análise e efetiva o estudante somente após aprovação da academia. O aggregate usado é `SolicitacaoMatricula`, com estados `pendente`, `aprovada`, `reprovada` e `cancelada`.
+A matrícula pública (solicitação de matrícula feita pelo próprio estudante) foi removida (Plano de Atualizações, Parte 1). O estudante passa a ser cadastrado apenas pela academia, em `POST /academia/estudante/register` (e no cadastro em lote). As rotas abaixo deixaram de existir e respondem `404`:
 
-### 9.1 `POST /solicitacao-matricula`
+- `POST /solicitacao-matricula`, `GET /solicitacao-matricula/busca`, `GET /solicitacao-matricula/:codigo/status`, `POST /solicitacao-matricula/:codigo/pagamento-matricula`
+- `GET /solicitacoes-matricula`, `GET /dominis/solicitacoes-matricula`, `GET /academia/solicitacoes-matricula`, `GET /academia/solicitacao-matricula/:codigo`
+- `PUT /academia/solicitacao-matricula/:codigo/aprovar`, `.../reprovar`, `.../cancelar`
+- `GET /documentos/solicitacoes-matricula/:codigo/:campo/download` e `GET /academia/documentos/solicitacoes-matricula/:codigo/:campo/download`
+- `GET /academia/documento/:codigo_academia/documentos-extra` (listagem pública do catálogo de documentos extra, que só existia para a tela pública de matrícula; a academia autenticada continua usando `GET /academia/documentos-extra`)
+- `POST`, `PUT`, `GET` e `DELETE /financeiro/matriculas/configuracoes` (taxa de matrícula; ver 19.21, 19.22 e 19.26)
 
-Cria uma solicitação pública de matrícula para a academia informada.
-
-**Proteção:** pública.
-
-**Content-Type:** `multipart/form-data`.
-
-**Request fields:**
-
-| Campo | Tipo/envio | Obrigatório | Observações |
-| --- | --- | --- | --- |
-| `codigo_academia` | texto | sim | Academia destino, que deve existir e estar `ativo`. |
-| `nome` | texto | sim | Nome completo do candidato. |
-| `genero` | texto | sim | Validado pelas regras comuns de matrícula. |
-| `data_nascimento` | texto `YYYY-MM-DD` | sim | Deve ser anterior à data atual. |
-| `email` | texto | não | Normalizado/validado quando enviado. |
-| `telefone` | texto | não | Telefone do candidato; normalizado/validado quando enviado. |
-| `telefone_encarregado` | texto | não | Telefone do encarregado; normalizado/validado quando enviado. |
-| `bilhete_identidade` | texto | não | BI do candidato; normalizado/validado quando enviado. |
-| `bilhete_identidade_encarregado` | texto | não | BI do encarregado; normalizado/validado quando enviado. |
-| `ano_escolar_fundamental` | texto | condicional | Use quando a solicitação for para o Ensino Primário e Iº Ciclo. |
-| `ano_escolar_medio` | texto | condicional | Use quando a solicitação for para ensino médio. |
-| `ano_superior` | texto | condicional | Use quando a solicitação for para ensino superior. |
-| `curso_medio_id` | UUID | condicional | Curso `medio`, `ativo` e da mesma academia; usado com `ano_escolar_medio`. |
-| `curso_superior_id` | UUID | condicional | Curso `superior`, `ativo` e da mesma academia; usado com `ano_superior`. |
-| `declaracao_ano_academico` | texto | não | Classifica o PDF `declaracao` quando enviado. |
-| `bi_estudante`, `bi_encarregado`, `cedula_estudante`, `declaracao`, `certificado_6_ano_fundamental`, `certificado_9_ano_fundamental`, `certificado_ensino_medio` | arquivo PDF | condicional | Documentos fixos; a obrigatoriedade depende do percurso de matrícula. |
-| `documento_extra_<id>` | arquivo PDF ou JPG | condicional | Um campo para cada documento extra ativo configurado pela academia para o ano académico solicitado. `<id>` é o UUID retornado por `GET /academia/documentos-extra`; é obrigatório quando a definição tiver `obrigatorio=true` e deve respeitar o `tipo` (`pdf` ou `jpg`) configurado. |
-
-**Exemplo de request — ensino médio:**
-
-```bash
-curl -X POST "$BASE_URL/solicitacao-matricula" \
-  -F codigo_academia=ACAD001 \
-  -F nome="Ana Manuel" \
-  -F genero=feminino \
-  -F data_nascimento=2008-04-15 \
-  -F telefone=+244923000000 \
-  -F telefone_encarregado=+244922000000 \
-  -F bilhete_identidade=000000000LA000 \
-  -F bilhete_identidade_encarregado=111111111LA111 \
-  -F ano_escolar_medio=1_ano_medio \
-  -F curso_medio_id=7f2f4d0e-6e2a-4c39-b7dd-12b63d9d5d55 \
-  -F bi_estudante=@./bi-estudante.pdf \
-  -F bi_encarregado=@./bi-encarregado.pdf \
-  -F certificado_9_ano_fundamental=@./certificado-9-ano.pdf
-```
-
-**Regras de negócio:**
-
-- Qualquer campo de arquivo fora dos documentos fixos ou do padrão `documento_extra_<id>` aplicável ao ano académico solicitado é rejeitado.
-- Documentos fixos devem ser PDF (`Content-Type: application/pdf`, extensão `.pdf`, assinatura `%PDF`); documentos extra devem respeitar o tipo configurado no catálogo (PDF ou JPG, com Content-Type, extensão e assinatura binária correspondentes). Todos têm limite de 10 MB.
-- Os documentos obrigatórios são validados pelas regras automáticas de documentos de matrícula, considerando BI, BI do encarregado e ano pretendido.
-- `7_ano_fundamental` exige `certificado_6_ano_fundamental`; `1_ano_medio` exige `certificado_9_ano_fundamental`; ingresso superior exige curso superior/ano compatível e certificado aplicável pelas regras de documentos.
-- Para matrícula escolar, `bilhete_identidade_encarregado` não pode coincidir com o BI principal de outro estudante escolar.
-- O código da solicitação é único e gerado pelo backend.
-- Todos os PDFs são enviados para storage antes de gravar o evento; se algum upload falhar, os arquivos já enviados são removidos e a solicitação não é criada.
-- O evento gravado é `SolicitacaoMatriculaCriada`, com `status = pendente` e lista de solicitações semelhantes pendentes quando houver.
-
-**Response 201:**
-
-```json
-{
-  "message": "solicitação de matrícula criada com sucesso",
-  "codigo_solicitacao": "AB12CD34EF5",
-  "codigo_academia": "ACAD001",
-  "status": "pendente",
-  "solicitacoes_semelhantes": ["ZX98YW76VU5"]
-}
-```
-
-**Erros comuns:** `400` para payload/documentos inválidos, `403` para academia inativa ou inexistente, `500` para falhas internas/storage.
-
-### 9.2 `GET /solicitacoes-matricula`
-
-Lista solicitações em escopo administrativo.
-
-**Proteção:** admin autenticado.
-
-**Query params:**
-
-| Parâmetro | Tipo | Obrigatório | Observações |
-| --- | --- | --- | --- |
-| `codigo_academia` | string repetível | não | Restringe a uma ou mais academias, por exemplo `?codigo_academia=ACAD001&codigo_academia=ACAD002`. |
-| `status` | enum repetível | não | Filtra por `pendente`, `aprovada`, `reprovada` ou `cancelada`; aceita múltiplos valores. |
-| `limit` | inteiro | não | Padrão `50`, mínimo `1`, máximo `1000`. |
-| `offset` | inteiro | não | Padrão `0`, mínimo `0`, máximo `1000000`. |
-
-**Exemplo de request:**
-
-```http
-GET /solicitacoes-matricula?codigo_academia=ACAD001&status=pendente&limit=50&offset=0 HTTP/1.1
-Authorization: Bearer <token>
-```
-
-**Response 200:**
-
-```json
-{
-  "solicitacoes": [SolicitacaoMatriculaDTO],
-  "total": 1,
-  "total_geral": 25,
-  "limit": 50,
-  "offset": 0
-}
-```
-
-**Regras de negócio:** os documentos retornam com metadados normalizados e URLs de download autenticadas. Admins podem filtrar por academia; sem filtro, a consulta retorna o escopo administrativo permitido.
-
-### 9.3 `GET /academia/solicitacoes-matricula`
-
-Lista solicitações da academia autenticada/resolvida.
-
-**Proteção:** academia ativa ou admin no grupo de leitura de academia.
-
-**Query params:** mesmos de `GET /solicitacoes-matricula`, exceto que `codigo_academia` é derivado da sessão/escopo e não deve ser usado para escapar da academia.
-
-**Exemplo de request:**
-
-```http
-GET /academia/solicitacoes-matricula?status=pendente&limit=50&offset=0 HTTP/1.1
-Authorization: Bearer <token>
-```
-
-**Response 200:** mesmo envelope de listagem de `9.2`.
-
-**Regras de negócio:** a listagem é sempre restrita à academia corrente. Documentos recebem URLs de download no escopo de solicitação de matrícula.
-
-### 9.4 `GET /academia/solicitacao-matricula/:codigo`
-
-Consulta uma solicitação específica da academia.
-
-**Proteção:** academia ativa ou admin no grupo de leitura de academia.
-
-**Path params:**
-
-| Parâmetro | Tipo | Obrigatório | Observações |
-| --- | --- | --- | --- |
-| `codigo` | string | sim | Código único da solicitação. |
-
-**Exemplo de request:**
-
-```http
-GET /academia/solicitacao-matricula/AB12CD34EF5 HTTP/1.1
-Authorization: Bearer <token>
-```
-
-**Response 200:**
-
-```json
-{
-  "solicitacao": SolicitacaoMatriculaDTO
-}
-```
-
-**Regras de negócio:** retorna `404` quando o código não existe e `403` quando a solicitação pertence a outra academia. Os documentos incluem URLs autenticadas de download.
-
-### 9.5 `PUT /academia/solicitacao-matricula/:codigo/aprovar`
-
-Aprova uma solicitação pendente. A aprovação tem dois caminhos: cria o estudante imediatamente quando não há taxa de matrícula configurada, ou deixa a solicitação aprovada a aguardar pagamento quando existe uma configuração vigente de taxa.
-
-**Proteção:** academia ativa.
-
-**Request body:** vazio; não envie campos. O backend usa os dados já guardados na solicitação.
-
-**Exemplo de request:**
-
-```http
-PUT /academia/solicitacao-matricula/AB12CD34EF5/aprovar HTTP/1.1
-Authorization: Bearer <token>
-```
-
-**Regras de negócio:**
-
-- A solicitação deve existir, pertencer à academia autenticada e estar `pendente`.
-- Documentos e BI do encarregado são revalidados no momento da aprovação.
-- Se a solicitação possui `bilhete_identidade`, o backend reserva a chave única antes de prosseguir; conflito de BI responde `409`.
-- É gerado `codigo_estudante` em ambos os caminhos. Mesmo quando há taxa, o código fica reservado imediatamente, embora o registo do `Estudante` ainda não exista.
-- **Sem taxa configurada:** quando não existe configuração vigente de taxa de matrícula para o nível/ano/curso da solicitação (ver 19.21), a aprovação cria o aggregate `Estudante` imediatamente via `EstudanteCriadoComVinculo`, grava `SolicitacaoMatriculaAprovada`, atribui a senha inicial padrão e marca solicitações concorrentes pendentes por BI como canceladas quando aplicável.
-- **Com taxa configurada:** quando existe configuração vigente, a aprovação grava `SolicitacaoMatriculaAprovada` e, em seguida, `SolicitacaoMatriculaAprovadaPendentePagamento`; o status final passa a `aprovada_pendente_pagamento_matricula`. O valor e os métodos da configuração vigente no momento da aprovação ficam congelados na própria solicitação, e alterações posteriores da configuração não mudam o que o candidato tem a pagar.
-- No caminho com taxa, nenhum `Estudante` é criado na aprovação: o registo só nasce quando o pagamento é confirmado (ver 9.11) ou o código reservado é libertado se a academia cancelar a solicitação pendente de pagamento (ver 9.12). O cancelamento de solicitações concorrentes por BI só ocorre no caminho sem taxa, quando o estudante é efectivamente criado.
-- A operação rejeita solicitações já aprovadas, reprovadas ou canceladas com conflito.
-
-**Response 200 — sem taxa configurada:**
-
-```json
-{
-  "message": "solicitação aprovada e estudante registado com sucesso",
-  "codigo_solicitacao": "AB12CD34EF5",
-  "codigo_estudante_gerado": "EST123456",
-  "credenciais": { "canal": "sms", "enviada": true }
-}
-```
-
-**Response 200 — com taxa configurada:**
-
-```json
-{
-  "message": "solicitação aprovada, aguardando pagamento de matrícula",
-  "codigo_solicitacao": "AB12CD34EF5",
-  "codigo_estudante_gerado": "EST123456",
-  "status": "aprovada_pendente_pagamento_matricula"
-}
-```
-
-**Credenciais:** o telefone de destino (estudante no superior, encarregado no escolar) é validado antes de aprovar; sem telefone móvel válido a aprovação é recusada com `422`. No caminho com taxa, a senha temporária é enviada quando o pagamento da matrícula é confirmado e o estudante nasce; falha desse SMS não desfaz o vínculo e resolve-se com o reenvio de credenciais.
-
-**Erros comuns:** `400` para revalidação inválida, `403` para solicitação de outra academia, `404` para código inexistente, `409` para solicitação não pendente ou BI em uso/em cadastro.
-
-Para o fluxo de consulta e pagamento da taxa pelo próprio candidato, veja as seções 9.9–9.12; para a configuração da taxa pela academia, veja a seção 19.21.
-
-### 9.6 `PUT /academia/solicitacao-matricula/:codigo/reprovar`
-
-Reprova uma solicitação pendente com motivo obrigatório.
-
-**Proteção:** academia ativa.
-
-**Request body:**
-
-| Campo | Tipo | Obrigatório | Observações |
-| --- | --- | --- | --- |
-| `motivo_reprovacao` | string | sim | Motivo legível para auditoria; não pode ser vazio após trim. |
-
-```json
-{
-  "motivo_reprovacao": "documentação ilegível"
-}
-```
-
-**Exemplo de request:**
-
-```http
-PUT /academia/solicitacao-matricula/AB12CD34EF5/reprovar HTTP/1.1
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{
-  "motivo_reprovacao": "documentação ilegível"
-}
-```
-
-**Regras de negócio:**
-
-- A solicitação deve existir, pertencer à academia autenticada e estar `pendente`.
-- `motivo_reprovacao` é obrigatório e não pode ser vazio.
-- A reprovação grava `SolicitacaoMatriculaReprovada` e tenta remover a pasta de documentos temporários da solicitação no storage.
-
-**Response 200:**
-
-```json
-{
-  "message": "solicitação reprovada com sucesso",
-  "codigo_solicitacao": "AB12CD34EF5"
-}
-```
-
-### 9.7 `GET /documentos/solicitacoes-matricula/:codigo/:campo/download`
-
-Faz download administrativo de um documento anexado a uma solicitação de matrícula.
-
-**Proteção:** usuário autenticado.
-
-**Path params:**
-
-| Parâmetro | Tipo | Obrigatório | Observações |
-| --- | --- | --- | --- |
-| `codigo` | string | sim | Código único da solicitação. |
-| `campo` | string | sim | Chave normalizada do documento, como `bi_estudante`, `bi_encarregado` ou `medio.1_ano_medio.declaracao`. |
-
-**Exemplo de request:**
-
-```http
-GET /documentos/solicitacoes-matricula/AB12CD34EF5/bi_estudante/download HTTP/1.1
-Authorization: Bearer <token>
-```
-
-**Regras de negócio:** o backend resolve o documento pela projeção da solicitação e serve o arquivo pelo storage; links diretos externos não são fonte de verdade para o cliente.
-
-**Response 200:** arquivo PDF.
-
-### 9.8 `GET /academia/documentos/solicitacoes-matricula/:codigo/:campo/download`
-
-Faz download de documento de solicitação no escopo da academia.
-
-**Proteção:** academia ativa ou admin no grupo de leitura de academia.
-
-**Path params:** mesmos de `9.7`.
-
-**Exemplo de request:**
-
-```http
-GET /academia/documentos/solicitacoes-matricula/AB12CD34EF5/bi_estudante/download HTTP/1.1
-Authorization: Bearer <token>
-```
-
-**Regras de negócio:** além das validações de `9.7`, a solicitação deve pertencer à academia resolvida; caso contrário retorna `403`.
-
-**Response 200:** arquivo PDF.
-
-Estas rotas públicas complementares existem para o próprio candidato, que ainda não tem conta no sistema, consultar e pagar a taxa de matrícula quando a academia exige uma. A posse do código da solicitação funciona como credencial; por isso, as respostas de `busca` e `status` são deliberadamente minimalistas e nunca expõem documentos nem dados pessoais completos.
-
-### 9.9 `GET /solicitacao-matricula/busca`
-
-Localiza solicitações por combinação exacta de dados fornecidos pelo candidato.
-
-**Proteção:** pública, mas limitada por IP.
-
-**Query params:**
-
-| Campo | Tipo | Obrigatório | Observações |
-| --- | --- | --- | --- |
-| `telefone` | string | não | Correspondência exacta, case-sensitive e sem normalização adicional. |
-| `telefone_encarregado` | string | não | Correspondência exacta. |
-| `email` | string | não | Correspondência exacta. |
-| `bilhete_identidade` | string | não | Correspondência exacta. |
-| `bilhete_identidade_encarregado` | string | não | Correspondência exacta. |
-
-É preciso informar pelo menos 2 dos 5 campos para a busca ser executada.
-
-**Exemplo de request:**
-
-```http
-GET /solicitacao-matricula/busca?telefone=%2B244923000000&email=candidato%40example.com HTTP/1.1
-```
-
-**Response 200:**
-
-```json
-{
-  "solicitacoes": [
-    {
-      "codigo_solicitacao": "AB12CD34EF5",
-      "nome_estudante": "Ana Manuel",
-      "academia": "ACAD001",
-      "data_submissao": "2026-08-01T10:00:00Z",
-      "status": "pendente"
-    }
-  ]
-}
-```
-
-**Regras de negócio:**
-
-- Com menos de 2 campos preenchidos, a resposta é `200` com `"solicitacoes": []`, e não `400`, para não permitir enumeração por erro.
-- Só devolve dados de reconhecimento: código, nome, academia, data e status.
-- Os resultados são ordenados pela data de submissão mais recente primeiro.
-
-**Erros comuns:** `429` ao exceder o limite próprio desta rota: até 5 requisições imediatas por IP, renovando 1 a cada 3 segundos; a resposta é corpo vazio e não segue o envelope global.
-
-### 9.10 `GET /solicitacao-matricula/:codigo/status`
-
-Consulta o estado mínimo de uma solicitação e, quando aplicável, os dados congelados para pagamento da taxa de matrícula.
-
-**Proteção:** pública, com limitador por IP independente de 9.9.
-
-**Path params:** `codigo` — código da solicitação.
-
-**Exemplo de request:**
-
-```http
-GET /solicitacao-matricula/AB12CD34EF5/status HTTP/1.1
-```
-
-**Response 200 (solicitação não pendente de pagamento):**
-
-```json
-{ "status": "pendente", "codigo_academia": "ACAD001" }
-```
-
-**Response 200 (solicitação aguardando pagamento de matrícula):**
-
-```json
-{
-  "status": "aprovada_pendente_pagamento_matricula",
-  "codigo_academia": "ACAD001",
-  "valor_matricula": 15000.00,
-  "metodos_pagamento": ["REF", "GPO"]
-}
-```
-
-**Regras de negócio:**
-
-- `valor_matricula` e `metodos_pagamento` só aparecem quando `status` é `aprovada_pendente_pagamento_matricula`.
-- `metodos_pagamento` traz apenas os métodos habilitados pela academia que o provedor de pagamento ativo dela suporta; sem provedor ativo com credenciais vem vazio.
-- Quando `metodos_pagamento` vem vazio, a resposta traz também `metodos_pagamento_aviso` (2.9.0) — `{ "codigo", "mensagem" }` com um dos códigos `PROVEDOR_NAO_CONFIGURADO`, `METODOS_NAO_SUPORTADOS_PELO_PROVEDOR` ou `NENHUM_METODO_HABILITADO` — para que o cliente explique ao candidato por que não há como pagar. Com métodos disponíveis o campo não aparece.
-- Para `pendente`, `aprovada`, `reprovada` ou `cancelada`, a resposta traz apenas `status` e `codigo_academia`.
-- Não expõe nome, documentos nem qualquer outro dado do candidato.
-
-**Erros comuns:** `404` quando o código não existe ou não está disponível para pagamento de matrícula, com mensagem genérica; `429` no limite de requisições.
-
-### 9.11 `POST /solicitacao-matricula/:codigo/pagamento-matricula`
-
-Cria a cobrança da taxa de matrícula para uma solicitação já aprovada e aguardando pagamento.
-
-**Proteção:** pública, com limitador por IP independente de 9.9 e 9.10.
-
-**Path params:** `codigo` — código da solicitação.
-
-**Request JSON:**
-
-```json
-{ "metodo_pagamento": "GPO", "telefone": "+244923000000" }
-```
-
-`telefone` só é usado quando `metodo_pagamento` é `GPO`; pode ser omitido para `REF` e `GPO_QR`.
-
-**Response 201:**
-
-```json
-{
-  "cobranca": {
-    "id": "76f2971c-4a7d-48f7-92c2-f8d3b28e9a2d",
-    "provider_charge_id": "APPYPAY-987654",
-    "merchant_transaction_id": "MATR2608LDA0001",
-    "status": "pendente",
-    "response": { "status": "Accepted" }
-  }
-}
-```
-
-Quando `metodo_pagamento` é `GPO_QR`, `cobranca` também inclui `qrCodeArr` em base64, no mesmo formato da seção 19.5.
-
-**Regras de negócio:**
-
-- A solicitação precisa estar exactamente em `aprovada_pendente_pagamento_matricula`; qualquer outro status é recusado.
-- `metodo_pagamento` precisa estar entre os métodos congelados no momento da aprovação, não na configuração actual da academia.
-- Só pode existir uma cobrança de matrícula aberta por solicitação; tentativa concorrente ou repetida enquanto há cobrança aberta é recusada.
-- O valor cobrado é sempre o valor congelado na aprovação.
-- Esta rota pública responde sempre `409` com a mensagem genérica "solicitação não disponível para pagamento de matrícula" para qualquer recusa depois de validar o JSON, incluindo solicitação inexistente, status inválido, método não habilitado, cobrança aberta ou falha inesperada.
-- Se a AppyPay confirmar `Success` de forma síncrona, o vínculo do estudante é efectivado imediatamente.
-
-**Erros comuns:** `400` para JSON malformado, `409` para qualquer outra recusa, `429` no limite de requisições.
-
-### 9.12 `PUT /academia/solicitacao-matricula/:codigo/cancelar`
-
-Cancela uma solicitação que está aguardando pagamento de matrícula e nunca foi paga.
-
-**Proteção:** academia ativa, dona da solicitação.
-
-**Request JSON:**
-
-```json
-{ "motivo": "candidato não efetuou o pagamento no prazo" }
-```
-
-**Response 200:**
-
-```json
-{ "message": "solicitação cancelada com sucesso" }
-```
-
-**Regras de negócio:**
-
-- `motivo` é obrigatório e não pode ser vazio após trim.
-- A solicitação deve pertencer à academia autenticada e estar exactamente em `aprovada_pendente_pagamento_matricula`; outro status responde `409` com a mensagem "somente solicitação pendente de pagamento de matrícula pode ser cancelada com motivo".
-- Antes de cancelar, o backend tenta cancelar qualquer cobrança de matrícula aberta associada; se a cobrança já tiver sido paga, o cancelamento é recusado com `400`.
-- Se não havia cobrança aberta, o cancelamento prossegue normalmente.
-- O código de estudante reservado na aprovação é libertado; nenhum `Estudante` chegou a ser criado neste caminho.
-
-**Erros comuns:** `400` motivo ausente ou cobrança já paga, `403` solicitação de outra academia, `404` solicitação inexistente, `409` solicitação fora do status esperado.
-
-Depois que a AppyPay confirma `Success` para uma cobrança com `codigo_solicitacao`, por consulta síncrona na criação, consulta manual/posterior em 19.6 ou webhook em 19.10/19.11, o backend cria o `Estudante` com o código reservado e grava `SolicitacaoMatriculaVinculada`, devolvendo a solicitação ao status `aprovada`. Esse é o único momento em que o estudante é criado no fluxo com taxa; a operação é idempotente contra reentrega e reserva novamente a unicidade do bilhete de identidade imediatamente antes da criação para evitar duplicidade em corridas raras.
+As solicitações de edição de dados do estudante, de alteração de NIF da academia e de serviço extra não foram afetadas.
 
 ---
 
@@ -7155,7 +6657,7 @@ Admins com role `fpp` podem reconstruir projeções a partir do ledger.
 2. `academias`
 3. `cursos`, `materias`, `categorias_nota`
 4. `estudantes`, `turmas`
-5. `solicitacoes_matricula`, `solicitacoes_edicao_dados_estudante`
+5. `solicitacoes_edicao_dados_estudante`
 6. `notas`, `faltas`
 7. `avaliacao_final`
 
@@ -8078,7 +7580,7 @@ Use `poll_url` (`GET /jobs/:id`) e/ou `sse_url` (`GET /jobs/stream`).
 
 ### Inventário de cobertura das rotas ativas
 
-A documentação cobre todas as rotas registradas em `cmd/server/main.go`: públicas (`/health`, `/login`, `/bootstrap`, `/solicitacao-matricula`, `/email/*`, `/academias`, `/academia/cursos`, `/academia/curso/:id`, `/consultar-academia/:codigo`), jobs (`/jobs`, `/jobs/:id`, `/jobs/stream`, `/jobs/:id/sse`, `/jobs/:id/retry-failed`), autenticadas globais (`/logout`, `/alterar-senha`, `/meu-perfil`, `/eventos-estudante/:codigo`, `/verificar-integridade/:codigo`, `/consultar-estudante/:codigo`, `/estudantes`, `/avaliacoes`, `/aprovacoes`, `/reprovacoes`, `/notas`, `/faltas`, `/notas-estudante/:codigo`, `/faltas-estudante/:codigo`, `/ano-letivo`, `/anos-letivos-lista`, `/anos-letivos/configuracoes`, `/solicitacoes-matricula`, `/documentos/*`, `/avaliacoes-estudante/:codigo`, `/turmas-estudante/:codigo`), estudante (`/estudante/*`), academia (`/academia/*`), dominis/admin (`/dominis/*`, `/admin/*`) e todos os endpoints `/async`.
+A documentação cobre todas as rotas registradas em `cmd/server/main.go`: públicas (`/health`, `/login`, `/bootstrap`, `/email/*`, `/academias`, `/academia/cursos`, `/academia/curso/:id`, `/consultar-academia/:codigo`), jobs (`/jobs`, `/jobs/:id`, `/jobs/stream`, `/jobs/:id/sse`, `/jobs/:id/retry-failed`), autenticadas globais (`/logout`, `/alterar-senha`, `/meu-perfil`, `/eventos-estudante/:codigo`, `/verificar-integridade/:codigo`, `/consultar-estudante/:codigo`, `/estudantes`, `/avaliacoes`, `/aprovacoes`, `/reprovacoes`, `/notas`, `/faltas`, `/notas-estudante/:codigo`, `/faltas-estudante/:codigo`, `/ano-letivo`, `/anos-letivos-lista`, `/anos-letivos/configuracoes`, `/documentos/*`, `/avaliacoes-estudante/:codigo`, `/turmas-estudante/:codigo`), estudante (`/estudante/*`), academia (`/academia/*`), dominis/admin (`/dominis/*`, `/admin/*`) e todos os endpoints `/async`.
 
 
 
@@ -8092,7 +7594,7 @@ O módulo financeiro é dividido por **provedores de serviços de pagamento (PSP
 
 - Todas as rotas `/financeiro/*` exigem autenticação. As rotas de administração aceitam somente `academia` ou admin FPP; a consulta de mensalidades e a consulta do histórico de cobranças (seção 19.8) de um estudante também podem ser feitas pelo próprio estudante autenticado.
 - Academia autenticada opera apenas no próprio contexto: o backend força `contexto_tipo="academia"` e `codigo_academia` igual ao código do token, mesmo que esses campos venham vazios no request.
-- Admin FPP pode **consultar** o contexto global `spuri` e os contextos de academias específicas. Nas configurações financeiras de uma academia — provedor de pagamento e credenciais, mensalidades, taxa de matrícula e mês de início de cobrança — somente a própria academia pode criar, atualizar, remover, definir ou rotacionar; tentativas de escrita por admin FPP retornam `403`. O admin FPP mantém escrita nessas configurações apenas no contexto global `spuri`. Essa restrição não se aplica às operações transacionais de cobrança e QR Code, cujo comportamento administrativo permanece o mesmo.
+- Admin FPP pode **consultar** o contexto global `spuri` e os contextos de academias específicas. Nas configurações financeiras de uma academia — provedor de pagamento e credenciais, mensalidades e mês de início de cobrança — somente a própria academia pode criar, atualizar, remover, definir ou rotacionar; tentativas de escrita por admin FPP retornam `403`. O admin FPP mantém escrita nessas configurações apenas no contexto global `spuri`. Essa restrição não se aplica às operações transacionais de cobrança e QR Code, cujo comportamento administrativo permanece o mesmo.
 - Segredos de provedor (ex.: `client_secret` e os métodos de pagamento da AppyPay) nunca são devolvidos em resposta; a API retorna apenas máscaras (`credenciais_mascaradas`) e metadados, e campos marcados como `secreto` no catálogo (19.27) nem aparecem mascarados. A única exceção deliberada é o segredo de webhook (`webhook_secret`), nos provedores que autenticam webhooks por segredo (`usa_segredo_webhook=true`): como é gerado pelo servidor e o usuário precisa colá-lo no painel do provedor, ele é devolvido em texto plano apenas na criação da credencial (seção 19.1) e nas rotas dedicadas de consulta/rotação (seções 19.12 e 19.13) — nunca em `PUT`, listagem ou qualquer outra resposta.
 - `ENV=development` ou `ENV=test` usa o ambiente de teste do provedor (AppyPay: gateway TEST); `ENV=production` usa o de produção. O ambiente persistido em credenciais e cobranças segue essa resolução do backend. No arranque, cada provedor valida a configuração de ambiente de que depende (AppyPay: `APPYPAY_RESOURCE`).
 - Cada cobrança ou QR Code **novo** exige, no contexto resolvido, um provedor ativo com credenciais configuradas e que suporte o método pedido, antes de chamar o provedor; caso contrário a resposta é `404` (sem provedor/credenciais) ou `400` (método indisponível no provedor ativo).
@@ -8101,7 +7603,7 @@ O módulo financeiro é dividido por **provedores de serviços de pagamento (PSP
 - Os webhooks são públicos por necessidade do provedor, mas autenticados pelo próprio provedor: na AppyPay, pelo segredo de webhook gerado automaticamente na criação da credencial, enviado num único cabeçalho HTTP fixo para toda a plataforma (`webhook_header_name`, sempre `X-Spuri-Webhook-Secret`). Só as credenciais **do provedor do webhook** são candidatas — o segredo de um provedor nunca autentica notificações de outro. As rotas são `/webhooks/<slug do provedor>/<método>` (AppyPay: `/webhooks/appypay/gpo` e `/webhooks/appypay/ref`, inalteradas). Eventos aceitos ou duplicados respondem `200` e são tratados de forma idempotente por `(provedor, identificador do evento)`.
 - **Provedor da cobrança, credencial emitente e mecanismo retroativo:** toda cobrança grava o provedor que a emitiu (campo `provedor` nas respostas e no ledger; `EXTERNO` para pagamentos registrados fora da plataforma) **e a credencial com que foi emitida** (`credencial_id` no evento; sem campo público). Trocar o provedor ativo (19.28) afeta só as cobranças **novas**: consulta, cancelamento, conferência ao vivo, webhook e pagamento externo de uma cobrança já emitida usam sempre o provedor e as credenciais da própria cobrança, mesmo que o contexto já tenha outro provedor ativo. As credenciais do provedor anterior são mantidas. **Remover as credenciais de um provedor nunca é bloqueado (19.23):** se ele ainda tem cobranças pendentes (não terminais) no contexto, as credenciais ficam **arquivadas (snapshot)** — saem da listagem e nunca servem para cobranças novas, mas os segredos continuam cifrados no cofre para concluir essas cobranças (consulta, cancelamento, autenticação dos webhooks) — e são descartadas quando a última pendente é resolvida.
 - **Eventos do ledger:** os eventos de provedor têm nomes neutros (`CredenciaisProvedorConfiguradas`, `CredenciaisProvedorRemovidas`, `SegredoWebhookProvedorRotacionado`, `ProvedorPagamentoDefinido`, `CobrancaSolicitada`, `CobrancaCriada`, `CobrancaFalhou`, `CobrancaConsultada`, `CobrancaCancelada`, `CobrancaConflitoPosCancelamento`, `QRCodeSolicitado`, `QRCodeGerado`, `QRCodeFalhou`, `WebhookProvedorRecebido`, `CredenciaisArquivadasPurgadas`) e carregam o provedor no payload. Os nomes antigos com prefixo `AppyPay` continuam existindo no ledger (imutável) e são reprocessados normalmente pela projeção; eventos antigos sem o campo `provedor` são tratados como `APPYPAY`.
-- A taxa de matrícula é configurada pela própria academia em `/financeiro/matriculas/configuracoes` (seção 19.21); admin FPP pode apenas consultá-la. A cobrança em si nunca é criada por uma rota de `/financeiro/*`: ela nasce quando o próprio candidato aprovado paga pelas rotas públicas da seção 9, especialmente 9.10 e 9.11.
+- Não existe taxa de matrícula: a matrícula pública e a cobrança de matrícula foram removidas (Plano de Atualizações, Parte 1). Os valores cobrados são mensalidade, serviço extra e cobrança avulsa.
 - Erros das rotas autenticadas seguem o envelope global `{error, message, request_id, details?}`. Webhooks públicos retornam apenas status HTTP para reduzir acoplamento com o gateway.
 
 | Método | Rota | Escopo resumido |
@@ -8119,7 +7621,7 @@ Além das rotas acima, o servidor executa em segundo plano a **reconciliação a
 | `POST` | `/financeiro/cobrancas` | Cria cobrança GPO ou REF genérica no provedor ativo. |
 | `POST` | `/financeiro/qr-codes` | Gera QR Code (`GPO_QR`) no provedor ativo e devolve `qrCodeArr` em base64 quando enviado pelo provedor. |
 | `GET` | `/financeiro/cobrancas/:id` | Consulta cobrança por id do provedor, id interno ou `merchantTransactionId`. |
-| `GET` | `/financeiro/cobrancas` | Lista cobranças (mensalidade, matrícula, avulsa) do contexto autorizado, com filtros e paginação. |
+| `GET` | `/financeiro/cobrancas` | Lista cobranças (mensalidade, serviço extra, avulsa) do contexto autorizado, com filtros e paginação. |
 | `GET` | `/financeiro/cobrancas/estudante/:codigo` | Lista todas as cobranças de um estudante, em qualquer estado — acessível ao próprio estudante. |
 | `POST` | `/financeiro/cobrancas/:id/cancelar` | Cancela localmente uma cobrança pendente do próprio contexto. |
 | `POST` | `/financeiro/mensalidades/configuracoes` | A própria academia privada versiona valor e mês final de cobrança por ano/curso. |
@@ -8128,13 +7630,9 @@ Além das rotas acima, o servidor executa em segundo plano a **reconciliação a
 | `GET` | `/financeiro/mensalidades/estudante/:codigo` | Calcula sob consulta os meses devidos, pagos ou anulados, inclusive históricos. |
 | `POST` | `/financeiro/mensalidades/obrigacoes/anular` | Anula, com evento por mês, obrigações de estudante da própria academia. |
 | `POST` | `/financeiro/mensalidades/obrigacoes/reativar` | Reativa obrigações antes anuladas da própria academia. |
-| `POST` | `/financeiro/matriculas/configuracoes` | A própria academia versiona valor e métodos da taxa de matrícula por nível/ano/curso. |
-| `PUT` | `/financeiro/matriculas/configuracoes` | Idêntico ao `POST` acima — mesma rota, mesmo efeito (nova versão da própria academia). |
-| `GET` | `/financeiro/matriculas/configuracoes` | Lista as configurações vigentes de taxa de matrícula de uma academia. |
 | `DELETE` | `/financeiro/credenciais` | Remove as credenciais de um provedor da própria academia ou, para admin FPP, somente de `spuri` (`409` com cobranças pendentes). |
 | `DELETE` | `/financeiro/mensalidades/configuracoes` | A própria academia remove a configuração vigente sem apagar o histórico de preço cobrado. |
 | `DELETE` | `/financeiro/mensalidades/inicio-cobranca` | A própria academia remove a exceção de início de cobrança, voltando ao mês natural. |
-| `DELETE` | `/financeiro/matriculas/configuracoes` | A própria academia remove a configuração vigente de taxa de matrícula. |
 | `POST` | `/webhooks/appypay/gpo` | Recebe webhook público da AppyPay para eventos GPO. |
 | `POST` | `/webhooks/appypay/ref` | Recebe webhook público da AppyPay para eventos REF. |
 
@@ -8499,7 +7997,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 #### 19.7 GET /financeiro/cobrancas
 
-**Escopo da rota:** lista, numa única lista paginada, os pagamentos (mensalidade, matrícula ou avulsa) do contexto autorizado — visão de academia/admin sobre pagamentos recebidos e pendentes. Quando filtrada por turma, curso, ano acadêmico ou ano letivo, a lista também inclui as pendências de mensalidade que ainda não foram pagas e não têm nenhuma cobrança real vinculada — ver as regras de negócio abaixo sobre `status: "pendente"`. Para o estudante consultar o próprio histórico de pagamentos, use 19.8.
+**Escopo da rota:** lista, numa única lista paginada, os pagamentos (mensalidade, serviço extra ou avulsa) do contexto autorizado — visão de academia/admin sobre pagamentos recebidos e pendentes. Quando filtrada por turma, curso, ano acadêmico ou ano letivo, a lista também inclui as pendências de mensalidade que ainda não foram pagas e não têm nenhuma cobrança real vinculada — ver as regras de negócio abaixo sobre `status: "pendente"`. Para o estudante consultar o próprio histórico de pagamentos, use 19.8.
 
 **Proteção:** autenticado + academia do próprio contexto ou admin FPP. Estudantes recebem `403` nesta rota.
 
@@ -8510,7 +8008,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 | `contexto_tipo` | string | Não | Contexto financeiro consultado. Para academia autenticada é forçado para `academia`. |
 | `codigo_academia` | string | Não | Academia dona das cobranças. Para academia autenticada é forçado para o código do token. |
 | `estado` | string, repetível | Não | Filtra pelo estado de uma cobrança real. Aceita o texto exato persistido em `status` — estados internos (`cancelada`) e estados crus da AppyPay (`Success`, `Failed`, `Cancelled`, `Expired`) — mais dois estados canônicos com equivalência histórica: `aguardando_pagamento` (cobrança gerada/tentada, ainda sem resolução do provedor; casa também com cobranças antigas gravadas antes desta forma existir) e `Failed` (casa também com `falhada`, o valor bruto que cobranças antigas usavam quando a própria chamada HTTP à AppyPay falhava, sem chegar a existir cobrança do lado do provedor — daqui pra frente gravado já como `Failed`; ver 19.4). Repita o parâmetro para casar mais de um valor (`?estado=Success&estado=aguardando_pagamento`). Também filtra os itens sintéticos: como toda pendência sintética tem sempre `status: "pendente"`, um filtro de `estado` que não inclua `"pendente"` exclui as pendências do resultado (ver regras de negócio). |
-| `tipo` | string, repetível | Não | Filtra por origem: `matricula`, `mensalidade` ou `avulsa`. Mesma lógica de `estado`: como toda pendência sintética é sempre `origem: "mensalidade"`, um filtro de `tipo` que não inclua `"mensalidade"` exclui as pendências do resultado. |
+| `tipo` | string, repetível | Não | Filtra por origem: `mensalidade`, `servico_extra` ou `avulsa`. Mesma lógica de `estado`: como toda pendência sintética é sempre `origem: "mensalidade"`, um filtro de `tipo` que não inclua `"mensalidade"` exclui as pendências do resultado. |
 | `turma_id` | UUID | Não | Restringe a pagamentos de mensalidade vinculados a esta turma. Só afeta cobranças reais de origem `mensalidade` — ver regras de negócio. |
 | `curso_id` | UUID | Não | Restringe a pagamentos de mensalidade vinculados a este curso. Mesma ressalva de `turma_id`. |
 | `ano_academico` | string | Não | Restringe a pagamentos de mensalidade deste ano/classe (ex.: `7_ano_fundamental`). Mesma ressalva de `turma_id`. |
@@ -8584,7 +8082,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 - **`status` sozinho já diz se existe uma cobrança real por trás do item** — `"pendente"` é exclusivo das pendências sintéticas; uma cobrança real nunca usa esse valor. Assim que uma cobrança é gerada/tentada (mesmo antes de qualquer resposta do provedor), seu status passa a ser `"aguardando_pagamento"` — o estado canônico que substitui os antigos `"solicitada"`/`"criada"` (gravados localmente antes de qualquer resposta da AppyPay) e os estados crus `"Requested"`/`"Pending"` que a própria AppyPay documenta para essa mesma fase (cobrança gerada, ainda sem resolução). Cobranças criadas antes desta forma existir, se ainda não resolvidas, continuam sendo lidas e filtradas como `"aguardando_pagamento"` também (equivalência histórica, não é preciso reprocessar nada). Mesmo raciocínio para `"Failed"`: cobranças criadas antes de existir esse valor único, quando a própria chamada HTTP à AppyPay falhava (sem chegar a existir cobrança do lado do provedor), foram gravadas com o valor local `"falhada"` — continuam sendo lidas e filtradas como `"Failed"` (idem, equivalência histórica).
 - Estados terminais de uma cobrança real (não mudam mais sozinhos): `"Success"` (paga), `"Failed"` (recusada no processador da AppyPay, ou — para cobranças antigas — a própria chamada HTTP à AppyPay falhou sem chegar a existir cobrança do lado do provedor), `"Cancelled"` (cancelada do lado da AppyPay), `"Expired"` (referência REF expirada sem pagamento) e `"cancelada"` (cancelamento feito pelo Spuri, 19.9).
 - Um mês com uma cobrança real **falhada** aparece como item real (`status: "Failed"`) — **não** gera também um item sintético duplicado para o mesmo mês, mesmo continuando a valer como "ainda não pago" internamente (ver 19.17 e a tarefa que corrigiu esse critério). A cobrança real, com seu histórico verdadeiro, já é a representação desse mês na lista.
-- `origem` é derivada do payload persistido para itens reais, nunca gravada separadamente: `matricula` quando a cobrança tem `codigo_solicitacao`, `mensalidade` quando tem `codigo_estudante` (e não tem `codigo_solicitacao`), `avulsa` nos demais casos. Itens sintéticos são sempre `origem: "mensalidade"`.
+- `origem` é derivada do payload persistido para itens reais, nunca gravada separadamente: `servico_extra` quando a cobrança tem `codigo_inscricao_servico`, `mensalidade` quando tem `codigo_estudante` (e não tem `codigo_inscricao_servico`), `avulsa` nos demais casos. Itens sintéticos são sempre `origem: "mensalidade"`. Um valor de `tipo` fora de `mensalidade`, `servico_extra` e `avulsa` (incluindo o antigo `matricula`) é recusado com `400`.
 - **Ordenação:** itens sintéticos (`status: "pendente"`) sempre vêm primeiro — representam ação pendente ("isto ainda precisa de uma cobrança"). Depois vêm os itens reais, por `updated_at DESC` (atividade mais recente primeiro). A paginação (`limit`/`offset`) percorre essa ordem combinada como uma lista única.
 - `total` é o número de itens nesta página; `total_geral` é o total real (pendências sintéticas + cobranças reais) que casa com os filtros aplicados.
 - `turma_id`, `curso_id`, `ano_academico` e `ano_letivo` só têm efeito sobre cobranças reais de origem `mensalidade`: usar qualquer um deles exclui automaticamente cobranças de `matricula` e `avulsa` do resultado, porque essas duas origens não têm um vínculo de turma/ano letivo resolvível (a cobrança de matrícula antecede a atribuição de turma do estudante). Pendências sintéticas só existem para `mensalidade`, então também dependem de pelo menos um desses quatro filtros — sem nenhum, nenhum item sintético é computado nem aparece na lista (evita varrer a academia inteira sem limite a cada chamada).
@@ -8601,7 +8099,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 | Campo | Tipo | Obrigatório | Descrição |
 |---|---|---|---|
 | `estado` | string, repetível | Não | Mesmo filtro de 19.7 (inclusive a equivalência histórica de `aguardando_pagamento` e de `Failed`, e o efeito sobre itens sintéticos). Sem filtro, devolve todos os estados. |
-| `tipo` | string, repetível | Não | Mesmo filtro de 19.7: `matricula`, `mensalidade` ou `avulsa`. |
+| `tipo` | string, repetível | Não | Mesmo filtro de 19.7: `mensalidade`, `servico_extra` ou `avulsa`. |
 | `turma_id` | UUID | Não | Mesmo filtro de 19.7. Só tem efeito quando quem consulta é a academia (isto é, quando o contexto de uma única academia já está resolvido) — ver regras de negócio. |
 | `curso_id` | UUID | Não | Mesma ressalva de `turma_id`. |
 | `ano_academico` | string | Não | Mesma ressalva de `turma_id`. |
@@ -8613,8 +8111,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 **Regras de negócio:**
 
-- Diferente de 19.7, esta consulta não aceita `contexto_tipo` nem `codigo_academia`: um estudante pode ter mensalidades e matrícula em mais de uma academia (histórico), e o histórico mostra tudo — exceto quando quem consulta é uma academia, caso em que o resultado é restrito às cobranças feitas a essa academia especificamente (uma academia nunca vê pagamentos que o estudante fez a outra academia, mesmo com vínculo histórico com as duas).
-- A cobrança de matrícula é resolvida pelo vínculo `codigo_estudante_gerado`, já gravado em `projection_solicitacoes_matricula` quando a solicitação é aprovada — o payload da cobrança de matrícula em si nunca grava `codigo_estudante`, porque a cobrança é anterior ao registo do estudante.
+- Diferente de 19.7, esta consulta não aceita `contexto_tipo` nem `codigo_academia`: um estudante pode ter mensalidades e serviços extras em mais de uma academia (histórico), e o histórico mostra tudo — exceto quando quem consulta é uma academia, caso em que o resultado é restrito às cobranças feitas a essa academia especificamente (uma academia nunca vê pagamentos que o estudante fez a outra academia, mesmo com vínculo histórico com as duas).
 - Sem filtro de `estado`, a listagem inclui cobranças reais pendentes, falhadas e canceladas, não só as pagas — intencional: o objetivo é o estudante conseguir ver tudo que já teve, não só os pagamentos concluídos.
 - `turma_id`, `curso_id`, `ano_academico` e `ano_letivo` seguem a mesma restrição de 19.7 (só afetam cobranças reais de origem `mensalidade`), mas só têm efeito quando quem consulta é uma academia (o resultado já está então restrito a uma única academia); quando quem consulta é o próprio estudante ou admin FPP sem restringir a academia, esses quatro filtros são ignorados.
 - **Diferença chave em relação a 19.7:** os itens sintéticos (`status: "pendente"`) aqui são **sempre** calculados, sem exigir nenhum dos quatro filtros de escopo — porque esta consulta já está inerentemente limitada a um único estudante, então não há o mesmo risco de varredura sem limite que existe em 19.7 (que precisa de pelo menos um filtro para computar pendências). Mesmo assim, um `estado`/`tipo` que exclua `"pendente"`/`"mensalidade"` continua excluindo-os, igual a 19.7.
@@ -8945,88 +8442,9 @@ Quando `metodo_pagamento` é `GPO_QR`, `cobranca` inclui `qrCodeArr` em base64.
 
 **Erros comuns:** `400` mês não anulado, `403` academia sem vínculo ou admin FPP.
 
-A taxa de matrícula abaixo é apenas a configuração financeira feita pela própria academia; admin FPP tem acesso somente de consulta. O pagamento pelo candidato é público e está descrito em 9.10 e 9.11.
+#### 19.21 e 19.22 (removidas)
 
-#### 19.21 POST e PUT /financeiro/matriculas/configuracoes
-
-**Escopo da rota:** versiona valor e métodos de pagamento da taxa de matrícula por nível, ano e curso.
-
-**Proteção:** exclusiva da academia dona; `codigo_academia` é forçado pelo token. Admin FPP recebe `403` para criar ou versionar configuração de taxa de matrícula de academia.
-
-**Campos do request:**
-
-| Campo | Tipo | Obrigatório | Regras |
-|---|---|---|---|
-| `codigo_academia` | string | Sim | Academia deve existir; para academia é forçado pelo token. |
-| `nivel` | string | Sim | `fundamental`, `medio` ou `superior`. |
-| `ano_academico` | string | Sim | Deve ser oferecido pela academia/curso. |
-| `curso_id` | UUID | Médio/superior | Obrigatório para `medio`/`superior` e proibido para `fundamental`; mesmas regras de vínculo curso↔academia↔ano de 19.14. |
-| `valor` | número (`float64`) | Sim | Maior que zero, no máximo duas casas decimais. |
-| `metodos_pagamento` | array string | Sim | Pelo menos um item; `GPO`, `REF` ou `GPO_QR`, sem duplicados; exige provedor ativo com credenciais que suporte todos os métodos listados. |
-| `modo_vigencia` | string | Sim | `cobrancas_pendentes` reprecifica solicitações aprovadas e pendentes sem cobrança real; `a_partir_da_atualizacao` só vale para novas aprovações. |
-
-**Request JSON:**
-
-```json
-{
-  "codigo_academia": "ACA001",
-  "nivel": "medio",
-  "ano_academico": "1_ano_medio",
-  "curso_id": "550e8400-e29b-41d4-a716-446655440000",
-  "valor": 15000.00,
-  "metodos_pagamento": ["REF", "GPO"],
-  "modo_vigencia": "cobrancas_pendentes"
-}
-```
-
-**Response 201:**
-
-```json
-{
-  "codigo_academia": "ACA001",
-  "nivel": "medio",
-  "ano_academico": "1_ano_medio",
-  "curso_id": "550e8400-e29b-41d4-a716-446655440000",
-  "valor": 15000.00,
-  "metodos_pagamento": ["REF", "GPO"],
-  "vigente_em": "2026-08-08T12:00:00Z",
-  "modo_vigencia": "cobrancas_pendentes",
-  "repricing_pendentes": {"atualizadas": 2, "ignoradas": 1, "falhas": 0}
-}
-```
-
-**Regras de negócio:** diferentemente da mensalidade, academias públicas e privadas podem configurar taxa de matrícula. `POST` e `PUT` têm o mesmo efeito: cada chamada válida cria nova versão, nunca update in-place. `modo_vigencia` é obrigatório: `cobrancas_pendentes` reprecifica solicitações já aprovadas e pendentes que ainda não possuem cobrança real; `a_partir_da_atualizacao` mantém seu valor congelado e só vale para novas aprovações. `repricing_pendentes` só aparece na resposta do primeiro modo. Sem configuração para a combinação da solicitação, a matrícula continua gratuita e a aprovação cria o estudante imediatamente.
-
-**Erros comuns:** `400` payload/regra inválida, `404` academia/curso inexistente, `403` sem permissão.
-
-#### 19.22 GET /financeiro/matriculas/configuracoes
-
-**Escopo da rota:** lista as configurações vigentes da taxa de matrícula de uma academia.
-
-**Proteção:** academia dona (código forçado pelo token) ou admin FPP em consulta; para admin, `codigo_academia` é obrigatório.
-
-**Query params:** `codigo_academia` obrigatório para admin; forçado pelo token para academia.
-
-**Response 200:**
-
-```json
-{
-  "codigo_academia": "ACA001",
-  "configuracoes": [
-    {
-      "codigo_academia": "ACA001",
-      "nivel": "medio",
-      "ano_academico": "1_ano_medio",
-      "curso_id": "550e8400-e29b-41d4-a716-446655440000",
-      "valor": 15000.00,
-      "metodos_pagamento": ["REF", "GPO"],
-      "vigente_em": "2026-08-08T12:00:00Z"
-    }
-  ]
-}
-```
-
-**Regras de negócio:** devolve apenas a versão mais recente de cada combinação `(nivel, ano_academico, curso_id)`, não o histórico completo.
+`POST`, `PUT` e `GET /financeiro/matriculas/configuracoes` foram removidas junto com a taxa de matrícula (Plano de Atualizações, Parte 1). As rotas respondem `404`. Não existe mais cobrança de matrícula: o cadastro do estudante é feito pela própria academia (`POST /academia/estudante/register`) e os valores cobrados passam a ser mensalidade, serviço extra ou cobrança avulsa.
 
 #### 19.23 DELETE /financeiro/credenciais
 
@@ -9104,44 +8522,9 @@ A taxa de matrícula abaixo é apenas a configuração financeira feita pela pr�
 
 **Erros comuns:** `404` nenhuma exceção definida para o ano letivo (inclusive numa segunda remoção), `403` sem permissão.
 
-#### 19.26 DELETE /financeiro/matriculas/configuracoes
+#### 19.26 (removida)
 
-**Escopo da rota:** remove a configuração vigente de taxa de matrícula de um escopo `(nivel, ano_academico, curso_id)`.
-
-**Proteção:** igual à 19.21.
-
-**Request JSON:**
-
-```json
-{
-  "codigo_academia": "ACA001",
-  "nivel": "medio",
-  "ano_academico": "1_ano_medio",
-  "curso_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
-`curso_id` é opcional e segue as mesmas regras de presença/ausência por nível da 19.21.
-
-**Response 204:** corpo vazio.
-
-**Regras de negócio:** grava `MatriculaConfiguracaoRemovida`; o evento de configuração original permanece no ledger. A partir da remoção, o escopo deixa de aparecer em 19.22 e a matrícula volta a ser gratuita para essa combinação — mesmo comportamento de nunca ter tido configuração (ver 19.21). Configurar novamente cria uma nova versão normalmente.
-
-**Erros comuns:** `404` nenhuma configuração ativa para o escopo (inclusive numa segunda remoção), `403` sem permissão.
-
-Nas rotas de `/financeiro/*` (excepto o fluxo público 9.9–9.12), `404` só representa recurso referenciado inexistente, `409` só representa operação equivalente já em processamento por idempotência do mesmo `merchantTransactionId`, e `503` só representa falha de comunicação com o provedor de pagamento. Qualquer outra violação de regra de negócio — mesmo mensagens que soem como conflito, por exemplo mensalidade com cobrança aberta ou cobrança já paga e não cancelável — responde `400`; não infira `409` pelo texto da mensagem.
-
-**Erros comuns das rotas autenticadas:**
-
-| Status | Quando ocorre |
-|---|---|
-| `400` | Payload inválido, UUID inválido, contexto financeiro inválido ou credenciais incompletas. |
-| `401` | Token ausente/inválido nas rotas `/financeiro/*` ou autenticação inválida nos webhooks. |
-| `403` | Usuário autenticado tenta operar contexto sem permissão. |
-| `404` | Credencial/cobrança inexistente ou não encontrada no contexto permitido. |
-| `409` | Uma cobrança com o mesmo `merchantTransactionId` ainda está sendo processada. |
-| `503` | Falha de comunicação, autenticação ou resposta inválida do provedor de pagamento; tente novamente mais tarde. |
-| `500` | Falha interna não tratada do serviço financeiro. |
+`DELETE /financeiro/matriculas/configuracoes` foi removida junto com a taxa de matrícula (Plano de Atualizações, Parte 1). A rota responde `404`.
 
 ---
 
@@ -9218,12 +8601,12 @@ Nas rotas de `/financeiro/*` (excepto o fluxo público 9.9–9.12), `404` só re
 - As credenciais do provedor escolhido têm de já estar configuradas no ambiente atual (19.1); caso contrário `400` ("configure as credenciais … antes de o definir como provedor"). Provedor desconhecido: `400`.
 - Definir o provedor que já é o ativo é idempotente (não grava novo evento). A troca grava `ProvedorPagamentoDefinido` no ledger.
 - **Retroativo:** trocar de provedor nunca toca nas cobranças existentes nem nas credenciais do provedor anterior. As cobranças pendentes continuam sendo consultadas, confirmadas por webhook e canceladas junto ao provedor que as emitiu; `cobrancas_pendentes_no_anterior` diz quantas são.
-- Os métodos habilitados nas configurações de propina e de taxa de matrícula (19.14, 19.21) são validados contra o provedor ativo no momento de salvar; um método que o provedor ativo não suporta é recusado (`400`). Se o provedor mudar depois para um que não suporta um método já habilitado, a geração de cobrança por esse método falha com `400` até a configuração ser ajustada.
+- Os métodos habilitados na configuração de propina (19.14) são validados contra o provedor ativo no momento de salvar; um método que o provedor ativo não suporta é recusado (`400`). Se o provedor mudar depois para um que não suporta um método já habilitado, a geração de cobrança por esse método falha com `400` até a configuração ser ajustada.
 - As primeiras credenciais configuradas num contexto sem provedor tornam esse provedor o ativo automaticamente. Contextos que já tinham credenciais AppyPay antes da Tarefa 119 passaram a ter `APPYPAY` como provedor ativo (migration 131).
 
 #### 19.29 Reconciliação automática de cobranças pendentes (2.9.0)
 
-Não é um endpoint: é um job em segundo plano do servidor, a rede de segurança dos webhooks. Para cada cobrança pendente de um provedor real, consulta o provedor ("como está esta cobrança agora?") e, se o estado mudou (paga, falhada, cancelada, expirada), aplica a resposta pelo **mesmo caminho** da consulta manual (`GET /financeiro/cobrancas/:id`) e dispara os **mesmos efeitos** do webhook: propina paga, matrícula efetivada, vínculo/lançamento de serviço extra e liberação de snapshots de credenciais. Cobertura: webhook perdido ou atrasado, servidor fora do ar e provedores sem webhook.
+Não é um endpoint: é um job em segundo plano do servidor, a rede de segurança dos webhooks. Para cada cobrança pendente de um provedor real, consulta o provedor ("como está esta cobrança agora?") e, se o estado mudou (paga, falhada, cancelada, expirada), aplica a resposta pelo **mesmo caminho** da consulta manual (`GET /financeiro/cobrancas/:id`) e dispara os **mesmos efeitos** do webhook: propina paga, vínculo/lançamento de serviço extra e liberação de snapshots de credenciais. Cobertura: webhook perdido ou atrasado, servidor fora do ar e provedores sem webhook.
 
 **Funcionamento (pensado para banco cobrado por tempo de computação, como o NeonDB):**
 
@@ -9282,7 +8665,7 @@ A cada inicialização, o backend registra em log qual backend está de fato ati
 
 Caso arquivos tenham ficado gravados apenas no fallback local por engano (`STORAGE_PROVIDER` mal configurado em algum deploy anterior), `POST /dominis/storage/migrar-local-para-mega` (role `fpp`, ver seção 16) reenvia para o Mega real tudo que ainda estiver em `MEGA_LOCAL_ROOT`, sem apagar nem sobrescrever nada.
 
-Os documentos de matrícula continuam sendo gravados em `{codigo_academia}/matriculas/matricula_{codigo_solicitacao}/`; documentos formais seguem `{codigo_academia}/Documentação formal/`; documentos de estudantes seguem `{codigo_academia}/Estudantes/{codigo_estudante}/`. `EnsureDir` cria a hierarquia de pastas de forma idempotente, `Upload` envia o conteúdo para o caminho lógico solicitado e retorna metadados internos do projeto (`path`, `file_url`, `download_url`). Nas respostas de consulta, o backend normaliza `download_url` para uma rota autenticada própria do escopo consultado, mesmo quando o metadado persistido contém link legado do storage. O front end deve baixar documentos pelas rotas autenticadas de download do backend (`/documentos/academias/{codigo_academia}/alvara/download`, `/documentos/estudantes/{codigo_estudante}/{campo}/download`, `/documentos/solicitacoes-matricula/{codigo_solicitacao}/{campo}/download`, `/estudante/solicitacoes-edicao/{codigo_solicitacao}/documento/download`, `/academia/documentos/solicitacoes-edicao-estudante/{codigo_solicitacao}/documento/download`, `/estudante/documentos/{campo}/download` ou `/academia/documentos/...`), e não por credenciais, links privados ou IDs internos do Mega. `Read` faz o download para arquivo temporário e entrega um stream fechado pelo handler; `Delete`, `Move` e `Rename` normalizam paths e erros externos. `GetQuota` é suportado no provider local; no Mega real, limitações do MEGAcmd para quota detalhada por diretório são expostas como operação não suportada em vez de simular sucesso.
+Os documentos formais seguem `{codigo_academia}/Documentação formal/`; documentos de estudantes seguem `{codigo_academia}/Estudantes/{codigo_estudante}/`. `EnsureDir` cria a hierarquia de pastas de forma idempotente, `Upload` envia o conteúdo para o caminho lógico solicitado e retorna metadados internos do projeto (`path`, `file_url`, `download_url`). Nas respostas de consulta, o backend normaliza `download_url` para uma rota autenticada própria do escopo consultado, mesmo quando o metadado persistido contém link legado do storage. O front end deve baixar documentos pelas rotas autenticadas de download do backend (`/documentos/academias/{codigo_academia}/alvara/download`, `/documentos/estudantes/{codigo_estudante}/{campo}/download`, `/estudante/solicitacoes-edicao/{codigo_solicitacao}/documento/download`, `/academia/documentos/solicitacoes-edicao-estudante/{codigo_solicitacao}/documento/download`, `/estudante/documentos/{campo}/download` ou `/academia/documentos/...`), e não por credenciais, links privados ou IDs internos do Mega. `Read` faz o download para arquivo temporário e entrega um stream fechado pelo handler; `Delete`, `Move` e `Rename` normalizam paths e erros externos. `GetQuota` é suportado no provider local; no Mega real, limitações do MEGAcmd para quota detalhada por diretório são expostas como operação não suportada em vez de simular sucesso.
 
 Não há migração automática de arquivos do Google Drive para o Mega porque não existem arquivos remotos atuais a copiar. Referências antigas, se encontradas, devem ser tratadas como metadados legados; novos uploads, leituras/downloads, deleções, movimentações e renomeações usam Mega ou o fake local em testes.
 
@@ -9392,32 +8775,6 @@ Faz stream inline de um documento persistido no mapa `documentos` da projeção 
 |`401`|Token ausente ou inválido.|
 |`403`|Usuário autenticado não tem permissão para o estudante informado.|
 |`404`|Estudante, campo de documento ou arquivo remoto não encontrado.|
-|`503`|Storage indisponível ou falha de leitura no provider configurado.|
-
-### GET /documentos/solicitacoes-matricula/{codigo_solicitacao}/{campo}/download
-
-Faz stream inline de um documento persistido no mapa `documentos` da projeção da solicitação de matrícula. Assim como nos documentos de estudante, documentos acadêmicos normalizados podem ser baixados pela chave exata `nivel.ano_academico.tipo` ou por `campo`/`tipo` com os query params opcionais `nivel` e `ano_academico`.
-
-**Escopo da rota**: global autenticado (`protected`), fora dos prefixos `/academia` e `/dominis`, para que a URL salva em `download_url` seja consumida pelo front end em telas administrativas e de academia sem depender do provider externo.
-
-**Proteção**: autenticado. Permitido para admin e para a academia dona da solicitação. Estudantes, usuários públicos e academias de outro código recebem `403 Forbidden`.
-
-**Parâmetros de path:**
-
-|Campo|Tipo|Obrigatório|Descrição|
-|---|---|---|---|
-|`codigo_solicitacao`|string|Sim|Código público da solicitação de matrícula.|
-|`campo`|string|Sim|Chave do documento dentro do mapa `documentos` da solicitação.|
-
-**Response 200:** `application/pdf`, com `Content-Disposition: inline; filename="{campo}.pdf"`.
-
-**Erros:**
-
-|Status|Quando ocorre|
-|---|---|
-|`401`|Token ausente ou inválido.|
-|`403`|Usuário autenticado não tem permissão para a solicitação informada.|
-|`404`|Solicitação, campo de documento ou arquivo remoto não encontrado.|
 |`503`|Storage indisponível ou falha de leitura no provider configurado.|
 
 ### GET /estudante/solicitacoes-edicao/{codigo_solicitacao}/documento/download
@@ -9841,7 +9198,7 @@ Em `GET /estudante/servicos-extras/minhas-inscricoes`, `metodos_pagamento_taxa_i
 
 ## 24. Documentos Extras
 
-A academia pode manter um catálogo de documentos adicionais para um ano académico específico, além dos documentos fixos de identificação e percurso escolar. Cada definição tem UUID próprio, rótulo, tipo (`pdf` ou `jpg`), obrigatoriedade e `ano_academico`; o `nivel` é derivado pelo backend. Definições ativas são aplicadas no cadastro direto e em `POST /solicitacao-matricula`. Uma alteração é prospectiva: não modifica arquivos já enviados.
+A academia pode manter um catálogo de documentos adicionais para um ano académico específico, além dos documentos fixos de identificação e percurso escolar. Cada definição tem UUID próprio, rótulo, tipo (`pdf` ou `jpg`), obrigatoriedade e `ano_academico`; o `nivel` é derivado pelo backend. Definições ativas são aplicadas no cadastro direto do estudante. Uma alteração é prospectiva: não modifica arquivos já enviados.
 
 ### 24.1 `GET /academia/documentos-extra`
 
@@ -9965,9 +9322,9 @@ Reativa uma definição previamente desativada. A mesma regra de unicidade de r�
 
 ### Envio, listagem e download
 
-Em `POST /academia/estudante/register`, `POST /academia/estudante/:codigo/documentos` e `POST /solicitacao-matricula`, envie cada arquivo no campo multipart `documento_extra_<id>`, em que `<id>` é o UUID da definição ativa aplicável ao ano académico do estudante. Campos de outra academia, definição inativa ou outro ano académico são rejeitados.
+Em `POST /academia/estudante/register`, e `POST /academia/estudante/:codigo/documentos`, envie cada arquivo no campo multipart `documento_extra_<id>`, em que `<id>` é o UUID da definição ativa aplicável ao ano académico do estudante. Campos de outra academia, definição inativa ou outro ano académico são rejeitados.
 
-O arquivo é armazenado em `{baseDir}/documento_extra/{id}/{documento_id}.{pdf|jpg}` e aparece no mapa `documentos` sob a chave `documento_extra.<id>`, com `download_url`. As rotas de listagem de documentos e as rotas genéricas já existentes de download de estudante e solicitação de matrícula expõem e baixam este item usando essa chave como `{campo}`; o backend retorna `application/pdf` para PDF e `image/jpeg` para JPG.
+O arquivo é armazenado em `{baseDir}/documento_extra/{id}/{documento_id}.{pdf|jpg}` e aparece no mapa `documentos` sob a chave `documento_extra.<id>`, com `download_url`. As rotas de listagem de documentos e as rotas genéricas já existentes de download de estudante expõem e baixam este item usando essa chave como `{campo}`; o backend retorna `application/pdf` para PDF e `image/jpeg` para JPG.
 
 **Erros comuns (todas as rotas do catálogo):** `400` para JSON inválido, campos inválidos, rótulo duplicado, UUID inválido ou transição de estado inválida; `403` para definição de outra academia; `404` para UUID inexistente; `500` para falha interna.
 

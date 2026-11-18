@@ -54,49 +54,6 @@ func TestIntegrationConfigureMensalidadeGravaNoLedgerEProjectaCorretamente(t *te
 	}
 }
 
-// TestIntegrationConfigureMatriculaGravaNoLedgerEProjectaCorretamente cobre
-// o mesmo caminho de escrita para ConfigureMatricula, cujo evento
-// MatriculaConfigurada estava totalmente ausente da whitelist do ledger.
-func TestIntegrationConfigureMatriculaGravaNoLedgerEProjectaCorretamente(t *testing.T) {
-	client := integrationClient(t)
-	service := NewService(client)
-	ctx := context.Background()
-
-	academia := mensalidadeCodigo()
-	seedMensalidadeAcademia(t, client, academia, "private", "fundamental", "2025_2026")
-	configureIntegrationCredential(t, service, ContextoAcademia, academia)
-
-	view, err := service.ConfigureMatricula(ctx, MatriculaConfiguracaoInput{
-		CodigoAcademia: academia, Nivel: NivelFundamental, AnoAcademico: "6_ano_fundamental",
-		Valor: 5000, MetodosPagamento: []string{"GPO"}, ModoVigencia: ModoVigenciaAPartirDaAtualizacao,
-	}, "admin-teste", "academia", "127.0.0.1")
-	if err != nil {
-		t.Fatalf("ConfigureMatricula retornou erro: %v", err)
-	}
-	if view.Valor != 5000 {
-		t.Fatalf("valor inesperado na view retornada: %v", view.Valor)
-	}
-
-	var ledgerCount int
-	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type='Financeiro' AND event_type='MatriculaConfigurada' AND payload->>'codigo_academia'=$1`, academia).Scan(&ledgerCount); err != nil {
-		t.Fatal(err)
-	}
-	if ledgerCount != 1 {
-		t.Fatalf("esperava 1 evento MatriculaConfigurada no ledger, obteve %d", ledgerCount)
-	}
-
-	configs, err := service.ListMatriculaConfiguracoes(ctx, academia)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(configs) != 1 {
-		t.Fatalf("esperava 1 configuração visível em financeiro_matricula_configuracoes, obteve %d", len(configs))
-	}
-	if len(configs[0].MetodosPagamento) != 1 || configs[0].MetodosPagamento[0] != "GPO" {
-		t.Fatalf("métodos de pagamento persistidos incorretamente: %v", configs[0].MetodosPagamento)
-	}
-}
-
 // TestIntegrationPagamentoMensalidadeConfirmadoPelaAppyPayMarcaComoPago é o
 // teste mais importante deste ficheiro: reproduz o fluxo real de um
 // estudante a pagar a propina (mensalidade) - criação da cobrança, seguida
@@ -219,7 +176,7 @@ func TestIntegrationListMensalidadesOrdemCronologicaAnoLetivo(t *testing.T) {
 
 // TestIntegrationRebuildFinanceiroReconstroiConfiguracoesEcobrancasMensalidade
 // garante que um Rebuild completo da projeção financeiro reconstrói TODAS as
-// tabelas derivadas do ledger, incluindo financeiro_matricula_configuracoes
+// tabelas derivadas do ledger, incluindo financeiro_mensalidade_configuracoes
 // e financeiro_mensalidade_cobrancas, que antes sobreviviam intactas (não
 // eram limpas) a um Rebuild.
 func TestIntegrationRebuildFinanceiroReconstroiConfiguracoesEcobrancasMensalidade(t *testing.T) {
@@ -231,16 +188,16 @@ func TestIntegrationRebuildFinanceiroReconstroiConfiguracoesEcobrancasMensalidad
 	seedMensalidadeAcademia(t, client, academia, "private", "fundamental", "2025_2026")
 	configureIntegrationCredential(t, service, ContextoAcademia, academia)
 
-	if _, err := service.ConfigureMatricula(ctx, MatriculaConfiguracaoInput{
+	if _, err := service.ConfigureMensalidade(ctx, MensalidadeConfiguracaoInput{
 		CodigoAcademia: academia, Nivel: NivelFundamental, AnoAcademico: "6_ano_fundamental",
-		Valor: 5000, MetodosPagamento: []string{"GPO"}, ModoVigencia: ModoVigenciaAPartirDaAtualizacao,
+		Valor: 5000, MesFimCobranca: 7, MetodosPagamento: []string{"GPO"}, ModoVigencia: ModoVigenciaAPartirDaAtualizacao,
 	}, "admin-teste", "academia", "127.0.0.1"); err != nil {
-		t.Fatalf("ConfigureMatricula falhou: %v", err)
+		t.Fatalf("ConfigureMensalidade falhou: %v", err)
 	}
 
 	// Simula corrupção/drift do read model: apaga a linha manualmente sem
 	// tocar no ledger (fonte da verdade).
-	if _, err := client.DB().Exec(`DELETE FROM financeiro_matricula_configuracoes WHERE codigo_academia=$1`, academia); err != nil {
+	if _, err := client.DB().Exec(`DELETE FROM financeiro_mensalidade_configuracoes WHERE codigo_academia=$1`, academia); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,11 +205,11 @@ func TestIntegrationRebuildFinanceiroReconstroiConfiguracoesEcobrancasMensalidad
 		t.Fatalf("Rebuild() falhou: %v", err)
 	}
 
-	configs, err := service.ListMatriculaConfiguracoes(ctx, academia)
+	configs, err := service.ListMensalidadeConfiguracoes(ctx, academia)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(configs) != 1 {
-		t.Fatalf("após Rebuild(), esperava financeiro_matricula_configuracoes reconstruída a partir do ledger (1 linha), obteve %d", len(configs))
+		t.Fatalf("após Rebuild(), esperava financeiro_mensalidade_configuracoes reconstruída a partir do ledger (1 linha), obteve %d", len(configs))
 	}
 }

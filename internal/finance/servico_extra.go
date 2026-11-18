@@ -27,8 +27,7 @@ type TaxaInscricaoServicoExtraPagamentoView struct {
 
 // IniciarPagamentoTaxaInscricaoServicoExtra inicia a cobrança da taxa de
 // inscrição de uma SolicitacaoServicoExtra já aprovada e aguardando
-// pagamento. Mirror direto de IniciarPagamentoMatricula — mesma validação de
-// estado, mesma checagem de cobrança aberta duplicada, mesmo uso de
+// pagamento: valida o estado, checa se já há cobrança aberta e usa
 // gerarCobranca.
 func (s *Service) IniciarPagamentoTaxaInscricaoServicoExtra(ctx context.Context, in TaxaInscricaoServicoExtraPagamentoInput, ip string) (TaxaInscricaoServicoExtraPagamentoView, error) {
 	in.SolicitacaoID = strings.TrimSpace(in.SolicitacaoID)
@@ -95,7 +94,7 @@ func (s *Service) DadosServicoExtraDaCobranca(ctx context.Context, identifier st
 
 // CancelarCobrancaTaxaInscricaoServicoAberta cancela qualquer cobrança em
 // aberto da taxa de inscrição antes de a solicitação ser cancelada
-// (CancelarAntesDaVinculacao). Mirror de CancelarCobrancaMatriculaAberta.
+// (CancelarAntesDaVinculacao).
 func (s *Service) CancelarCobrancaTaxaInscricaoServicoAberta(ctx context.Context, solicitacaoID, motivo, actorID, actorType, ip string) error {
 	rows, err := s.client.DB().QueryContext(ctx, `SELECT id::text,codigo_academia FROM financeiro_cobrancas WHERE payload->>'codigo_inscricao_servico'=$1 AND lower(COALESCE(payload->>'status','')) NOT IN (`+chargeAbertaStatusExcluidos+`)`, solicitacaoID)
 	if err != nil {

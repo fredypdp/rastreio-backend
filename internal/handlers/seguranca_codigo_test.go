@@ -100,10 +100,9 @@ func fonte(t *testing.T, arquivos map[string]string, sufixo string) string {
 func TestSegurancaPontosDeCriacaoUsamSenhaTemporaria(t *testing.T) {
 	arquivos := arquivosGoDeProducao(t)
 	exigem := map[string][]string{
-		"internal/handlers/estudante_handlers.go":             {"GenerateTempPassword()", "DefinirSenhaTemporaria()", "TelefoneDestinoCredenciaisEstudante("},
-		"internal/handlers/academia_handlers.go":              {"GenerateTempPassword()", "DefinirSenhaTemporaria()", "telefoneDestinoCredenciaisAcademia("},
-		"internal/handlers/admin_handlers.go":                 {"GenerateTempPassword()", "DefinirSenhaTemporaria()"},
-		"internal/handlers/solicitacao_matricula_handlers.go": {"GenerateTempPassword()", "DefinirSenhaTemporaria()", "TelefoneDestinoCredenciaisEstudante("},
+		"internal/handlers/estudante_handlers.go": {"GenerateTempPassword()", "DefinirSenhaTemporaria()", "TelefoneDestinoCredenciaisEstudante("},
+		"internal/handlers/academia_handlers.go":  {"GenerateTempPassword()", "DefinirSenhaTemporaria()", "telefoneDestinoCredenciaisAcademia("},
+		"internal/handlers/admin_handlers.go":     {"GenerateTempPassword()", "DefinirSenhaTemporaria()"},
 	}
 	for sufixo, termos := range exigem {
 		src := fonte(t, arquivos, sufixo)

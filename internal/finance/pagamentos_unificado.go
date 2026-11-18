@@ -205,7 +205,7 @@ func pendenciaParaPagamentoResumo(m MensalidadeMesView) PagamentoResumo {
 // Cobranças Success nunca são tocadas (isSuccessfulChargeStatus) nem
 // cobranças ainda aguardando_pagamento (não é terminal): nesses dois casos
 // o próprio Status já é auto-explicativo, e consultar a obrigação seria
-// trabalho redundante. Cobranças de outra Origem (matricula/avulsa) ou sem
+// trabalho redundante. Cobranças de outra Origem (serviço extra/avulsa) ou sem
 // CodigoEstudante/CodigoAcademia/Mensalidades também são ignoradas — não
 // têm obrigação de mensalidade para consultar.
 //

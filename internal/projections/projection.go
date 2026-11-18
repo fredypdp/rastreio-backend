@@ -6,8 +6,6 @@ import (
 	"log"
 	"spuri/internal/db"
 	"sync"
-
-	"github.com/google/uuid"
 )
 
 type BaseProjection struct {
@@ -60,13 +58,6 @@ func (bp *BaseProjection) UpdateCheckpointByName(name string, eventID int64) err
 // ============================================================================
 // Helpers internos
 // ============================================================================
-
-func nullOrUUID(u *uuid.UUID) interface{} {
-	if u == nil {
-		return nil
-	}
-	return u.String()
-}
 
 func nullOrString(s *string) interface{} {
 	if s == nil {

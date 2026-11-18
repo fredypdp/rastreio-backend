@@ -11,7 +11,7 @@ import (
 // O pagador (estudante) só pode usar os métodos habilitados pela academia QUE
 // o provedor de pagamento ativo dela suporta. Esta é a definição única dessa
 // regra, usada por TODOS os módulos que mostram métodos a quem paga (propina,
-// matrícula, serviços extras) e pela validação ao salvar a configuração. A
+// serviços extras) e pela validação ao salvar a configuração. A
 // geração da cobrança (CreateCharge) continua recusando o que o provedor não
 // suporta, em qualquer módulo — este arquivo cuida de MOSTRAR certo e de
 // EXPLICAR por que não há o que mostrar.
@@ -129,8 +129,8 @@ func (s *Service) MetodosPagamentoMensalidadeComAviso(ctx context.Context, acade
 
 // ValidarMetodosSeHouverProvedor valida, ao SALVAR uma configuração, que os
 // métodos são suportados pelo provedor ativo da academia. Sem provedor ativo
-// não há contra o que validar e a configuração é aceita: ao contrário de
-// mensalidade e matrícula (que exigem o provedor para habilitar pagamento), os
+// não há contra o que validar e a configuração é aceita: ao contrário da
+// mensalidade (que exige o provedor para habilitar pagamento), os
 // serviços extras podem ser cadastrados antes de o provedor ser definido; até
 // lá o pagador vê o aviso AvisoProvedorNaoConfigurado e a geração da cobrança
 // recusa qualquer método.

@@ -56,10 +56,10 @@ func TestDeveIncluirPendenciasSemCobranca(t *testing.T) {
 		{"estado=Failed exclui pendências — bug relatado", []string{"Failed"}, nil, false},
 		{"estado=Failed,pendente inclui (um dos valores casa)", []string{"Failed", EstadoPendente}, nil, true},
 		{"tipo=mensalidade inclui (o próprio valor das pendências)", nil, []string{"mensalidade"}, true},
-		{"tipo=matricula exclui pendências", nil, []string{"matricula"}, false},
-		{"tipo=matricula,mensalidade inclui (um dos valores casa)", nil, []string{"matricula", "mensalidade"}, true},
+		{"tipo=servico_extra exclui pendências", nil, []string{"servico_extra"}, false},
+		{"tipo=servico_extra,mensalidade inclui (um dos valores casa)", nil, []string{"servico_extra", "mensalidade"}, true},
 		{"estado e tipo compatíveis inclui", []string{EstadoPendente}, []string{"mensalidade"}, true},
-		{"estado compatível mas tipo incompatível exclui", []string{EstadoPendente}, []string{"matricula"}, false},
+		{"estado compatível mas tipo incompatível exclui", []string{EstadoPendente}, []string{"servico_extra"}, false},
 		{"estado incompatível mas tipo compatível exclui", []string{"Failed"}, []string{"mensalidade"}, false},
 	}
 	for _, c := range casos {

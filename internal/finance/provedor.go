@@ -14,7 +14,7 @@ import (
 // Este arquivo define o contrato entre o núcleo financeiro (Service) e os
 // provedores de serviços de pagamento (PSP). O núcleo cuida do que é igual
 // para qualquer provedor: validação, idempotência, ledger, máquina de estados
-// da cobrança e efeitos de negócio (mensalidade, matrícula, serviço extra).
+// da cobrança e efeitos de negócio (mensalidade, serviço extra).
 // Cada provedor vive no seu próprio arquivo (provedor_<nome>.go) e implementa
 // apenas o que é específico dele: credenciais, chamadas HTTP, tradução das
 // respostas para o vocabulário de estados da plataforma e autenticação/leitura
@@ -38,7 +38,7 @@ const (
 )
 
 // Métodos de pagamento canônicos da plataforma. São os valores guardados na
-// configuração de mensalidade/matrícula das academias; cada provedor declara
+// configuração de mensalidade das academias; cada provedor declara
 // quais deles suporta e faz a tradução para os códigos próprios dele.
 const (
 	MetodoREF   = "REF"

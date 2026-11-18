@@ -98,38 +98,11 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
 	// neutro; assim o replay de eventos antigos e a leitura de eventos novos
 	// passam pelo mesmo caminho.
 	switch aggregates.EventoFinanceiroCanonico(e.EventType) {
-	case "MatriculaConfigurada":
-		var in struct {
-			CodigoAcademia   string   `json:"codigo_academia"`
-			Nivel            string   `json:"nivel"`
-			AnoAcademico     string   `json:"ano_academico"`
-			CursoID          *string  `json:"curso_id"`
-			Valor            float64  `json:"valor"`
-			MetodosPagamento []string `json:"metodos_pagamento"`
-		}
-		if err := json.Unmarshal(e.Payload, &in); err != nil {
-			return err
-		}
-		if in.CodigoAcademia == "" || in.Nivel == "" || in.AnoAcademico == "" || in.Valor <= 0 || len(in.MetodosPagamento) == 0 {
-			return fmt.Errorf("evento MatriculaConfigurada inválido")
-		}
-		_, err := p.client.DB().Exec(`INSERT INTO financeiro_matricula_configuracoes (event_id,aggregate_id,codigo_academia,nivel,ano_academico,curso_id,valor,metodos_pagamento,vigente_em) VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::uuid,$7,$8,$9) ON CONFLICT (event_id) DO NOTHING`, e.EventID, e.AggregateID, in.CodigoAcademia, in.Nivel, in.AnoAcademico, stringValue(in.CursoID), in.Valor, pq.Array(in.MetodosPagamento), e.OccurredAt)
-		return err
-	case "MatriculaConfiguracaoRemovida":
-		var in struct {
-			CodigoAcademia string  `json:"codigo_academia"`
-			Nivel          string  `json:"nivel"`
-			AnoAcademico   string  `json:"ano_academico"`
-			CursoID        *string `json:"curso_id"`
-		}
-		if err := json.Unmarshal(e.Payload, &in); err != nil {
-			return err
-		}
-		if in.CodigoAcademia == "" || in.Nivel == "" || in.AnoAcademico == "" {
-			return fmt.Errorf("evento MatriculaConfiguracaoRemovida inválido")
-		}
-		_, err := p.client.DB().Exec(`INSERT INTO financeiro_matricula_configuracoes_remocoes (event_id,aggregate_id,codigo_academia,nivel,ano_academico,curso_id,removido_em) VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::uuid,$7) ON CONFLICT (event_id) DO NOTHING`, e.EventID, e.AggregateID, in.CodigoAcademia, in.Nivel, in.AnoAcademico, stringValue(in.CursoID), e.OccurredAt)
-		return err
+	// Eventos descontinuados (Plano, Parte 1: a taxa de matrícula foi removida).
+	// Continuam imutáveis no ledger; o replay os atravessa sem efeito, para que
+	// um rebuild não pare num evento antigo. Nenhum código novo os grava.
+	case "MatriculaConfigurada", "MatriculaConfiguracaoRemovida":
+		return nil
 	case "MensalidadeConfigurada":
 		var in struct {
 			CodigoAcademia   string   `json:"codigo_academia"`
@@ -380,7 +353,7 @@ func (p *FinanceiroProjection) Handle(e db.Event) error {
 
 func (p *FinanceiroProjection) Rebuild() error {
 	// Secrets are operational material and intentionally survive a ledger replay.
-	if _, err := p.client.DB().Exec(`DELETE FROM financeiro_mensalidade_obrigacoes_eventos; DELETE FROM financeiro_mensalidade_inicio_cobranca; DELETE FROM financeiro_mensalidade_inicio_cobranca_remocoes; DELETE FROM financeiro_mensalidade_configuracoes; DELETE FROM financeiro_mensalidade_configuracoes_remocoes; DELETE FROM financeiro_mensalidade_cobrancas; DELETE FROM financeiro_matricula_configuracoes; DELETE FROM financeiro_matricula_configuracoes_remocoes; DELETE FROM financeiro_webhooks_recebidos; DELETE FROM financeiro_cobrancas; DELETE FROM financeiro_credenciais_provedor; DELETE FROM financeiro_credenciais_arquivadas; DELETE FROM financeiro_provedores_pagamento;`); err != nil {
+	if _, err := p.client.DB().Exec(`DELETE FROM financeiro_mensalidade_obrigacoes_eventos; DELETE FROM financeiro_mensalidade_inicio_cobranca; DELETE FROM financeiro_mensalidade_inicio_cobranca_remocoes; DELETE FROM financeiro_mensalidade_configuracoes; DELETE FROM financeiro_mensalidade_configuracoes_remocoes; DELETE FROM financeiro_mensalidade_cobrancas; DELETE FROM financeiro_webhooks_recebidos; DELETE FROM financeiro_cobrancas; DELETE FROM financeiro_credenciais_provedor; DELETE FROM financeiro_credenciais_arquivadas; DELETE FROM financeiro_provedores_pagamento;`); err != nil {
 		return err
 	}
 	rows, err := p.client.DB().Query(`SELECT id,event_id,aggregate_id,aggregate_type,event_type,event_version,payload,metadata,occurred_at,recorded_at,ledger_hash,previous_hash FROM spuri_ledger WHERE aggregate_type='Financeiro' ORDER BY id`)

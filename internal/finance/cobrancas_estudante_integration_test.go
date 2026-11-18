@@ -8,28 +8,26 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestIntegrationListCobrancasEstudanteIncluiMensalidadeEMatricula cobre o
+// TestIntegrationListCobrancasEstudanteIncluiMensalidadeEServicoExtra cobre o
 // requisito de que um estudante deve conseguir consultar TODOS os pagamentos
-// que já teve, em qualquer estado — incluindo a cobrança da matrícula
-// original (associada por codigo_solicitacao, não por codigo_estudante,
-// porque é anterior ao registo do estudante) e cobranças de mensalidade em
-// qualquer estado (não só "pago").
-func TestIntegrationListCobrancasEstudanteIncluiMensalidadeEMatricula(t *testing.T) {
+// que já teve, em qualquer estado (não só "pago"), de mensalidade e de
+// serviço extra, e que o tipo "matricula" deixou de existir (Plano, Parte 1).
+func TestIntegrationListCobrancasEstudanteIncluiMensalidadeEServicoExtra(t *testing.T) {
 	client := integrationClient(t)
 	service := NewService(client)
 	ctx := context.Background()
 
 	academia := mensalidadeCodigo()
-	codigoSolicitacao := seedMatriculaPendente(t, client, academia, 750)
-	codigoEstudante := "EST" + codigoSolicitacao[3:7] // mesmo cálculo de seedMatriculaPendente
+	codigoEstudante := "EST" + uuid.NewString()[:4]
+	codigoInscricao := uuid.NewString()
 
-	insert := func(status, estudante, solicitacao string) {
+	insert := func(status, estudante, inscricao string) {
 		payload := map[string]any{"status": status, "amount": 500.0, "currency": "AOA", "description": "teste", "payment_method": "REF"}
 		if estudante != "" {
 			payload["codigo_estudante"] = estudante
 		}
-		if solicitacao != "" {
-			payload["codigo_solicitacao"] = solicitacao
+		if inscricao != "" {
+			payload["codigo_inscricao_servico"] = inscricao
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
@@ -40,29 +38,29 @@ func TestIntegrationListCobrancasEstudanteIncluiMensalidadeEMatricula(t *testing
 			t.Fatal(err)
 		}
 	}
-	insert("Success", "", codigoSolicitacao) // cobrança da matrícula original (sem codigo_estudante)
-	insert("Success", codigoEstudante, "")   // mensalidade paga
-	insert("Failed", codigoEstudante, "")    // mensalidade falhada — deve aparecer também (todos os estados)
-	insert("Success", "OUTRO12", "")         // de outro estudante — não deve aparecer
+	insert("Success", codigoEstudante, codigoInscricao) // taxa de serviço extra paga
+	insert("Success", codigoEstudante, "")              // mensalidade paga
+	insert("Failed", codigoEstudante, "")               // mensalidade falhada — deve aparecer também (todos os estados)
+	insert("Success", "OUTRO12", "")                    // de outro estudante — não deve aparecer
 
 	res, err := service.ListCobrancasEstudante(ctx, codigoEstudante, nil, nil, nil, nil, nil, "", "", nil, 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Total != 3 {
-		t.Fatalf("esperava 3 cobranças do estudante (1 matrícula + 2 mensalidade), obteve %d: %#v", res.Total, res.Cobrancas)
+		t.Fatalf("esperava 3 cobranças do estudante (1 serviço extra + 2 mensalidade), obteve %d: %#v", res.Total, res.Cobrancas)
 	}
-	var temMatricula, temFalhada bool
+	var temServicoExtra, temFalhada bool
 	for _, cobranca := range res.Cobrancas {
-		if cobranca.Origem == "matricula" && cobranca.CodigoSolicitacao == codigoSolicitacao {
-			temMatricula = true
+		if cobranca.Origem == "servico_extra" && cobranca.CodigoInscricaoServico == codigoInscricao {
+			temServicoExtra = true
 		}
 		if cobranca.Status == "Failed" {
 			temFalhada = true
 		}
 	}
-	if !temMatricula {
-		t.Fatalf("cobrança de matrícula original não apareceu na listagem: %#v", res.Cobrancas)
+	if !temServicoExtra {
+		t.Fatalf("cobrança de serviço extra não apareceu na listagem: %#v", res.Cobrancas)
 	}
 	if !temFalhada {
 		t.Fatalf("cobrança falhada não apareceu (listagem deveria incluir todos os estados por padrão): %#v", res.Cobrancas)
@@ -73,11 +71,11 @@ func TestIntegrationListCobrancasEstudanteIncluiMensalidadeEMatricula(t *testing
 		t.Fatal(err)
 	}
 	if pagas.Total != 2 {
-		t.Fatalf("filtro por estado=Success deveria devolver 2 cobranças (matrícula + mensalidade paga), obteve %d", pagas.Total)
+		t.Fatalf("filtro por estado=Success deveria devolver 2 cobranças (serviço extra + mensalidade paga), obteve %d", pagas.Total)
 	}
 
 	// tarefa 49: o próprio estudante também precisa conseguir filtrar por
-	// tipo de cobrança (mensalidade/matrícula/avulsa), mesmo mecanismo que
+	// tipo de cobrança (mensalidade/serviço extra/avulsa), mesmo mecanismo que
 	// ListCobrancas já oferece à academia/admin.
 	somenteMensalidade, err := service.ListCobrancasEstudante(ctx, codigoEstudante, nil, nil, []string{"mensalidade"}, nil, nil, "", "", nil, 50, 0)
 	if err != nil {
@@ -92,16 +90,18 @@ func TestIntegrationListCobrancasEstudanteIncluiMensalidadeEMatricula(t *testing
 		}
 	}
 
-	somenteMatricula, err := service.ListCobrancasEstudante(ctx, codigoEstudante, nil, nil, []string{"matricula"}, nil, nil, "", "", nil, 50, 0)
+	somenteServicoExtra, err := service.ListCobrancasEstudante(ctx, codigoEstudante, nil, nil, []string{"servico_extra"}, nil, nil, "", "", nil, 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if somenteMatricula.Total != 1 || somenteMatricula.Cobrancas[0].CodigoSolicitacao != codigoSolicitacao {
-		t.Fatalf("filtro por tipo=matricula deveria devolver só a cobrança da matrícula original, obteve %#v", somenteMatricula.Cobrancas)
+	if somenteServicoExtra.Total != 1 || somenteServicoExtra.Cobrancas[0].CodigoInscricaoServico != codigoInscricao {
+		t.Fatalf("filtro por tipo=servico_extra deveria devolver só a cobrança do serviço extra, obteve %#v", somenteServicoExtra.Cobrancas)
 	}
 
-	if _, err := service.ListCobrancasEstudante(ctx, codigoEstudante, nil, nil, []string{"invalido"}, nil, nil, "", "", nil, 50, 0); err == nil {
-		t.Fatal("esperava erro para tipo de cobrança inválido")
+	for _, invalido := range []string{"invalido", "matricula"} {
+		if _, err := service.ListCobrancasEstudante(ctx, codigoEstudante, nil, nil, []string{invalido}, nil, nil, "", "", nil, 50, 0); err == nil {
+			t.Fatalf("esperava erro para tipo de cobrança inválido %q", invalido)
+		}
 	}
 }
 

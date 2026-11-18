@@ -178,7 +178,6 @@ func initProjections() error {
 
 	// ── Tier 4 — avaliação final ──────────────────────────────────────────
 	projManager.RegisterProjection("avaliacao_final", projections.NewAvaliacaoFinalProjection(dbClient))
-	projManager.RegisterProjection("solicitacoes_matricula", projections.NewSolicitacaoMatriculaProjection(dbClient))
 	projManager.RegisterProjection("solicitacoes_edicao_dados_estudante", projections.NewSolicitacaoEdicaoDadoEstudanteProjection(dbClient))
 	projManager.RegisterProjection("solicitacoes_alteracao_nif_academia", projections.NewSolicitacaoAlteracaoNIFAcademiaProjection(dbClient))
 	projManager.RegisterProjection("financeiro", projections.NewFinanceiroProjection(dbClient))
@@ -311,16 +310,10 @@ func setupRouter() *gin.Engine {
 	router.POST("/login/dois-fatores/verificar", handlers.VerificarLoginDoisFatores)
 	router.POST("/login/dois-fatores/reenviar", handlers.ReenviarLoginDoisFatores)
 	router.POST("/bootstrap", handlers.BootstrapAdminFPP)
-	router.POST("/solicitacao-matricula", handlers.CriarSolicitacaoMatricula)
 	// SEC-08 (Tarefa 127): cada cadastro público dispara um e-mail aos admins; o
 	// limite por IP (rajada de 10, reposição de 1 a cada 3 min) trava o envio em
 	// massa sem afetar o uso normal (cadastros de academias são raros).
 	router.POST("/academia/cadastro", middleware.RateLimitMiddleware(middleware.NewRateLimiter(rate.Every(3*time.Minute), 10, time.Hour)), handlers.RegisterAcademiaPublica)
-	// Search and payment have independent public financial rate limits so an
-	// exhausted search bucket cannot suppress a legitimate payment attempt.
-	router.GET("/solicitacao-matricula/busca", middleware.RateLimitMiddleware(middleware.NewRateLimiter(rate.Every(time.Minute/20), 5, time.Minute)), handlers.BuscarSolicitacoesMatricula)
-	router.GET("/solicitacao-matricula/:codigo/status", middleware.RateLimitMiddleware(middleware.NewRateLimiter(rate.Every(time.Minute/20), 5, time.Minute)), handlers.ConsultarStatusSolicitacaoMatricula)
-	router.POST("/solicitacao-matricula/:codigo/pagamento-matricula", middleware.RateLimitMiddleware(middleware.NewRateLimiter(rate.Every(time.Minute/20), 5, time.Minute)), handlers.IniciarPagamentoMatricula)
 	// Webhooks são públicos por necessidade do gateway, mas autenticados pelo
 	// próprio módulo antes de qualquer evento ser aceite.
 	// As rotas de cada provedor vêm do próprio provedor (RotasWebhook), no
@@ -354,7 +347,6 @@ func setupRouter() *gin.Engine {
 	router.GET("/academias", middleware.OptionalAuthMiddleware(), handlers.ListarTodasAcademias)
 	router.GET("/academia/cursos", middleware.OptionalAuthMiddleware(), handlers.ListarCursos)
 	router.GET("/academia/servico/:codigo_academia/servicos-extras", middleware.OptionalAuthMiddleware(), handlers.ListarServicosExtrasPublico)
-	router.GET("/academia/documento/:codigo_academia/documentos-extra", middleware.OptionalAuthMiddleware(), handlers.ListarDocumentosExtraPublico)
 	router.GET("/academia/curso/:id", middleware.OptionalAuthMiddleware(), handlers.GetCurso)
 	router.GET("/consultar-academia/:codigo", middleware.OptionalAuthMiddleware(), handlers.GetAcademiaPorCodigo)
 
@@ -454,11 +446,9 @@ func setupRouter() *gin.Engine {
 		protected.GET("/ano-letivo", handlers.GetAnoLetivoGlobalSistemaAtual)
 		protected.GET("/anos-letivos-lista", handlers.GetAnosLetivosGlobaisLista)
 		protected.GET("/anos-letivos/configuracoes", handlers.ListarConfiguracoesAnosLetivos)
-		protected.GET("/solicitacoes-matricula", middleware.RequireAdmin(), handlers.ListarSolicitacoesMatriculaAdmin)
 		protected.GET("/documentos/academias/:codigo/:campo/download", handlers.DownloadDocumentoAcademia)
 		protected.POST("/documentos/academias/:codigo/:campo/upload", handlers.UploadDocumentoAcademia)
 		protected.GET("/documentos/estudantes/:codigo/:campo/download", handlers.DownloadDocumentoEstudante)
-		protected.GET("/documentos/solicitacoes-matricula/:codigo/:campo/download", handlers.DownloadDocumentoSolicitacaoMatricula)
 		protected.GET("/avaliacoes-estudante/:codigo", middleware.RequireAcademiaOuAdmin(), handlers.GetAvaliacoesFinaisEstudante)
 		protected.GET("/turmas-estudante/:codigo", handlers.GetTurmasEstudante)
 		// Consulta de mensalidades também é acessível ao próprio estudante; as
@@ -505,10 +495,6 @@ func setupRouter() *gin.Engine {
 			financeiro.POST("/mensalidades/obrigacoes/anular", handlers.AnularObrigacoesMensalidade)
 			financeiro.POST("/mensalidades/obrigacoes/reativar", handlers.ReativarObrigacoesMensalidade)
 			financeiro.POST("/mensalidades/obrigacoes/pago-externamente", handlers.RegistrarPagamentoExternoMensalidades)
-			financeiro.POST("/matriculas/configuracoes", handlers.ConfigurarMatricula)
-			financeiro.PUT("/matriculas/configuracoes", handlers.ConfigurarMatricula)
-			financeiro.GET("/matriculas/configuracoes", handlers.ListarConfiguracoesMatricula)
-			financeiro.DELETE("/matriculas/configuracoes", handlers.RemoverConfiguracaoMatricula)
 		}
 	}
 
@@ -583,14 +569,11 @@ func setupRouter() *gin.Engine {
 		academiaRead.GET("/anos-letivos/finalizacoes", handlers.ListarFinalizacoesAnoLetivoAcademia)
 		academiaRead.GET("/avaliacao-final/regras", handlers.ListarRegrasAvaliacaoFinal)
 		academiaRead.GET("/configuracao-status", handlers.GetConfiguracaoStatusAcademia)
-		academiaRead.GET("/solicitacoes-matricula", handlers.ListarSolicitacoesMatriculaAcademia)
-		academiaRead.GET("/solicitacao-matricula/:codigo", handlers.GetSolicitacaoMatriculaAcademia)
 		academiaRead.GET("/solicitacoes", handlers.ListarSolicitacoesStatusAcademicoHandler)
 		academiaRead.GET("/solicitacoes-edicao-estudante", handlers.ListarSolicitacoesEdicaoAcademia)
 		academiaRead.GET("/documentos", handlers.ListarDocumentosAcademia)
 		academiaRead.GET("/documentos/academia/:campo/download", handlers.DownloadDocumentoAcademiaPropria)
 		academiaRead.GET("/documentos/estudantes/:codigo/:campo/download", handlers.DownloadDocumentoEstudanteAcademia)
-		academiaRead.GET("/documentos/solicitacoes-matricula/:codigo/:campo/download", handlers.DownloadDocumentoSolicitacaoMatriculaAcademia)
 		academiaRead.GET("/documentos/solicitacoes-edicao-estudante/:codigo/documento/download", handlers.DownloadDocumentoSolicitacaoEdicaoAcademia)
 	}
 
@@ -624,9 +607,6 @@ func setupRouter() *gin.Engine {
 		academia.POST("/anos-academicos", handlers.AdicionarAnosAcademicos)
 		academia.DELETE("/anos-academicos", handlers.RemoverAnosAcademicos)
 		academia.POST("/anos-letivos/finalizar", handlers.FinalizarAnoLetivoAcademia)
-		academia.PUT("/solicitacao-matricula/:codigo/aprovar", handlers.AprovarSolicitacaoMatricula)
-		academia.PUT("/solicitacao-matricula/:codigo/reprovar", handlers.ReprovarSolicitacaoMatricula)
-		academia.PUT("/solicitacao-matricula/:codigo/cancelar", handlers.CancelarSolicitacaoMatricula)
 		academia.PUT("/solicitacoes-edicao-estudante/nome/:codigo/aprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("nome", true))
 		academia.PUT("/solicitacoes-edicao-estudante/nome/:codigo/reprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("nome", false))
 		academia.PUT("/solicitacoes-edicao-estudante/bilhete-identidade/:codigo/aprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade", true))
@@ -735,7 +715,6 @@ func setupRouter() *gin.Engine {
 		admin.GET("/metrics", handlers.GetSystemMetrics)
 		admin.GET("/storage/quota", handlers.GetStorageQuota)
 		admin.POST("/storage/migrar-local-para-mega", middleware.RequireFPP(), handlers.MigrarStorageLocalParaMega)
-		admin.GET("/solicitacoes-matricula", handlers.ListarSolicitacoesMatriculaAdmin)
 		admin.POST("/projections/rebuild/:name", middleware.RequireFPP(), handlers.RebuildProjection)
 		admin.POST("/projections/rebuild/:name/async", middleware.RequireFPP(), handlers.RebuildProjectionAsync)
 		admin.GET("/consultar-admin/:email", handlers.GetAdminPorEmail)

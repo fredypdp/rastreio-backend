@@ -142,7 +142,7 @@ func (s *Service) DefinirProvedor(ctx context.Context, contexto, academia, prove
 
 // validarMetodosDoProvedor garante que o contexto tem provedor ativo com
 // credenciais e que todos os métodos pedidos são suportados por ele. É usada
-// na configuração de mensalidade e matrícula das academias.
+// na configuração de mensalidade das academias.
 func (s *Service) validarMetodosDoProvedor(ctx context.Context, academia, objeto string, metodos []string) error {
 	prov, _, err := s.loadCredentialAtiva(ctx, ContextoAcademia, academia)
 	if err != nil {

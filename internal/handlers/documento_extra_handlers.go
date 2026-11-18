@@ -200,25 +200,3 @@ func ListarDocumentosExtraAcademia(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"documentos_extra": docs, "total": len(docs)})
 }
-
-// ListarDocumentosExtraPublico expõe, sem autenticação, o catálogo de
-// documentos extra ATIVOS de uma academia pelo codigo_academia na URL —
-// mesmo padrão já usado por ListarServicosExtrasPublico
-// (servico_extra_handlers.go) para o mesmo tipo de necessidade: a tela
-// pública de matrícula (/matricula) precisa saber, em segundo plano e sem
-// exigir login, se a academia escolhida tem documentos extra configurados
-// para o ano acadêmico que o candidato está a escolher.
-//
-// Antes desta rota existir, a tela pública chamava
-// ListarDocumentosExtraAcademia (que exige sessão de academia via academy(c))
-// e recebia sempre 401/403 — silenciosamente ignorado pelo frontend — então
-// documentos extra nunca apareciam na matrícula pública, independentemente
-// da academia. Ver documento de tarefa para detalhes desta descoberta.
-func ListarDocumentosExtraPublico(c *gin.Context) {
-	docs, err := getDocumentosExtraProjection(c).GetByAcademia(c.Param("codigo_academia"), true)
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"documentos_extra": docs, "total": len(docs)})
-}

@@ -51,7 +51,6 @@ func TestDefaultRebuildOrderCoversAllRegisteredProjections(t *testing.T) {
 		"notas",
 		"faltas",
 		"avaliacao_final",
-		"solicitacoes_matricula",
 		"solicitacoes_edicao_dados_estudante",
 	}
 
@@ -77,13 +76,11 @@ func TestOrderedRebuildProjectionNamesUsesDependencyOrderBeforeFallback(t *testi
 		"solicitacoes_edicao_dados_estudante": nil,
 		"academias":                           nil,
 		"a_custom":                            nil,
-		"solicitacoes_matricula":              nil,
 	}
 
 	got := orderedRebuildProjectionNames(projections)
 	want := []string{
 		"academias",
-		"solicitacoes_matricula",
 		"solicitacoes_edicao_dados_estudante",
 		"notas",
 		"a_custom",

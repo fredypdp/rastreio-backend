@@ -8,17 +8,17 @@ import (
 
 	"spuri/internal/db"
 	"spuri/internal/finance"
-	"spuri/internal/projections"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 // O job de reconciliação confirma pagamentos FORA de uma requisição HTTP. Este
-// teste prova que o adaptador dos efeitos (contexto Gin sintético) efetiva a
-// matrícula exatamente como o webhook, e que repetir é inofensivo (os efeitos
-// são repetidos pelo job até darem certo).
-func TestIntegrationEfeitosPagamentoDoJobEfetivamMatriculaForaDeUmaRequisicao(t *testing.T) {
+// teste prova que o adaptador dos efeitos (contexto Gin sintético) roda sem
+// erro nesse contexto e que repetir é inofensivo (os efeitos são repetidos pelo
+// job até darem certo). Uma cobrança avulsa não tem obrigação associada, então
+// o adaptador não deve produzir nenhum efeito de negócio.
+func TestIntegrationEfeitosPagamentoDoJobRodamForaDeUmaRequisicaoSemEfeitoIndevido(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	client := integrationFinanceClient(t)
 	t.Setenv("ENV", "test")
@@ -27,7 +27,6 @@ func TestIntegrationEfeitosPagamentoDoJobEfetivamMatriculaForaDeUmaRequisicao(t 
 
 	academia := "EJ" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
 	seedAcademiaParaMatriculaWebhook(t, client, academia)
-	codigo, codigoEstudante := seedSolicitacaoMatriculaPendenteComLedger(t, client, academia, 750)
 
 	service := finance.NewService(client)
 	service.SetHTTPClient(&http.Client{Transport: handlerAppyPayMockTransport{}})
@@ -38,44 +37,34 @@ func TestIntegrationEfeitosPagamentoDoJobEfetivamMatriculaForaDeUmaRequisicao(t 
 	}, "integration-test", "sistema", "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
-	charge, err := service.IniciarPagamentoMatricula(context.Background(), finance.MatriculaPagamentoInput{CodigoSolicitacao: codigo, MetodoPagamento: "REF"}, "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	charge := novaCobrancaAvulsaREF(t, service, academia, 750)
 	previousService := FinanceiroService
 	FinanceiroService = service
 	t.Cleanup(func() { FinanceiroService = previousService })
 
+	var ledgerAntes int
+	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type <> 'Financeiro'`).Scan(&ledgerAntes); err != nil {
+		t.Fatal(err)
+	}
+
 	efeitos := NovosEfeitosPagamento(client, db.NewAggregateRepository(client))
 	confirmada := finance.CobrancaConfirmada{
-		ID:                    charge.Charge.ID,
-		ProviderChargeID:      charge.Charge.ProviderChargeID,
-		MerchantTransactionID: charge.Charge.MerchantTransactionID,
+		ID:                    charge.ID,
+		ProviderChargeID:      charge.ProviderChargeID,
+		MerchantTransactionID: charge.MerchantTransactionID,
 		Provedor:              finance.ProvedorAppyPay,
 	}
-	for i, tentativa := range []string{"primeira", "repetida (idempotente)"} {
+	for _, tentativa := range []string{"primeira", "repetida (idempotente)"} {
 		if err := efeitos(context.Background(), confirmada); err != nil {
 			t.Fatalf("efeitos, %s: %v", tentativa, err)
 		}
-		if err := projections.NewSolicitacaoMatriculaProjection(client).Rebuild(); err != nil {
-			t.Fatal(err)
-		}
-		if err := projections.NewEstudanteProjection(client).Rebuild(); err != nil {
-			t.Fatal(err)
-		}
-		var status string
-		if err := client.DB().QueryRow(`SELECT status FROM projection_solicitacoes_matricula WHERE codigo_solicitacao=$1`, codigo).Scan(&status); err != nil {
-			t.Fatal(err)
-		}
-		if status != "aprovada" {
-			t.Fatalf("%s: status da solicitação = %q, queria aprovada", tentativa, status)
-		}
-		var estudantes int
-		if err := client.DB().QueryRow(`SELECT COUNT(*) FROM projection_estudantes WHERE codigo_estudante=$1`, codigoEstudante).Scan(&estudantes); err != nil {
-			t.Fatal(err)
-		}
-		if estudantes != 1 {
-			t.Fatalf("%s (passo %d): estudantes = %d, queria 1", tentativa, i+1, estudantes)
-		}
+	}
+
+	var ledgerDepois int
+	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type <> 'Financeiro'`).Scan(&ledgerDepois); err != nil {
+		t.Fatal(err)
+	}
+	if ledgerDepois != ledgerAntes {
+		t.Fatalf("os efeitos de uma cobrança avulsa gravaram %d evento(s) fora do Financeiro", ledgerDepois-ledgerAntes)
 	}
 }

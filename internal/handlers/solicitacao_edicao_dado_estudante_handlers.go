@@ -524,7 +524,7 @@ func validarValorSolicitadoEdicao(c *gin.Context, est *projections.EstudanteDTO,
 
 func generateUniqueCodigoSolicitacaoEdicao(client *db.Client) (string, error) {
 	for i := 0; i < 20; i++ {
-		code, err := generateUniqueCodigoSolicitacao(client)
+		code, err := gerarCodigoSolicitacao()
 		if err != nil {
 			return "", err
 		}

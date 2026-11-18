@@ -69,51 +69,6 @@ func TestIntegrationMensalidadePrimeiraConfiguracaoNaoExigeModoVigencia(t *testi
 	}
 }
 
-// TestIntegrationMatriculaPrimeiraConfiguracaoNaoExigeModoVigencia é o
-// espelho do teste acima para a taxa de matrícula.
-func TestIntegrationMatriculaPrimeiraConfiguracaoNaoExigeModoVigencia(t *testing.T) {
-	client := integrationClient(t)
-	service := NewService(client)
-	academia := mensalidadeCodigo()
-	seedMensalidadeAcademia(t, client, academia, "private", "fundamental", "2026_2027")
-	configureIntegrationCredential(t, service, ContextoAcademia, academia)
-
-	primeira, err := service.ConfigureMatricula(context.Background(), MatriculaConfiguracaoInput{
-		CodigoAcademia:   academia,
-		Nivel:            NivelFundamental,
-		AnoAcademico:     "6_ano_fundamental",
-		Valor:            50,
-		MetodosPagamento: []string{"REF"},
-	}, uuid.NewString(), "academia", "127.0.0.1")
-	if err != nil {
-		t.Fatalf("primeira configuração sem modo_vigencia foi rejeitada: %v", err)
-	}
-	if primeira.Valor != 50 {
-		t.Fatalf("valor da primeira configuração = %v, queria 50", primeira.Valor)
-	}
-
-	if _, err := service.ConfigureMatricula(context.Background(), MatriculaConfiguracaoInput{
-		CodigoAcademia:   academia,
-		Nivel:            NivelFundamental,
-		AnoAcademico:     "6_ano_fundamental",
-		Valor:            80,
-		MetodosPagamento: []string{"REF"},
-	}, uuid.NewString(), "academia", "127.0.0.1"); err == nil {
-		t.Fatal("edição sem modo_vigencia foi aceita: deveria exigir a escolha, já existe configuração vigente")
-	}
-
-	if _, err := service.ConfigureMatricula(context.Background(), MatriculaConfiguracaoInput{
-		CodigoAcademia:   academia,
-		Nivel:            NivelFundamental,
-		AnoAcademico:     "6_ano_fundamental",
-		Valor:            80,
-		MetodosPagamento: []string{"REF"},
-		ModoVigencia:     ModoVigenciaAPartirDaAtualizacao,
-	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
-		t.Fatalf("edição com modo_vigencia explícito foi rejeitada: %v", err)
-	}
-}
-
 // TestIntegrationMesInicioCobrancaRespeitaAnoLetivoSemConfiguracaoDeMensalidade
 // prova o bug corrigido: antes, sem nenhuma configuração de mensalidade
 // ainda cadastrada para a academia, validateMesInicioCobranca não aplicava

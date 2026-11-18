@@ -21,13 +21,13 @@ func TestIntegrationListCobrancasFiltraOrigemEstadoEIsolaPorAcademia(t *testing.
 	academiaA := mensalidadeCodigo()
 	academiaB := mensalidadeCodigo()
 
-	insert := func(academia, status, estudante, solicitacao string) {
+	insert := func(academia, status, estudante, inscricao string) {
 		payload := map[string]any{"status": status, "amount": 500.0, "currency": "AOA", "description": "teste", "payment_method": "REF"}
 		if estudante != "" {
 			payload["codigo_estudante"] = estudante
 		}
-		if solicitacao != "" {
-			payload["codigo_solicitacao"] = solicitacao
+		if inscricao != "" {
+			payload["codigo_inscricao_servico"] = inscricao
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
@@ -38,10 +38,10 @@ func TestIntegrationListCobrancasFiltraOrigemEstadoEIsolaPorAcademia(t *testing.
 			t.Fatal(err)
 		}
 	}
-	insert(academiaA, "criada", "", "")             // avulsa
-	insert(academiaA, "Success", "EST-LST-1", "")   // mensalidade paga
-	insert(academiaA, "cancelada", "", "SOL-LST-1") // matrícula cancelada
-	insert(academiaB, "criada", "", "")             // outra academia, não deve aparecer para A
+	insert(academiaA, "criada", "", "")                       // avulsa
+	insert(academiaA, "Success", "EST-LST-1", "")             // mensalidade paga
+	insert(academiaA, "cancelada", "EST-LST-2", "INSC-LST-1") // taxa de serviço extra cancelada
+	insert(academiaB, "criada", "", "")                       // outra academia, não deve aparecer para A
 
 	todas, err := service.ListCobrancas(ctx, ContextoAcademia, academiaA, nil, nil, nil, nil, "", "", nil, 50, 0)
 	if err != nil {
@@ -59,12 +59,15 @@ func TestIntegrationListCobrancasFiltraOrigemEstadoEIsolaPorAcademia(t *testing.
 		t.Fatalf("filtro por estado=Success deveria devolver só a cobrança de mensalidade: %#v", pagas)
 	}
 
-	matriculas, err := service.ListCobrancas(ctx, ContextoAcademia, academiaA, nil, []string{"matricula"}, nil, nil, "", "", nil, 50, 0)
+	servicosExtras, err := service.ListCobrancas(ctx, ContextoAcademia, academiaA, nil, []string{"servico_extra"}, nil, nil, "", "", nil, 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if matriculas.Total != 1 || matriculas.Cobrancas[0].CodigoSolicitacao != "SOL-LST-1" {
-		t.Fatalf("filtro por tipo=matricula incorreto: %#v", matriculas)
+	if servicosExtras.Total != 1 || servicosExtras.Cobrancas[0].CodigoInscricaoServico != "INSC-LST-1" {
+		t.Fatalf("filtro por tipo=servico_extra incorreto: %#v", servicosExtras)
+	}
+	if _, err := service.ListCobrancas(ctx, ContextoAcademia, academiaA, nil, []string{"matricula"}, nil, nil, "", "", nil, 50, 0); err == nil {
+		t.Fatal("o tipo de cobrança matricula foi removido e deveria ser rejeitado")
 	}
 
 	pagina, err := service.ListCobrancas(ctx, ContextoAcademia, academiaA, nil, nil, nil, nil, "", "", nil, 1, 0)
