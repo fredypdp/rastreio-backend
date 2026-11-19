@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"spuri/internal/db"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 func seedAcademiaParaRemocaoHandlers(t *testing.T, client *db.Client, codigo string) {
@@ -18,7 +20,7 @@ func seedAcademiaParaRemocaoHandlers(t *testing.T, client *db.Client, codigo str
 	_, err := client.DB().Exec(`INSERT INTO projection_academias
 		(id,nivel,nome,nif,codigo_academia,senha_hash,provincia,endereco,nivel_escolar,status,cursos,anos_academicos,type,ano_letivo,created_at)
 		VALUES ($1,'escola','Academia remoção',$2,$3,'hash','LUA','endereco','fundamental','ativo','[]'::jsonb,'["7_ano_fundamental"]'::jsonb,'private','2026_2027',CURRENT_TIMESTAMP)`,
-		uuid.New(), geraDigitos(10), codigo)
+		uuid.New(), testsupport.GeraDigitos(10), codigo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,15 +42,15 @@ func newDeleteJSONContext(method, path string, body any) (*gin.Context, *httptes
 // retorna 200 (com o resumo da remoção) e a segunda tentativa (idempotência de erro) volta a dar 404.
 func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academiaDona := "REM" + uuid.NewString()[:6]
 	academiaOutra := "OUT" + uuid.NewString()[:6]
 	seedAcademiaParaRemocaoHandlers(t, client, academiaDona)
 	seedAcademiaParaRemocaoHandlers(t, client, academiaOutra)
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	userID := uuid.New()
 	setActor := func(ctx *gin.Context, academia string) {
@@ -71,7 +73,7 @@ func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testin
 	// Configura via o Service diretamente (mais rápido que passar pelo
 	// handler de criação) e então remove via o HANDLER, que é o que este
 	// teste precisa validar.
-	if _, _, err := FinanceiroService.ConfigureCredential(ctx.Request.Context(), nil, finance.CredentialInput{
+	if _, _, err := apoio.FinanceiroService.ConfigureCredential(ctx.Request.Context(), nil, finance.CredentialInput{
 		ContextoTipo: finance.ContextoAcademia, CodigoAcademia: academiaDona,
 		Provedor: finance.ProvedorAppyPay, Credenciais: map[string]string{"client_id": "client-" + uuid.NewString(), "client_secret": "secret-" + uuid.NewString(), "gpo_method": "GPO_QR_TEST", "ref_method": "REF_TEST"},
 	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
@@ -108,13 +110,13 @@ func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testin
 	}
 
 	// 2) Configuração de mensalidade.
-	if _, _, err := FinanceiroService.ConfigureCredential(ctx.Request.Context(), nil, finance.CredentialInput{
+	if _, _, err := apoio.FinanceiroService.ConfigureCredential(ctx.Request.Context(), nil, finance.CredentialInput{
 		ContextoTipo: finance.ContextoAcademia, CodigoAcademia: academiaDona,
 		Provedor: finance.ProvedorAppyPay, Credenciais: map[string]string{"client_id": "client2-" + uuid.NewString(), "client_secret": "secret2-" + uuid.NewString(), "gpo_method": "GPO_QR_TEST", "ref_method": "REF_TEST"},
 	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatalf("ConfigureCredential (2) falhou: %v", err)
 	}
-	if _, err := FinanceiroService.ConfigureMensalidade(ctx.Request.Context(), finance.MensalidadeConfiguracaoInput{
+	if _, err := apoio.FinanceiroService.ConfigureMensalidade(ctx.Request.Context(), finance.MensalidadeConfiguracaoInput{
 		CodigoAcademia: academiaDona, Nivel: finance.NivelFundamental, AnoAcademico: "7_ano_fundamental",
 		Valor: 5000, MesFimCobranca: 7, MetodosPagamento: []string{"GPO_QR"}, ModoVigencia: finance.ModoVigenciaAPartirDaAtualizacao,
 	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
@@ -130,7 +132,7 @@ func TestIntegrationHandlersRemocaoFinanceiraRespeitamEscopoDaAcademia(t *testin
 	}
 
 	// 3) Mês de início de cobrança.
-	if err := FinanceiroService.DefinirMesInicioCobranca(ctx.Request.Context(), finance.MesInicioCobrancaInput{
+	if err := apoio.FinanceiroService.DefinirMesInicioCobranca(ctx.Request.Context(), finance.MesInicioCobrancaInput{
 		CodigoAcademia: academiaDona, AnoLetivo: "2026_2027", MesInicio: 11,
 	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatalf("DefinirMesInicioCobranca falhou: %v", err)

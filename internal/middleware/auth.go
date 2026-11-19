@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"spuri/internal/db"
+	"spuri/internal/sysconfig"
 	"spuri/internal/utils"
 )
 
@@ -58,7 +59,7 @@ func ValidateJWTConfig() error {
 // getJWTExpiryHours retorna o número de horas de validade do token.
 func getJWTExpiryHours() int {
 	const defaultHours = 24
-	hoursStr := os.Getenv("JWT_EXPIRY_HOURS")
+	hoursStr := sysconfig.String("JWT_EXPIRY_HOURS")
 	if hoursStr == "" {
 		return defaultHours
 	}

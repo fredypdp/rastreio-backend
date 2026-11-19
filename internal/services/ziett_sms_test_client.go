@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"spuri/internal/sysconfig"
 	"strings"
 	"time"
 	"unicode"
@@ -67,7 +67,7 @@ func (e *ZiettNetworkError) Error() string { return "falha ao contactar a Ziett"
 func (e *ZiettNetworkError) Unwrap() error { return e.Err }
 
 func NewZiettClientFromEnv() (*ZiettClient, error) {
-	apiKey := strings.TrimSpace(os.Getenv("ZIETT_API_KEY"))
+	apiKey := strings.TrimSpace(sysconfig.String("ZIETT_API_KEY"))
 	if apiKey == "" {
 		return nil, errors.New("ZIETT_API_KEY não configurada")
 	}

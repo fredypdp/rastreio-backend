@@ -2,7 +2,7 @@
 modificado: 12-11-2026 00:00
 criado: 05-04-2026 13:01
 ---
-Versão atual: 3.0.0
+Versão atual: 3.0.1
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -573,7 +573,7 @@ Quando a requisição envia `Authorization: Bearer <jwt_token>` válido, a API p
 ### 3.1 JWT
 
 - Algoritmo: HS256
-- Expiração configurável via `JWT_EXPIRY_HOURS` (padrão: 24h)
+- Expiração configurável via `JWT_EXPIRY_HOURS` (padrão: 24h), no banco (seção 16.7) ou na variável de ambiente; vale para os tokens emitidos depois da alteração
 - Secret configurável via `JWT_SECRET` (obrigatório em produção)
 - Payload: `user_id` (UUID) e `user_type` (string)
 
@@ -1121,7 +1121,7 @@ Igual para um administrador: nova senha temporária enviada por **e-mail** (Brev
 
 ## 5. Email
 
-O **Brevo é o único canal de e-mail** (EmailJS e SMTP foram eliminados). Sem Brevo configurado (`BREVO_API_KEY` e `EMAIL_FROM`) os envios falham de forma explícita (`503`) — nada é "fingido" e nenhum token, link ou senha é escrito em log. Não há limitação de taxa nestes endpoints.
+O **Brevo é o único canal de e-mail** (EmailJS e SMTP foram eliminados). Sem Brevo configurado (`BREVO_API_KEY` e `EMAIL_FROM`, gravadas no banco pela seção 16.7 ou lidas do ambiente) os envios falham de forma explícita (`503`) — nada é "fingido" e nenhum token, link ou senha é escrito em log. Não há limitação de taxa nestes endpoints.
 
 
 ### PUT /me/email
@@ -7260,6 +7260,156 @@ Lista deleções lógicas (Academia, Administrador, Estudante) diretamente do le
 - `403` — sem role `adm` ou `fpp`
 - `500` — falha ao consultar o ledger
 
+### 16.7 Configurações do sistema
+
+Configurações operacionais que antes só existiam como variável de ambiente e que o administrador `fpp` passa a poder alterar pela tela de administração, sem novo deploy.
+
+**Ordem de leitura de cada chave:** valor gravado no banco → variável de ambiente com o mesmo nome. Quem já tem tudo no ambiente não precisa fazer nada: enquanto nada for gravado no banco, o comportamento é exatamente o de antes.
+
+**Lista fechada.** Só as chaves abaixo podem ser lidas ou gravadas por estas rotas. O que o servidor precisa para chegar ao banco ou para proteger o cofre (`DATABASE_URL`, `JWT_SECRET`, `FINANCE_ENCRYPTION_KEY`, `ENV`, `PORT`, `STORAGE_PROVIDER`, `BOOTSTRAP_TOKEN`...) continua só no ambiente e responde `404` aqui.
+
+| Chave | Grupo | Tipo | Vale | Regra do valor |
+| --- | --- | --- | --- | --- |
+| `ALLOWED_ORIGINS` | Segurança | texto | na hora | uma ou mais origens `http(s)://host[:porta]` separadas por vírgula, sem caminho (máx. 20). Sem nenhuma origem definida qualquer origem é aceita |
+| `JWT_EXPIRY_HOURS` | Segurança | número | na hora, só para novos logins | inteiro de 1 a 720. Padrão 24 |
+| `LOG_LEVEL` | Segurança | texto | na hora | `info` ou `debug` |
+| `EMAIL_FROM` | E-mail (Brevo) | texto | na hora | só um endereço de e-mail, sem nome; precisa estar verificado no Brevo |
+| `BREVO_API_KEY` | E-mail (Brevo) | **segredo** | na hora | texto |
+| `ZIETT_API_KEY` | SMS (Ziett) | **segredo** | na hora | texto |
+| `APPYPAY_RESOURCE` | Pagamentos (AppyPay) | texto | na hora | UUID |
+| `RECONCILIACAO_ATIVA` | Reconciliação de pagamentos | booleano | **próximo reinício** | `true`/`false` (aceita também sim/não, 1/0) |
+| `RECONCILIACAO_CONCORRENCIA` | Reconciliação de pagamentos | número | **próximo reinício** | inteiro de 1 a 20 |
+| `RECONCILIACAO_CHAMADAS_POR_SEGUNDO` | Reconciliação de pagamentos | número | **próximo reinício** | de 0,1 a 50 |
+| `RECONCILIACAO_CACHE_CREDENCIAIS_SEG` | Reconciliação de pagamentos | número | **próximo reinício** | inteiro de 1 a 604800 |
+| `RECONCILIACAO_RESYNC_MIN` | Reconciliação de pagamentos | número | **próximo reinício** | inteiro de 0 a 10080 (0 = só no arranque) |
+| `MEGA_EMAIL` | Armazenamento (Mega) | **segredo** | **próximo reinício** | texto |
+| `MEGA_PASSWORD` | Armazenamento (Mega) | **segredo** | **próximo reinício** | texto |
+| `MEGA_ROOT_FOLDER` | Armazenamento (Mega) | texto | **próximo reinício** | caminho de pasta, sem `..` |
+
+"Na hora" quer dizer: vale na próxima leitura nesta instância e, nas outras instâncias, em até 60 segundos (o cache é renovado de forma preguiçosa, só quando alguém lê depois do vencimento; não há polling, então um servidor ocioso não acorda o banco por causa disto). "Próximo reinício" quer dizer que o valor é lido uma única vez no arranque do servidor.
+
+**Segredos** (`tipo: "segredo"`) nunca saem em claro: a API devolve só `mascara` (`"********"`, sem nenhum pedaço do valor) e `valor: null`; só se pode substituir ou remover. O valor fica cifrado (AES-256-GCM, chave derivada de `JWT_SECRET`) numa tabela própria e **nunca** entra no ledger, na projeção, em resposta ou em log. Se `JWT_SECRET` mudar, os segredos gravados deixam de decifrar e a chave volta a ser lida do ambiente (aparece `origem: "ambiente"` ou `"nao_definida"`).
+
+**Auditoria.** Toda alteração e remoção é um evento no ledger (`ConfiguracaoSistemaDefinida`, `ConfiguracaoSistemaRemovida`) com quem fez (`user_id`, `user_type: "admin"`), IP e quando. Para configurações que não são segredo o evento guarda também o valor anterior ("de X para Y"; sem segredo, só "o segredo foi trocado").
+
+#### GET /admin/sistema/configuracoes
+
+Lista as configurações aprovadas, na ordem da tabela acima, com o valor efetivo e a origem.
+
+**Proteção real**: autenticado + admin com role `adm` ou `fpp`.
+
+**Request:** sem payload
+
+**Response 200:**
+
+```json
+{
+  "data": [
+    {
+      "chave": "EMAIL_FROM",
+      "grupo": "E-mail (Brevo)",
+      "descricao": "Endereço remetente dos e-mails do sistema.",
+      "tipo": "texto",
+      "aplicacao": "imediato",
+      "observacao": "Precisa estar verificado em app.brevo.com/settings/senders, senão o Brevo recusa o envio.",
+      "exemplo": "nao-responder@exemplo.ao",
+      "segredo": false,
+      "origem": "banco",
+      "definida_no_banco": true,
+      "valor": "nao-responder@exemplo.ao",
+      "atualizado_em": "2026-11-19T10:00:00Z",
+      "atualizado_por_id": "uuid",
+      "atualizado_por_nome": "string"
+    },
+    {
+      "chave": "BREVO_API_KEY",
+      "grupo": "E-mail (Brevo)",
+      "descricao": "Chave da API do Brevo usada para enviar e-mails.",
+      "tipo": "segredo",
+      "aplicacao": "imediato",
+      "segredo": true,
+      "origem": "ambiente",
+      "definida_no_banco": false,
+      "valor": null,
+      "mascara": "********"
+    },
+    {
+      "chave": "JWT_EXPIRY_HOURS",
+      "grupo": "Segurança",
+      "tipo": "numero",
+      "aplicacao": "imediato",
+      "inteiro": true,
+      "min": 1,
+      "max": 720,
+      "segredo": false,
+      "origem": "nao_definida",
+      "definida_no_banco": false,
+      "valor": null
+    }
+  ]
+}
+```
+
+- `origem`: `"banco"` (gravada pela tela), `"ambiente"` (veio da variável de ambiente) ou `"nao_definida"` (não há valor em lugar nenhum; vale o padrão do código).
+- `valor`: valor efetivo; `null` para segredo e para `nao_definida`.
+- `mascara`: só em segredo que tem valor efetivo (do banco ou do ambiente).
+- `aplicacao`: `"imediato"` ou `"reinicio"`.
+- `opcoes`, `inteiro`, `min`, `max`, `exemplo`, `observacao` descrevem o que a tela deve validar e mostrar; só aparecem quando se aplicam.
+- `atualizado_em`, `atualizado_por_id`, `atualizado_por_nome` só aparecem se a chave já foi alterada alguma vez.
+
+**Erros:**
+
+- `401` / `403` — sem token válido ou sem role `adm`/`fpp`
+- `500` — falha ao consultar o banco
+
+#### PUT /admin/sistema/configuracoes/:chave
+
+Grava o valor de uma configuração aprovada. O valor é validado pela regra da tabela e gravado já normalizado (sem espaços nas pontas, booleano como `true`/`false`, origens sem barra final, UUID em minúsculas).
+
+**Proteção real**: autenticado + admin com role `fpp`.
+
+**Request:**
+
+```json
+{ "valor": "nao-responder@exemplo.ao" }
+```
+
+Para segredo, `valor` substitui o atual. Valor vazio não é aceito: para voltar ao ambiente use `DELETE`.
+
+**Response 200:**
+
+```json
+{
+  "message": "configuração salva",
+  "data": { "chave": "EMAIL_FROM", "origem": "banco", "definida_no_banco": true, "valor": "nao-responder@exemplo.ao", "...": "mesmos campos do GET" }
+}
+```
+
+Para configuração que só vale no próximo reinício, `message` termina com `"; vale a partir do próximo reinício do servidor"`. Para segredo, `data.valor` é `null` e vem só `mascara`.
+
+**Erros:**
+
+- `400` — valor vazio, fora da regra da chave ou corpo inválido (a mensagem diz qual regra falhou e nunca repete o valor de um segredo)
+- `401` / `403` — sem token válido ou sem role `fpp`
+- `404` — chave fora da lista aprovada
+- `500` — falha ao gravar
+
+#### DELETE /admin/sistema/configuracoes/:chave
+
+Tira o valor do banco; a chave volta a ser lida da variável de ambiente (ou, sem ela, fica `nao_definida`). Para segredo, apaga também o texto cifrado.
+
+**Proteção real**: autenticado + admin com role `fpp`.
+
+**Request:** sem payload
+
+**Response 200:** `{ "message": "configuração removida do banco; volta a valer a variável de ambiente", "data": { ... } }` com a configuração já na origem nova.
+
+**Erros:**
+
+- `401` / `403` — sem token válido ou sem role `fpp`
+- `404` — chave fora da lista aprovada, ou sem valor gravado no banco para remover
+- `500` — falha ao gravar
+
 ## 17. Jobs Assíncronos
 
 ### Processos de Negócio — Sistema de Jobs Assíncronos
@@ -8632,7 +8782,7 @@ A idade vem de `financeiro_cobrancas.emitida_em` (migration 133), o momento do p
 
 | Variável | Padrão | Efeito |
 |---|---|---|
-| `RECONCILIACAO_ATIVA` | `true` | `false` ou `0` desliga o job |
+| `RECONCILIACAO_ATIVA` | `true` | `false` ou `0` desliga o job. As cinco `RECONCILIACAO_*` podem ser gravadas no banco (seção 16.7) e valem no próximo reinício |
 | `RECONCILIACAO_CONCORRENCIA` | `3` | consultas simultâneas por provedor |
 | `RECONCILIACAO_CHAMADAS_POR_SEGUNDO` | `2` | taxa máxima por provedor |
 | `RECONCILIACAO_CACHE_CREDENCIAIS_SEG` | `21600` | TTL do cache de credenciais |
@@ -8651,7 +8801,7 @@ O backend usa a interface `storage.StorageProvider` para isolar handlers, domín
 Configuração de produção:
 
 - `STORAGE_PROVIDER=mega`: seleciona o adapter Mega; quando a variável não é definida, o padrão também é `mega`.
-- `MEGA_EMAIL`: e-mail da conta Mega, fornecido por segredo/variável de ambiente.
+- `MEGA_EMAIL`: e-mail da conta Mega, fornecido por segredo/variável de ambiente ou gravado (como segredo, mascarado) pela seção 16.7; vale no próximo reinício.
 - `MEGA_PASSWORD`: senha da conta Mega, fornecida por segredo/variável de ambiente e sanitizada em erros.
 - `MEGA_ROOT_FOLDER`: pasta raiz lógica no Mega usada pelo Spuri (ex.: `spuri`).
 
@@ -8898,7 +9048,7 @@ Envia uma mensagem de teste através do endpoint `POST /messages` da Ziett, com 
 
 **Proteção**: `Authorization: Bearer <token>` de admin FPP. Requisições sem token retornam `401`; tokens autenticados sem nível FPP retornam `403`.
 
-**Variável obrigatória**: `ZIETT_API_KEY`. Se ausente ou vazia, a API retorna `503 Service Unavailable` sem contactar a Ziett.
+**Configuração obrigatória**: `ZIETT_API_KEY` (gravada no banco como segredo pela seção 16.7 ou lida do ambiente). Se ausente ou vazia, a API retorna `503 Service Unavailable` sem contactar a Ziett.
 
 **Request JSON:**
 

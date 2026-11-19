@@ -2,7 +2,7 @@ package services
 
 // Cliente HTTP para a API da Ziett (docs/Parceiros e integrações/Ziett API
 // - Documentação.md, seção 5 — POST /messages), usado pelo módulo real de
-// comunicação (internal/handlers/comunicacao_handlers.go). Isolado dos
+// comunicação (internal/handlers/comunicacao/comunicacao_handlers.go). Isolado dos
 // outros domínios (não importa internal/db, internal/domain/aggregates nem
 // internal/finance) — recebe sempre o token de API já decifrado pelo
 // chamador, nunca lê variáveis de ambiente diretamente.

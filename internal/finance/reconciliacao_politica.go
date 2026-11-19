@@ -1,7 +1,7 @@
 package finance
 
 import (
-	"os"
+	"spuri/internal/sysconfig"
 	"strconv"
 	"strings"
 	"time"
@@ -206,19 +206,19 @@ func ConfigReconciliacaoPadrao() ConfigReconciliacao {
 //	RECONCILIACAO_RESYNC_MIN             (padrão 1440 = diário; 0 = só no arranque)
 func ConfigReconciliacaoDoAmbiente() ConfigReconciliacao {
 	cfg := ConfigReconciliacaoPadrao()
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("RECONCILIACAO_ATIVA"))); v == "false" || v == "0" || v == "no" || v == "nao" {
+	if v := strings.ToLower(strings.TrimSpace(sysconfig.String("RECONCILIACAO_ATIVA"))); v == "false" || v == "0" || v == "no" || v == "nao" {
 		cfg.Ativa = false
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RECONCILIACAO_CONCORRENCIA"))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(sysconfig.String("RECONCILIACAO_CONCORRENCIA"))); err == nil && n > 0 {
 		cfg.Concorrencia = n
 	}
-	if f, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("RECONCILIACAO_CHAMADAS_POR_SEGUNDO")), 64); err == nil && f > 0 {
+	if f, err := strconv.ParseFloat(strings.TrimSpace(sysconfig.String("RECONCILIACAO_CHAMADAS_POR_SEGUNDO")), 64); err == nil && f > 0 {
 		cfg.ChamadasPorSegundo = f
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RECONCILIACAO_CACHE_CREDENCIAIS_SEG"))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(sysconfig.String("RECONCILIACAO_CACHE_CREDENCIAIS_SEG"))); err == nil && n > 0 {
 		cfg.TTLCredenciais = time.Duration(n) * time.Second
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RECONCILIACAO_RESYNC_MIN"))); err == nil && n >= 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(sysconfig.String("RECONCILIACAO_RESYNC_MIN"))); err == nil && n >= 0 {
 		cfg.Resync = time.Duration(n) * time.Minute
 	}
 	return cfg

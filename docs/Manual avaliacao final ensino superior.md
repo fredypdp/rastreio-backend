@@ -115,9 +115,10 @@ Cada evento grava um *snapshot* completo (fórmula usada, regra usada, resultado
 | Peça | Ficheiro |
 |---|---|
 | Comando/evento `RegistrarAvaliacaoFinal` no agregado `Estudante` | `internal/domain/aggregates/estudante_avaliacao.go` |
-| Motor de disparo automático e cálculo por matéria | `internal/handlers/avaliacao_final_handler.go` |
-| CRUD de regras + parser/validador de fórmula | `internal/handlers/avaliacao_final_regras.go` |
-| CRUD de categorias de nota | `internal/handlers/notas_handlers.go` |
+| Motor de disparo automático e cálculo por matéria | `internal/handlers/apoio/avaliacoes.go` (compartilhado por notas, faltas e avaliações) |
+| CRUD de regras | `internal/handlers/avaliacoes/avaliacao_final_regras.go` |
+| Parser/validador e avaliador de fórmula | `internal/handlers/apoio/avaliacoes.go` |
+| CRUD de categorias de nota | `internal/handlers/notas/notas_handlers.go` |
 | Agregado `MateriaDisciplinar` (`pendencia_permitida`, `pendencia_nivel_conclusao`) | `internal/domain/aggregates/materia_disciplinar.go` |
 | Agregado `Curso` (períodos/semestres do superior) | `internal/domain/aggregates/curso.go` |
 | Projecção de leitura + criação de `projection_materias_pendentes` | `internal/projections/avaliacao_final_projection.go` |
@@ -180,7 +181,7 @@ POST /academia/materia
 }
 ```
 
-Campos e onde são validados (`internal/handlers/materia_disciplinar_handlers.go`):
+Campos e onde são validados (`internal/handlers/materias/materia_disciplinar_handlers.go` e `internal/handlers/apoio/materias.go`):
 
 | Campo | Obrigatório para superior | Regra de negócio |
 |---|---|---|

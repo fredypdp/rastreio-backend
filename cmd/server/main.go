@@ -18,11 +18,29 @@ import (
 	"spuri/internal/db"
 	"spuri/internal/finance"
 	"spuri/internal/handlers"
+	"spuri/internal/handlers/academias"
+	"spuri/internal/handlers/administradores"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/autenticacao"
+	"spuri/internal/handlers/avaliacoes"
+	"spuri/internal/handlers/comunicacao"
+	"spuri/internal/handlers/cursos"
+	"spuri/internal/handlers/documentos"
+	"spuri/internal/handlers/estudantes"
+	"spuri/internal/handlers/faltas"
+	"spuri/internal/handlers/lotes"
+	"spuri/internal/handlers/materias"
+	"spuri/internal/handlers/notas"
+	"spuri/internal/handlers/registros"
+	"spuri/internal/handlers/servicosextras"
+	"spuri/internal/handlers/sumarios"
+	"spuri/internal/handlers/turmas"
 	"spuri/internal/jobs"
 	"spuri/internal/middleware"
 	"spuri/internal/projections"
 	"spuri/internal/services"
 	"spuri/internal/storage"
+	"spuri/internal/sysconfig"
 	"spuri/internal/utils"
 )
 
@@ -90,9 +108,6 @@ func initDB() error {
 	if err := finance.ValidateEncryptionConfig(); err != nil {
 		return fmt.Errorf("configuração de criptografia financeira inválida: %w", err)
 	}
-	if err := finance.ValidarConfiguracaoProvedores(); err != nil {
-		return fmt.Errorf("configuração de provedor de pagamento inválida: %w", err)
-	}
 	if err := services.ValidateComunicacaoEncryptionConfig(); err != nil {
 		return fmt.Errorf("configuração de criptografia de comunicação inválida: %w", err)
 	}
@@ -103,12 +118,21 @@ func initDB() error {
 		return err
 	}
 	repository = db.NewAggregateRepository(dbClient)
-	handlers.FinanceiroService = finance.NewService(dbClient)
+	apoio.FinanceiroService = finance.NewService(dbClient)
 	if err := dbClient.Health(); err != nil {
 		return err
 	}
 	if err := dbClient.RunMigrations(); err != nil {
 		return fmt.Errorf("erro ao rodar migrations: %w", err)
+	}
+
+	// Configurações editáveis pela tela de administração (Parte 3): daqui em
+	// diante sysconfig.String lê o banco e, se não houver, a variável de ambiente.
+	// Tem de vir depois das migrations (a tabela nasce na 139) e antes de tudo
+	// que lê configuração: a validação dos provedores abaixo, o storage e os jobs.
+	sysconfig.Iniciar(sysconfig.NovoResolver(sysconfig.FonteSQL{DB: dbClient.DB().DB}, sysconfig.TTLPadrao))
+	if err := finance.ValidarConfiguracaoProvedores(); err != nil {
+		return fmt.Errorf("configuração de provedor de pagamento inválida: %w", err)
 	}
 	log.Println("[INFO] Banco de dados inicializado com Event Sourcing")
 	return nil
@@ -132,7 +156,7 @@ func initStorage() error {
 func logStorageProviderStartup(provider storage.StorageProvider) {
 	name := provider.ProviderName()
 	if name != "mega-local" {
-		rootFolder := strings.Trim(strings.TrimSpace(os.Getenv("MEGA_ROOT_FOLDER")), "/")
+		rootFolder := strings.Trim(strings.TrimSpace(sysconfig.String("MEGA_ROOT_FOLDER")), "/")
 		log.Printf("[INFO] armazenamento de arquivos: Mega remoto ativo (provider=%q, root_folder=%q)", name, rootFolder)
 		return
 	}
@@ -175,6 +199,7 @@ func initProjections() error {
 	projManager.RegisterProjection("notas", projections.NewNotasProjection(dbClient))
 	projManager.RegisterProjection("faltas", projections.NewFaltasProjection(dbClient))
 	projManager.RegisterProjection("faltas_configuracao", projections.NewFaltasConfiguracaoProjection(dbClient))
+	projManager.RegisterProjection("configuracao_sistema", projections.NewConfiguracaoSistemaProjection(dbClient))
 
 	// ── Tier 4 — avaliação final ──────────────────────────────────────────
 	projManager.RegisterProjection("avaliacao_final", projections.NewAvaliacaoFinalProjection(dbClient))
@@ -209,35 +234,35 @@ func initJobs(ctx context.Context) {
 	jobWorker = jobs.NewWorker(jobStore, jobNotifier, setupCtx, 4)
 
 	// ── Handlers de job por tipo ──────────────────────────────────────────
-	jobWorker.RegisterHandler(jobs.JobTypeRegisterAcademiaBatch, handlers.RegisterAcademia)
-	jobWorker.RegisterHandler(jobs.JobTypeAtivarAcademiaBatch, handlers.AtivarAcademiaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeDesativarAcademiaBatch, handlers.DesativarAcademiaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeRegisterEstudanteBatch, handlers.RegisterEstudantePorAcademiaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeRegistrarNotaBatch, handlers.RegistrarNota)
-	jobWorker.RegisterHandler(jobs.JobTypeRegistrarFaltasBatch, handlers.RegistrarFaltas)
-	jobWorker.RegisterHandler(jobs.JobTypeCriarCursoBatch, handlers.CriarCurso)
-	jobWorker.RegisterHandler(jobs.JobTypeCriarMateriaBatch, handlers.CriarMateria)
-	jobWorker.RegisterHandler(jobs.JobTypeCriarTurmaBatch, handlers.CriarTurma)
-	jobWorker.RegisterHandler(jobs.JobTypeAdicionarEstudanteBatch, handlers.AdicionarEstudanteATurmaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeAtualizarDadosAcademiaBatch, handlers.AtualizarDadosAcademiaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeCriarCategoriaNotaBatch, handlers.CriarCategoriaNotaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeDeletarCategoriaNotaBatch, handlers.DeletarCategoriaNotaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeAtivarCursoBatch, handlers.AtivarCursoJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeDesativarCursoBatch, handlers.DesativarCursoJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeAtualizarDadosCursoBatch, handlers.AtualizarDadosCursoJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeDeletarCursoBatch, handlers.DeletarCursoJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeAtivarMateriaBatch, handlers.AtivarMateriaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeDesativarMateriaBatch, handlers.DesativarMateriaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeAtualizarDadosMateriaBatch, handlers.AtualizarDadosMateriaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeDeletarMateriaBatch, handlers.DeletarMateriaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeAtivarTurmaBatch, handlers.AtivarTurmaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeDesativarTurmaBatch, handlers.DesativarTurmaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeAtualizarDadosTurmaBatch, handlers.AtualizarDadosTurmaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeDeletarTurmaBatch, handlers.DeletarTurmaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeRemoverEstudanteTurmaBatch, handlers.RemoverEstudanteTurmaJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeAtivarAdminBatch, handlers.AtivarAdminJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeDesativarAdminBatch, handlers.DesativarAdminJobItem)
-	jobWorker.RegisterHandler(jobs.JobTypeRebuildProjection, handlers.RebuildProjectionJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeRegisterAcademiaBatch, academias.RegisterAcademia)
+	jobWorker.RegisterHandler(jobs.JobTypeAtivarAcademiaBatch, academias.AtivarAcademiaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeDesativarAcademiaBatch, academias.DesativarAcademiaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeRegisterEstudanteBatch, estudantes.RegisterEstudantePorAcademiaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeRegistrarNotaBatch, notas.RegistrarNota)
+	jobWorker.RegisterHandler(jobs.JobTypeRegistrarFaltasBatch, faltas.RegistrarFaltas)
+	jobWorker.RegisterHandler(jobs.JobTypeCriarCursoBatch, cursos.CriarCurso)
+	jobWorker.RegisterHandler(jobs.JobTypeCriarMateriaBatch, materias.CriarMateria)
+	jobWorker.RegisterHandler(jobs.JobTypeCriarTurmaBatch, turmas.CriarTurma)
+	jobWorker.RegisterHandler(jobs.JobTypeAdicionarEstudanteBatch, turmas.AdicionarEstudanteATurmaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeAtualizarDadosAcademiaBatch, academias.AtualizarDadosAcademiaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeCriarCategoriaNotaBatch, notas.CriarCategoriaNotaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeDeletarCategoriaNotaBatch, notas.DeletarCategoriaNotaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeAtivarCursoBatch, cursos.AtivarCursoJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeDesativarCursoBatch, cursos.DesativarCursoJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeAtualizarDadosCursoBatch, cursos.AtualizarDadosCursoJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeDeletarCursoBatch, cursos.DeletarCursoJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeAtivarMateriaBatch, materias.AtivarMateriaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeDesativarMateriaBatch, materias.DesativarMateriaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeAtualizarDadosMateriaBatch, materias.AtualizarDadosMateriaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeDeletarMateriaBatch, materias.DeletarMateriaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeAtivarTurmaBatch, turmas.AtivarTurmaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeDesativarTurmaBatch, turmas.DesativarTurmaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeAtualizarDadosTurmaBatch, turmas.AtualizarDadosTurmaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeDeletarTurmaBatch, turmas.DeletarTurmaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeRemoverEstudanteTurmaBatch, turmas.RemoverEstudanteTurmaJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeAtivarAdminBatch, administradores.AtivarAdminJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeDesativarAdminBatch, administradores.DesativarAdminJobItem)
+	jobWorker.RegisterHandler(jobs.JobTypeRebuildProjection, administradores.RebuildProjectionJobItem)
 
 	jobWorker.Start(ctx)
 	log.Println("[INFO] Job worker iniciado com 4 goroutines")
@@ -247,13 +272,13 @@ func initJobs(ctx context.Context) {
 // provedor (rede de segurança dos webhooks). Uma falha aqui não impede a API de
 // subir: o webhook e a consulta manual continuam funcionando.
 func initReconciliacao(ctx context.Context) {
-	handlers.FinanceiroService.SetEfeitosPagamento(handlers.NovosEfeitosPagamento(dbClient, repository))
+	apoio.FinanceiroService.SetEfeitosPagamento(handlers.NovosEfeitosPagamento(dbClient, repository))
 	cfg := finance.ConfigReconciliacaoDoAmbiente()
 	if !cfg.Ativa {
 		log.Println("[INFO] Reconciliação de cobranças desativada (RECONCILIACAO_ATIVA=false)")
 		return
 	}
-	if err := handlers.FinanceiroService.IniciarReconciliacao(ctx, cfg); err != nil {
+	if err := apoio.FinanceiroService.IniciarReconciliacao(ctx, cfg); err != nil {
 		log.Printf("[ERROR] Reconciliação de cobranças não iniciou: %v", err)
 		return
 	}
@@ -304,23 +329,23 @@ func setupRouter() *gin.Engine {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
-	router.POST("/login", handlers.Login)
+	router.POST("/login", autenticacao.Login)
 	// Segunda etapa do login com verificação em duas etapas (tarefa 122). Públicas:
 	// o desafio_id devolvido por POST /login é a prova de que a senha estava correta.
-	router.POST("/login/dois-fatores/verificar", handlers.VerificarLoginDoisFatores)
-	router.POST("/login/dois-fatores/reenviar", handlers.ReenviarLoginDoisFatores)
-	router.POST("/bootstrap", handlers.BootstrapAdminFPP)
+	router.POST("/login/dois-fatores/verificar", autenticacao.VerificarLoginDoisFatores)
+	router.POST("/login/dois-fatores/reenviar", autenticacao.ReenviarLoginDoisFatores)
+	router.POST("/bootstrap", administradores.BootstrapAdminFPP)
 	// SEC-08 (Tarefa 127): cada cadastro público dispara um e-mail aos admins; o
 	// limite por IP (rajada de 10, reposição de 1 a cada 3 min) trava o envio em
 	// massa sem afetar o uso normal (cadastros de academias são raros).
-	router.POST("/academia/cadastro", middleware.RateLimitMiddleware(middleware.NewRateLimiter(rate.Every(3*time.Minute), 10, time.Hour)), handlers.RegisterAcademiaPublica)
+	router.POST("/academia/cadastro", middleware.RateLimitMiddleware(middleware.NewRateLimiter(rate.Every(3*time.Minute), 10, time.Hour)), academias.RegisterAcademiaPublica)
 	// Webhooks são públicos por necessidade do gateway, mas autenticados pelo
 	// próprio módulo antes de qualquer evento ser aceite.
 	// As rotas de cada provedor vêm do próprio provedor (RotasWebhook), no
 	// formato /webhooks/<slug>/<caminho>. Para a AppyPay continuam exatamente
 	// as URLs já configuradas no painel deles (/webhooks/appypay/gpo e /ref).
-	for _, p := range handlers.FinanceiroService.Provedores() {
-		for _, rota := range handlers.FinanceiroService.RotasWebhookDoProvedor(p.ID) {
+	for _, p := range apoio.FinanceiroService.Provedores() {
+		for _, rota := range apoio.FinanceiroService.RotasWebhookDoProvedor(p.ID) {
 			router.POST("/webhooks/"+p.Slug+"/"+rota.Caminho, handlers.ReceberWebhook(p.ID, rota.Metodo))
 		}
 	}
@@ -332,23 +357,23 @@ func setupRouter() *gin.Engine {
 	// estava fora do grupo autenticado e falhava sempre no handler).
 	emailGroup := router.Group("/email")
 	{
-		emailGroup.POST("/verificar-email/:token", handlers.VerificarEmail)
-		emailGroup.POST("/recuperar-senha/solicitar", handlers.SolicitarRecuperacaoSenha)
-		emailGroup.POST("/recuperar-senha/:token", handlers.ResetarSenha)
+		emailGroup.POST("/verificar-email/:token", autenticacao.VerificarEmail)
+		emailGroup.POST("/recuperar-senha/solicitar", autenticacao.SolicitarRecuperacaoSenha)
+		emailGroup.POST("/recuperar-senha/:token", autenticacao.ResetarSenha)
 
 		emailAuthGroup := emailGroup.Group("/")
 		emailAuthGroup.Use(middleware.AuthMiddleware())
 		{
-			emailAuthGroup.POST("/verificar-email/solicitar", handlers.SolicitarVerificacaoEmail)
+			emailAuthGroup.POST("/verificar-email/solicitar", autenticacao.SolicitarVerificacaoEmail)
 		}
 	}
 
 	// ── Rotas públicas com autenticação opcional ─────────────────────────
-	router.GET("/academias", middleware.OptionalAuthMiddleware(), handlers.ListarTodasAcademias)
-	router.GET("/academia/cursos", middleware.OptionalAuthMiddleware(), handlers.ListarCursos)
-	router.GET("/academia/servico/:codigo_academia/servicos-extras", middleware.OptionalAuthMiddleware(), handlers.ListarServicosExtrasPublico)
-	router.GET("/academia/curso/:id", middleware.OptionalAuthMiddleware(), handlers.GetCurso)
-	router.GET("/consultar-academia/:codigo", middleware.OptionalAuthMiddleware(), handlers.GetAcademiaPorCodigo)
+	router.GET("/academias", middleware.OptionalAuthMiddleware(), academias.ListarTodasAcademias)
+	router.GET("/academia/cursos", middleware.OptionalAuthMiddleware(), cursos.ListarCursos)
+	router.GET("/academia/servico/:codigo_academia/servicos-extras", middleware.OptionalAuthMiddleware(), apoio.ListarServicosExtrasPublico)
+	router.GET("/academia/curso/:id", middleware.OptionalAuthMiddleware(), cursos.GetCurso)
+	router.GET("/consultar-academia/:codigo", middleware.OptionalAuthMiddleware(), academias.GetAcademiaPorCodigo)
 
 	// ── Rotas de jobs assíncronos (qualquer usuário autenticado) ──────────
 	// SEC-12: academia inativa não pode acessar jobs (envio de SMS, etc.)
@@ -356,11 +381,11 @@ func setupRouter() *gin.Engine {
 	jobRoutes.Use(middleware.AuthMiddleware())
 	jobRoutes.Use(middleware.ValidarStatusAcademia())
 	{
-		jobRoutes.GET("", handlers.ListJobs)
-		jobRoutes.GET("/stream", handlers.StreamJobs)
-		jobRoutes.DELETE("/:id/sse", handlers.HideJobFromSSE)
-		jobRoutes.POST("/:id/retry-failed", handlers.RetryFailedJob)
-		jobRoutes.GET("/:id", handlers.GetJob)
+		jobRoutes.GET("", lotes.ListJobs)
+		jobRoutes.GET("/stream", lotes.StreamJobs)
+		jobRoutes.DELETE("/:id/sse", lotes.HideJobFromSSE)
+		jobRoutes.POST("/:id/retry-failed", lotes.RetryFailedJob)
+		jobRoutes.GET("/:id", lotes.GetJob)
 	}
 
 	// ── Rota isolada de integração Ziett (teste de SMS) ──────────────────
@@ -368,7 +393,7 @@ func setupRouter() *gin.Engine {
 	integracoes.Use(middleware.AuthMiddleware())
 	integracoes.Use(middleware.RequireFPP())
 	{
-		integracoes.POST("/ziett/mensagens/teste", handlers.EnviarMensagemTesteZiettSMS)
+		integracoes.POST("/ziett/mensagens/teste", comunicacao.EnviarMensagemTesteZiettSMS)
 	}
 
 	// ── Módulo de comunicação (base): enviar/listar mensagens ────────────
@@ -381,8 +406,8 @@ func setupRouter() *gin.Engine {
 	comunicacaoMensagens.Use(middleware.RequireAcademiaOuAdmin())
 	comunicacaoMensagens.Use(middleware.ValidarStatusAcademia())
 	{
-		comunicacaoMensagens.POST("/mensagens", handlers.EnviarMensagemComunicacao)
-		comunicacaoMensagens.GET("/mensagens", handlers.ListarMensagensComunicacao)
+		comunicacaoMensagens.POST("/mensagens", comunicacao.EnviarMensagemComunicacao)
+		comunicacaoMensagens.GET("/mensagens", comunicacao.ListarMensagensComunicacao)
 	}
 
 	// ── Módulo de comunicação (base): remetentes (apenas administradores) ─
@@ -392,8 +417,8 @@ func setupRouter() *gin.Engine {
 	comunicacaoAdmin.Use(middleware.AuthMiddleware())
 	comunicacaoAdmin.Use(middleware.RequireAdmin())
 	{
-		comunicacaoAdmin.POST("/remetentes", handlers.CriarRemetenteComunicacao)
-		comunicacaoAdmin.GET("/remetentes", handlers.ListarRemetentesComunicacao)
+		comunicacaoAdmin.POST("/remetentes", comunicacao.CriarRemetenteComunicacao)
+		comunicacaoAdmin.GET("/remetentes", comunicacao.ListarRemetentesComunicacao)
 	}
 
 	// ── Módulo de comunicação (base): provedor padrão (apenas FPP) ───────
@@ -401,8 +426,8 @@ func setupRouter() *gin.Engine {
 	adminComunicacao.Use(middleware.AuthMiddleware())
 	adminComunicacao.Use(middleware.RequireAdmin())
 	{
-		adminComunicacao.GET("/provedor-padrao", handlers.ConsultarProvedorPadraoComunicacao)
-		adminComunicacao.PUT("/provedor-padrao", handlers.DefinirProvedorPadraoComunicacao)
+		adminComunicacao.GET("/provedor-padrao", comunicacao.ConsultarProvedorPadraoComunicacao)
+		adminComunicacao.PUT("/provedor-padrao", comunicacao.DefinirProvedorPadraoComunicacao)
 	}
 
 	// ── Rotas de conta (qualquer tipo, sem gate de estado da academia) ──────
@@ -410,17 +435,17 @@ func setupRouter() *gin.Engine {
 	conta := router.Group("/")
 	conta.Use(middleware.AuthMiddleware())
 	{
-		conta.POST("/logout", handlers.Logout)
-		conta.PUT("/alterar-senha", handlers.AlterarSenha)
-		conta.GET("/meu-perfil", handlers.GetMeuPerfil)
-		conta.PUT("/me/email", handlers.AtualizarMeuEmail)
-		conta.PUT("/me/telefone", handlers.AtualizarMeuTelefone)
+		conta.POST("/logout", autenticacao.Logout)
+		conta.PUT("/alterar-senha", autenticacao.AlterarSenha)
+		conta.GET("/meu-perfil", autenticacao.GetMeuPerfil)
+		conta.PUT("/me/email", autenticacao.AtualizarMeuEmail)
+		conta.PUT("/me/telefone", autenticacao.AtualizarMeuTelefone)
 		// Verificação em duas etapas por e-mail (tarefa 122)
-		conta.GET("/dois-fatores", handlers.ObterDoisFatores)
-		conta.POST("/dois-fatores/ativacao/solicitar", handlers.SolicitarAtivacaoDoisFatores)
-		conta.POST("/dois-fatores/ativacao/confirmar", handlers.ConfirmarAtivacaoDoisFatores)
-		conta.POST("/dois-fatores/desativacao/solicitar", handlers.SolicitarDesativacaoDoisFatores)
-		conta.POST("/dois-fatores/desativacao/confirmar", handlers.ConfirmarDesativacaoDoisFatores)
+		conta.GET("/dois-fatores", autenticacao.ObterDoisFatores)
+		conta.POST("/dois-fatores/ativacao/solicitar", autenticacao.SolicitarAtivacaoDoisFatores)
+		conta.POST("/dois-fatores/ativacao/confirmar", autenticacao.ConfirmarAtivacaoDoisFatores)
+		conta.POST("/dois-fatores/desativacao/solicitar", autenticacao.SolicitarDesativacaoDoisFatores)
+		conta.POST("/dois-fatores/desativacao/confirmar", autenticacao.ConfirmarDesativacaoDoisFatores)
 	}
 
 	// ── Rotas autenticadas restantes (bloqueadas para academia inativa) ───
@@ -429,34 +454,34 @@ func setupRouter() *gin.Engine {
 	protected.Use(middleware.AuthMiddleware())
 	protected.Use(middleware.ValidarStatusAcademia())
 	{
-		protected.GET("/eventos-estudante/:codigo", handlers.GetEventosEstudante)
-		protected.GET("/eventos/:event_id", handlers.GetEventoAuditoria)
-		protected.GET("/verificar-integridade/:codigo", handlers.VerificarIntegridade)
-		protected.GET("/consultar-estudante/:codigo", handlers.GetEstudantePorCodigo)
-		protected.GET("/estudantes", middleware.RequireAcademiaOuAdmin(), handlers.ListarEstudantes)
+		protected.GET("/eventos-estudante/:codigo", estudantes.GetEventosEstudante)
+		protected.GET("/eventos/:event_id", estudantes.GetEventoAuditoria)
+		protected.GET("/verificar-integridade/:codigo", estudantes.VerificarIntegridade)
+		protected.GET("/consultar-estudante/:codigo", estudantes.GetEstudantePorCodigo)
+		protected.GET("/estudantes", middleware.RequireAcademiaOuAdmin(), estudantes.ListarEstudantes)
 		// Tarefa 123 (SEC-04): reenvio de credenciais temporárias (academia dona ou admin fpp).
-		protected.POST("/estudantes/:codigo/credenciais/reenviar", middleware.RequireAcademiaOuAdmin(), handlers.ReenviarCredenciaisEstudante)
-		protected.GET("/avaliacoes", handlers.ListarAvaliacoes)
-		protected.GET("/aprovacoes", handlers.ListarAprovacoes)
-		protected.GET("/reprovacoes", handlers.ListarReprovacoes)
-		protected.GET("/notas", handlers.ListarNotas)
-		protected.GET("/faltas", handlers.ListarFaltas)
-		protected.GET("/notas-estudante/:codigo", handlers.GetNotasEstudante)
-		protected.GET("/faltas-estudante/:codigo", handlers.GetFaltasEstudante)
-		protected.GET("/ano-letivo", handlers.GetAnoLetivoGlobalSistemaAtual)
-		protected.GET("/anos-letivos-lista", handlers.GetAnosLetivosGlobaisLista)
-		protected.GET("/anos-letivos/configuracoes", handlers.ListarConfiguracoesAnosLetivos)
-		protected.GET("/documentos/academias/:codigo/:campo/download", handlers.DownloadDocumentoAcademia)
-		protected.POST("/documentos/academias/:codigo/:campo/upload", handlers.UploadDocumentoAcademia)
-		protected.GET("/documentos/estudantes/:codigo/:campo/download", handlers.DownloadDocumentoEstudante)
-		protected.GET("/avaliacoes-estudante/:codigo", middleware.RequireAcademiaOuAdmin(), handlers.GetAvaliacoesFinaisEstudante)
-		protected.GET("/turmas-estudante/:codigo", handlers.GetTurmasEstudante)
+		protected.POST("/estudantes/:codigo/credenciais/reenviar", middleware.RequireAcademiaOuAdmin(), autenticacao.ReenviarCredenciaisEstudante)
+		protected.GET("/avaliacoes", avaliacoes.ListarAvaliacoes)
+		protected.GET("/aprovacoes", avaliacoes.ListarAprovacoes)
+		protected.GET("/reprovacoes", avaliacoes.ListarReprovacoes)
+		protected.GET("/notas", registros.ListarNotas)
+		protected.GET("/faltas", registros.ListarFaltas)
+		protected.GET("/notas-estudante/:codigo", notas.GetNotasEstudante)
+		protected.GET("/faltas-estudante/:codigo", faltas.GetFaltasEstudante)
+		protected.GET("/ano-letivo", administradores.GetAnoLetivoGlobalSistemaAtual)
+		protected.GET("/anos-letivos-lista", administradores.GetAnosLetivosGlobaisLista)
+		protected.GET("/anos-letivos/configuracoes", administradores.ListarConfiguracoesAnosLetivos)
+		protected.GET("/documentos/academias/:codigo/:campo/download", documentos.DownloadDocumentoAcademia)
+		protected.POST("/documentos/academias/:codigo/:campo/upload", documentos.UploadDocumentoAcademia)
+		protected.GET("/documentos/estudantes/:codigo/:campo/download", documentos.DownloadDocumentoEstudante)
+		protected.GET("/avaliacoes-estudante/:codigo", middleware.RequireAcademiaOuAdmin(), avaliacoes.GetAvaliacoesFinaisEstudante)
+		protected.GET("/turmas-estudante/:codigo", turmas.GetTurmasEstudante)
 		// Consulta de mensalidades também é acessível ao próprio estudante; as
 		// demais ações financeiras ficam no grupo academia/admin abaixo.
 		protected.GET("/financeiro/mensalidades/estudante/:codigo", handlers.ConsultarMensalidadesEstudante)
 		protected.POST("/financeiro/mensalidades/pagamento", handlers.IniciarPagamentoMensalidades)
-		protected.POST("/financeiro/servicos-extras/taxa-inscricao/pagamento", handlers.IniciarPagamentoTaxaInscricaoServicoExtra)
-		protected.POST("/financeiro/servicos-extras/obrigacao/pagamento", handlers.IniciarPagamentoServicoExtraObrigacao)
+		protected.POST("/financeiro/servicos-extras/taxa-inscricao/pagamento", servicosextras.IniciarPagamentoTaxaInscricaoServicoExtra)
+		protected.POST("/financeiro/servicos-extras/obrigacao/pagamento", servicosextras.IniciarPagamentoServicoExtraObrigacao)
 		// Idem para o histórico de cobranças do estudante (mensalidade, matrícula
 		// e avulsas, em qualquer estado) — ver tarefa 48.
 		protected.GET("/financeiro/cobrancas/estudante/:codigo", handlers.ConsultarCobrancasEstudante)
@@ -483,8 +508,8 @@ func setupRouter() *gin.Engine {
 			financeiro.POST("/cobrancas/:id/cancelar", handlers.CancelarCobranca)
 			financeiro.POST("/cobrancas/:id/pago-externamente", handlers.RegistrarPagamentoExternoCobranca)
 			financeiro.GET("/cobrancas", handlers.ListarCobrancas)
-			financeiro.POST("/servicos-extras/obrigacao/anular", handlers.AnularObrigacaoServicoExtra)
-			financeiro.POST("/servicos-extras/obrigacao/reativar", handlers.ReativarObrigacaoServicoExtra)
+			financeiro.POST("/servicos-extras/obrigacao/anular", servicosextras.AnularObrigacaoServicoExtra)
+			financeiro.POST("/servicos-extras/obrigacao/reativar", servicosextras.ReativarObrigacaoServicoExtra)
 			financeiro.POST("/mensalidades/configuracoes", handlers.ConfigurarMensalidade)
 			financeiro.PUT("/mensalidades/configuracoes", handlers.ConfigurarMensalidade)
 			financeiro.GET("/mensalidades/configuracoes", handlers.ListarConfiguracoesMensalidade)
@@ -503,29 +528,29 @@ func setupRouter() *gin.Engine {
 	estudante.Use(middleware.AuthMiddleware())
 	estudante.Use(middleware.RequireEstudante())
 	{
-		estudante.GET("/servicos-extras/catalogo", handlers.ListarServicosExtrasCatalogoEstudante)
-		estudante.POST("/servicos-extras/:id/solicitacao", handlers.SolicitarServicoExtra)
-		estudante.GET("/servicos-extras/minhas-inscricoes", handlers.ListarMinhasInscricoesServicoExtra)
-		estudante.GET("/servicos-extras/minhas-inscricoes/:id/documento/download", handlers.DownloadDocumentoSolicitacaoServicoExtraEstudante)
-		estudante.GET("/servicos-extras/minhas-inscricoes/:id/pendencias", handlers.MinhasPendenciasServicoExtra)
-		estudante.PUT("/servicos-extras/minhas-inscricoes/:id/cancelar", handlers.CancelarSolicitacaoServicoExtraEstudante)
-		estudante.PUT("/encarregado/telefone", handlers.AtualizarTelefoneEncarregado)
-		estudante.GET("/solicitacoes-edicao", handlers.ListarSolicitacoesEdicaoEstudante)
-		estudante.GET("/solicitacoes-edicao/:codigo/documento/download", handlers.DownloadDocumentoSolicitacaoEdicaoEstudante)
-		estudante.PUT("/bilhete-identidade", handlers.AtualizarBilheteIdentidadeSemAcademia)
-		estudante.POST("/solicitacoes-edicao/nome", handlers.CriarSolicitacaoEdicaoDadoEstudanteHandler("nome"))
-		estudante.POST("/solicitacoes-edicao/bilhete-identidade", handlers.CriarSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade"))
-		estudante.POST("/solicitacoes-edicao/bilhete-identidade-encarregado", handlers.CriarSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade_encarregado"))
-		estudante.POST("/solicitacoes-edicao/data-nascimento", handlers.CriarSolicitacaoEdicaoDadoEstudanteHandler("data_nascimento"))
-		estudante.GET("/minhas-avaliacoes", handlers.GetMinhasAvaliacoes)
-		estudante.GET("/documentos", handlers.ListarMeusDocumentosEstudante)
-		estudante.GET("/documentos/:campo/download", handlers.DownloadMeuDocumentoEstudante)
-		estudante.GET("/categorias-nota", handlers.ListarCategoriasNota)
-		estudante.GET("/solicitacoes", handlers.ListarMinhasSolicitacoesStatusAcademicoHandler)
-		estudante.POST("/solicitacoes-status/interrupcao", handlers.CriarSolicitacaoStatusAcademicoHandler("interrupcao"))
-		estudante.POST("/solicitacoes-status/desvinculacao", handlers.CriarSolicitacaoStatusAcademicoHandler("desvinculacao"))
-		estudante.POST("/solicitacoes-status/revinculacao/:codigo_academia", handlers.CriarSolicitacaoStatusAcademicoHandler("revinculacao"))
-		estudante.DELETE("/conta", handlers.DeletarContaEstudante) // Tarefa 73
+		estudante.GET("/servicos-extras/catalogo", apoio.ListarServicosExtrasCatalogoEstudante)
+		estudante.POST("/servicos-extras/:id/solicitacao", servicosextras.SolicitarServicoExtra)
+		estudante.GET("/servicos-extras/minhas-inscricoes", servicosextras.ListarMinhasInscricoesServicoExtra)
+		estudante.GET("/servicos-extras/minhas-inscricoes/:id/documento/download", servicosextras.DownloadDocumentoSolicitacaoServicoExtraEstudante)
+		estudante.GET("/servicos-extras/minhas-inscricoes/:id/pendencias", servicosextras.MinhasPendenciasServicoExtra)
+		estudante.PUT("/servicos-extras/minhas-inscricoes/:id/cancelar", servicosextras.CancelarSolicitacaoServicoExtraEstudante)
+		estudante.PUT("/encarregado/telefone", estudantes.AtualizarTelefoneEncarregado)
+		estudante.GET("/solicitacoes-edicao", estudantes.ListarSolicitacoesEdicaoEstudante)
+		estudante.GET("/solicitacoes-edicao/:codigo/documento/download", documentos.DownloadDocumentoSolicitacaoEdicaoEstudante)
+		estudante.PUT("/bilhete-identidade", estudantes.AtualizarBilheteIdentidadeSemAcademia)
+		estudante.POST("/solicitacoes-edicao/nome", estudantes.CriarSolicitacaoEdicaoDadoEstudanteHandler("nome"))
+		estudante.POST("/solicitacoes-edicao/bilhete-identidade", estudantes.CriarSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade"))
+		estudante.POST("/solicitacoes-edicao/bilhete-identidade-encarregado", estudantes.CriarSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade_encarregado"))
+		estudante.POST("/solicitacoes-edicao/data-nascimento", estudantes.CriarSolicitacaoEdicaoDadoEstudanteHandler("data_nascimento"))
+		estudante.GET("/minhas-avaliacoes", estudantes.GetMinhasAvaliacoes)
+		estudante.GET("/documentos", documentos.ListarMeusDocumentosEstudante)
+		estudante.GET("/documentos/:campo/download", documentos.DownloadMeuDocumentoEstudante)
+		estudante.GET("/categorias-nota", notas.ListarCategoriasNota)
+		estudante.GET("/solicitacoes", academias.ListarMinhasSolicitacoesStatusAcademicoHandler)
+		estudante.POST("/solicitacoes-status/interrupcao", academias.CriarSolicitacaoStatusAcademicoHandler("interrupcao"))
+		estudante.POST("/solicitacoes-status/desvinculacao", academias.CriarSolicitacaoStatusAcademicoHandler("desvinculacao"))
+		estudante.POST("/solicitacoes-status/revinculacao/:codigo_academia", academias.CriarSolicitacaoStatusAcademicoHandler("revinculacao"))
+		estudante.DELETE("/conta", estudantes.DeletarContaEstudante) // Tarefa 73
 	}
 
 	// ── Rotas de leitura compartilhadas de academia ────────────────────────
@@ -533,7 +558,7 @@ func setupRouter() *gin.Engine {
 	academiaShared.Use(middleware.AuthMiddleware())
 	academiaShared.Use(middleware.ValidarStatusAcademia())
 	{
-		academiaShared.GET("/categorias-nota", handlers.ListarCategoriasNota)
+		academiaShared.GET("/categorias-nota", notas.ListarCategoriasNota)
 	}
 
 	// ── Rotas de academia ─────────────────────────────────────────────────
@@ -541,8 +566,8 @@ func setupRouter() *gin.Engine {
 	academiaAnoLetivoRead.Use(middleware.AuthMiddleware())
 	academiaAnoLetivoRead.Use(middleware.ValidarStatusAcademia())
 	{
-		academiaAnoLetivoRead.GET("/ano-letivo", handlers.GetAnoLetivoAcademia)
-		academiaAnoLetivoRead.GET("/anos-letivos-lista", handlers.GetAnosLetivosListaAcademia)
+		academiaAnoLetivoRead.GET("/ano-letivo", academias.GetAnoLetivoAcademia)
+		academiaAnoLetivoRead.GET("/anos-letivos-lista", academias.GetAnosLetivosListaAcademia)
 	}
 
 	academiaRead := router.Group("/academia")
@@ -550,31 +575,31 @@ func setupRouter() *gin.Engine {
 	academiaRead.Use(middleware.RequireAcademiaOuAdmin())
 	academiaRead.Use(middleware.ValidarStatusAcademia())
 	{
-		academiaRead.GET("/materias", handlers.ListarMaterias)
-		academiaRead.GET("/servicos-extras", handlers.ListarServicosExtrasAcademia)
-		academiaRead.GET("/categorias-servico", handlers.ListarCategoriasServico)
-		academiaRead.GET("/categorias-servico/:id", handlers.GetCategoriaServico)
-		academiaRead.GET("/documentos-extra", handlers.ListarDocumentosExtraAcademia)
-		academiaRead.GET("/servicos-extras/:id", handlers.GetServicoExtra)
-		academiaRead.GET("/servicos-extras/solicitacoes", handlers.ListarSolicitacoesServicoExtraAcademia)
-		academiaRead.GET("/servicos-extras/solicitacoes/:id/documento/download", handlers.DownloadDocumentoSolicitacaoServicoExtraAcademia)
-		academiaRead.GET("/servicos-extras/solicitacoes/:id", handlers.GetSolicitacaoServicoExtraAcademia)
-		academiaRead.GET("/servicos-extras/inscricoes/:id/pendencias", handlers.PendenciasServicoExtraAcademia)
-		academiaRead.GET("/sumarios", handlers.ListarSumarios)
-		academiaRead.GET("/sumario/:id", handlers.GetSumario)
-		academiaRead.GET("/materia/:id", handlers.GetMateria)
-		academiaRead.GET("/turmas", handlers.ListarTurmasAcademia)
-		academiaRead.GET("/turma/:codigo", handlers.GetTurma)
-		academiaRead.GET("/anos-academicos", handlers.ListarAnosAcademicos)
-		academiaRead.GET("/anos-letivos/finalizacoes", handlers.ListarFinalizacoesAnoLetivoAcademia)
-		academiaRead.GET("/avaliacao-final/regras", handlers.ListarRegrasAvaliacaoFinal)
-		academiaRead.GET("/configuracao-status", handlers.GetConfiguracaoStatusAcademia)
-		academiaRead.GET("/solicitacoes", handlers.ListarSolicitacoesStatusAcademicoHandler)
-		academiaRead.GET("/solicitacoes-edicao-estudante", handlers.ListarSolicitacoesEdicaoAcademia)
-		academiaRead.GET("/documentos", handlers.ListarDocumentosAcademia)
-		academiaRead.GET("/documentos/academia/:campo/download", handlers.DownloadDocumentoAcademiaPropria)
-		academiaRead.GET("/documentos/estudantes/:codigo/:campo/download", handlers.DownloadDocumentoEstudanteAcademia)
-		academiaRead.GET("/documentos/solicitacoes-edicao-estudante/:codigo/documento/download", handlers.DownloadDocumentoSolicitacaoEdicaoAcademia)
+		academiaRead.GET("/materias", materias.ListarMaterias)
+		academiaRead.GET("/servicos-extras", apoio.ListarServicosExtrasAcademia)
+		academiaRead.GET("/categorias-servico", servicosextras.ListarCategoriasServico)
+		academiaRead.GET("/categorias-servico/:id", servicosextras.GetCategoriaServico)
+		academiaRead.GET("/documentos-extra", documentos.ListarDocumentosExtraAcademia)
+		academiaRead.GET("/servicos-extras/:id", servicosextras.GetServicoExtra)
+		academiaRead.GET("/servicos-extras/solicitacoes", servicosextras.ListarSolicitacoesServicoExtraAcademia)
+		academiaRead.GET("/servicos-extras/solicitacoes/:id/documento/download", servicosextras.DownloadDocumentoSolicitacaoServicoExtraAcademia)
+		academiaRead.GET("/servicos-extras/solicitacoes/:id", servicosextras.GetSolicitacaoServicoExtraAcademia)
+		academiaRead.GET("/servicos-extras/inscricoes/:id/pendencias", servicosextras.PendenciasServicoExtraAcademia)
+		academiaRead.GET("/sumarios", sumarios.ListarSumarios)
+		academiaRead.GET("/sumario/:id", sumarios.GetSumario)
+		academiaRead.GET("/materia/:id", materias.GetMateria)
+		academiaRead.GET("/turmas", turmas.ListarTurmasAcademia)
+		academiaRead.GET("/turma/:codigo", turmas.GetTurma)
+		academiaRead.GET("/anos-academicos", academias.ListarAnosAcademicos)
+		academiaRead.GET("/anos-letivos/finalizacoes", academias.ListarFinalizacoesAnoLetivoAcademia)
+		academiaRead.GET("/avaliacao-final/regras", avaliacoes.ListarRegrasAvaliacaoFinal)
+		academiaRead.GET("/configuracao-status", academias.GetConfiguracaoStatusAcademia)
+		academiaRead.GET("/solicitacoes", academias.ListarSolicitacoesStatusAcademicoHandler)
+		academiaRead.GET("/solicitacoes-edicao-estudante", estudantes.ListarSolicitacoesEdicaoAcademia)
+		academiaRead.GET("/documentos", documentos.ListarDocumentosAcademia)
+		academiaRead.GET("/documentos/academia/:campo/download", documentos.DownloadDocumentoAcademiaPropria)
+		academiaRead.GET("/documentos/estudantes/:codigo/:campo/download", documentos.DownloadDocumentoEstudanteAcademia)
+		academiaRead.GET("/documentos/solicitacoes-edicao-estudante/:codigo/documento/download", documentos.DownloadDocumentoSolicitacaoEdicaoAcademia)
 	}
 
 	academia := router.Group("/academia")
@@ -582,113 +607,113 @@ func setupRouter() *gin.Engine {
 	academia.Use(middleware.RequireAcademia())
 	academia.Use(middleware.ValidarStatusAcademia())
 	{
-		academia.PUT("/dados", handlers.AtualizarDadosAcademia)
-		academia.PUT("/nivel-escolar", handlers.AtualizarNivelEscolarAcademia)
-		academia.POST("/servicos-extras", handlers.CriarServicoExtra)
-		academia.POST("/categorias-servico", handlers.CriarCategoriaServico)
-		academia.PUT("/categorias-servico/:id", handlers.AtualizarCategoriaServico)
-		academia.PUT("/categorias-servico/:id/desativar", handlers.DesativarCategoriaServico)
-		academia.PUT("/categorias-servico/:id/reativar", handlers.ReativarCategoriaServico)
-		academia.DELETE("/categorias-servico/:id", handlers.DeletarCategoriaServico)
-		academia.POST("/documentos-extra", handlers.CriarDocumentoExtra)
-		academia.PUT("/documentos-extra/:id", handlers.AtualizarDocumentoExtra)
-		academia.PUT("/documentos-extra/:id/desativar", handlers.DesativarDocumentoExtra)
-		academia.PUT("/documentos-extra/:id/reativar", handlers.ReativarDocumentoExtra)
-		academia.PUT("/servicos-extras/:id", handlers.AtualizarServicoExtra)
-		academia.PUT("/servicos-extras/:id/desativar", handlers.DesativarServicoExtra)
-		academia.PUT("/servicos-extras/:id/reativar", handlers.ReativarServicoExtra)
-		academia.DELETE("/servicos-extras/:id", handlers.DeletarServicoExtra)
-		academia.PUT("/servicos-extras/solicitacoes/:id/aprovar", handlers.AprovarSolicitacaoServicoExtra)
-		academia.PUT("/servicos-extras/solicitacoes/:id/reprovar", handlers.ReprovarSolicitacaoServicoExtra)
-		academia.PUT("/servicos-extras/inscricoes/:id/cancelar", handlers.CancelarSolicitacaoServicoExtraAcademia)
-		academia.POST("/solicitacoes-nif", handlers.CriarSolicitacaoAlteracaoNIFAcademiaHandler)
-		academia.GET("/solicitacoes-nif", handlers.ListarSolicitacoesNIFAcademia)
-		academia.POST("/definir-ano-letivo", handlers.DefinirAnoLetivoAcademia)
-		academia.POST("/anos-academicos", handlers.AdicionarAnosAcademicos)
-		academia.DELETE("/anos-academicos", handlers.RemoverAnosAcademicos)
-		academia.POST("/anos-letivos/finalizar", handlers.FinalizarAnoLetivoAcademia)
-		academia.PUT("/solicitacoes-edicao-estudante/nome/:codigo/aprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("nome", true))
-		academia.PUT("/solicitacoes-edicao-estudante/nome/:codigo/reprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("nome", false))
-		academia.PUT("/solicitacoes-edicao-estudante/bilhete-identidade/:codigo/aprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade", true))
-		academia.PUT("/solicitacoes-edicao-estudante/bilhete-identidade/:codigo/reprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade", false))
-		academia.PUT("/solicitacoes-edicao-estudante/bilhete-identidade-encarregado/:codigo/aprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade_encarregado", true))
-		academia.PUT("/solicitacoes-edicao-estudante/bilhete-identidade-encarregado/:codigo/reprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade_encarregado", false))
-		academia.PUT("/solicitacoes-edicao-estudante/data-nascimento/:codigo/aprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("data_nascimento", true))
-		academia.PUT("/solicitacoes-edicao-estudante/data-nascimento/:codigo/reprovar", handlers.DecidirSolicitacaoEdicaoDadoEstudanteHandler("data_nascimento", false))
+		academia.PUT("/dados", academias.AtualizarDadosAcademia)
+		academia.PUT("/nivel-escolar", academias.AtualizarNivelEscolarAcademia)
+		academia.POST("/servicos-extras", apoio.CriarServicoExtra)
+		academia.POST("/categorias-servico", servicosextras.CriarCategoriaServico)
+		academia.PUT("/categorias-servico/:id", servicosextras.AtualizarCategoriaServico)
+		academia.PUT("/categorias-servico/:id/desativar", servicosextras.DesativarCategoriaServico)
+		academia.PUT("/categorias-servico/:id/reativar", servicosextras.ReativarCategoriaServico)
+		academia.DELETE("/categorias-servico/:id", servicosextras.DeletarCategoriaServico)
+		academia.POST("/documentos-extra", documentos.CriarDocumentoExtra)
+		academia.PUT("/documentos-extra/:id", documentos.AtualizarDocumentoExtra)
+		academia.PUT("/documentos-extra/:id/desativar", documentos.DesativarDocumentoExtra)
+		academia.PUT("/documentos-extra/:id/reativar", documentos.ReativarDocumentoExtra)
+		academia.PUT("/servicos-extras/:id", apoio.AtualizarServicoExtra)
+		academia.PUT("/servicos-extras/:id/desativar", servicosextras.DesativarServicoExtra)
+		academia.PUT("/servicos-extras/:id/reativar", servicosextras.ReativarServicoExtra)
+		academia.DELETE("/servicos-extras/:id", servicosextras.DeletarServicoExtra)
+		academia.PUT("/servicos-extras/solicitacoes/:id/aprovar", servicosextras.AprovarSolicitacaoServicoExtra)
+		academia.PUT("/servicos-extras/solicitacoes/:id/reprovar", servicosextras.ReprovarSolicitacaoServicoExtra)
+		academia.PUT("/servicos-extras/inscricoes/:id/cancelar", servicosextras.CancelarSolicitacaoServicoExtraAcademia)
+		academia.POST("/solicitacoes-nif", academias.CriarSolicitacaoAlteracaoNIFAcademiaHandler)
+		academia.GET("/solicitacoes-nif", academias.ListarSolicitacoesNIFAcademia)
+		academia.POST("/definir-ano-letivo", academias.DefinirAnoLetivoAcademia)
+		academia.POST("/anos-academicos", academias.AdicionarAnosAcademicos)
+		academia.DELETE("/anos-academicos", academias.RemoverAnosAcademicos)
+		academia.POST("/anos-letivos/finalizar", academias.FinalizarAnoLetivoAcademia)
+		academia.PUT("/solicitacoes-edicao-estudante/nome/:codigo/aprovar", estudantes.DecidirSolicitacaoEdicaoDadoEstudanteHandler("nome", true))
+		academia.PUT("/solicitacoes-edicao-estudante/nome/:codigo/reprovar", estudantes.DecidirSolicitacaoEdicaoDadoEstudanteHandler("nome", false))
+		academia.PUT("/solicitacoes-edicao-estudante/bilhete-identidade/:codigo/aprovar", estudantes.DecidirSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade", true))
+		academia.PUT("/solicitacoes-edicao-estudante/bilhete-identidade/:codigo/reprovar", estudantes.DecidirSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade", false))
+		academia.PUT("/solicitacoes-edicao-estudante/bilhete-identidade-encarregado/:codigo/aprovar", estudantes.DecidirSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade_encarregado", true))
+		academia.PUT("/solicitacoes-edicao-estudante/bilhete-identidade-encarregado/:codigo/reprovar", estudantes.DecidirSolicitacaoEdicaoDadoEstudanteHandler("bilhete_identidade_encarregado", false))
+		academia.PUT("/solicitacoes-edicao-estudante/data-nascimento/:codigo/aprovar", estudantes.DecidirSolicitacaoEdicaoDadoEstudanteHandler("data_nascimento", true))
+		academia.PUT("/solicitacoes-edicao-estudante/data-nascimento/:codigo/reprovar", estudantes.DecidirSolicitacaoEdicaoDadoEstudanteHandler("data_nascimento", false))
 
-		academia.POST("/estudante/register", handlers.RegisterEstudantePorAcademia)
-		academia.POST("/estudante/:codigo/documentos", handlers.CompletarDocumentosEstudantePendente)
-		academia.POST("/notas-aluno", handlers.RegistrarNota)
-		academia.POST("/faltas-aluno", handlers.RegistrarFaltas)
-		academia.GET("/faltas/configuracao", handlers.GetConfiguracaoFaltas)
-		academia.PUT("/faltas/configuracao", handlers.DefinirConfiguracaoFaltas)
-		academia.PATCH("/notas-aluno/:id", handlers.CorrigirNota)
-		academia.PATCH("/faltas-aluno/:id", handlers.CorrigirFalta)
+		academia.POST("/estudante/register", estudantes.RegisterEstudantePorAcademia)
+		academia.POST("/estudante/:codigo/documentos", estudantes.CompletarDocumentosEstudantePendente)
+		academia.POST("/notas-aluno", notas.RegistrarNota)
+		academia.POST("/faltas-aluno", faltas.RegistrarFaltas)
+		academia.GET("/faltas/configuracao", faltas.GetConfiguracaoFaltas)
+		academia.PUT("/faltas/configuracao", faltas.DefinirConfiguracaoFaltas)
+		academia.PATCH("/notas-aluno/:id", notas.CorrigirNota)
+		academia.PATCH("/faltas-aluno/:id", faltas.CorrigirFalta)
 		// Avaliação final é acionada automaticamente pelo registro de notas
-		academia.POST("/avaliacao-final/regras", handlers.CriarRegraAvaliacaoFinal)
-		academia.PUT("/avaliacao-final/regras/:id", handlers.EditarRegraAvaliacaoFinal)
-		academia.DELETE("/avaliacao-final/regras/:id", handlers.DeletarRegraAvaliacaoFinal)
-		academia.POST("/categorias-nota", handlers.CriarCategoriaNota)
-		academia.DELETE("/categorias-nota/:codigo", handlers.DeletarCategoriaNota)
-		academia.POST("/estudante/:codigo/interromper/percurso-academico", handlers.AprovarSolicitacaoStatusAcademicoHandler("interrupcao"))
-		academia.POST("/estudante/:codigo/interromper/percurso-academico/reprovar", handlers.ReprovarSolicitacaoStatusAcademicoHandler("interrupcao"))
-		academia.POST("/estudante/:codigo/desvincular", handlers.AprovarSolicitacaoStatusAcademicoHandler("desvinculacao"))
-		academia.POST("/estudante/:codigo/desvincular/reprovar", handlers.ReprovarSolicitacaoStatusAcademicoHandler("desvinculacao"))
-		academia.POST("/estudante/:codigo/revincular", handlers.AprovarSolicitacaoStatusAcademicoHandler("revinculacao"))
-		academia.POST("/estudante/:codigo/revincular/reprovar", handlers.ReprovarSolicitacaoStatusAcademicoHandler("revinculacao"))
-		academia.DELETE("/estudante/:codigo/conta", handlers.DeletarContaEstudantePorAcademia) // Tarefa 98
+		academia.POST("/avaliacao-final/regras", avaliacoes.CriarRegraAvaliacaoFinal)
+		academia.PUT("/avaliacao-final/regras/:id", avaliacoes.EditarRegraAvaliacaoFinal)
+		academia.DELETE("/avaliacao-final/regras/:id", avaliacoes.DeletarRegraAvaliacaoFinal)
+		academia.POST("/categorias-nota", notas.CriarCategoriaNota)
+		academia.DELETE("/categorias-nota/:codigo", notas.DeletarCategoriaNota)
+		academia.POST("/estudante/:codigo/interromper/percurso-academico", academias.AprovarSolicitacaoStatusAcademicoHandler("interrupcao"))
+		academia.POST("/estudante/:codigo/interromper/percurso-academico/reprovar", academias.ReprovarSolicitacaoStatusAcademicoHandler("interrupcao"))
+		academia.POST("/estudante/:codigo/desvincular", academias.AprovarSolicitacaoStatusAcademicoHandler("desvinculacao"))
+		academia.POST("/estudante/:codigo/desvincular/reprovar", academias.ReprovarSolicitacaoStatusAcademicoHandler("desvinculacao"))
+		academia.POST("/estudante/:codigo/revincular", academias.AprovarSolicitacaoStatusAcademicoHandler("revinculacao"))
+		academia.POST("/estudante/:codigo/revincular/reprovar", academias.ReprovarSolicitacaoStatusAcademicoHandler("revinculacao"))
+		academia.DELETE("/estudante/:codigo/conta", estudantes.DeletarContaEstudantePorAcademia) // Tarefa 98
 
 		// ── Cursos ────────────────────────────────────────────────────────
-		academia.POST("/curso", handlers.CriarCurso)
-		academia.PUT("/curso/:id/ativar", handlers.AtivarCurso)
-		academia.PUT("/curso/:id/desativar", handlers.DesativarCurso)
-		academia.PUT("/curso/:id/dados", handlers.AtualizarDadosCurso)
-		academia.DELETE("/curso/:id", handlers.DeletarCurso)
+		academia.POST("/curso", cursos.CriarCurso)
+		academia.PUT("/curso/:id/ativar", cursos.AtivarCurso)
+		academia.PUT("/curso/:id/desativar", cursos.DesativarCurso)
+		academia.PUT("/curso/:id/dados", cursos.AtualizarDadosCurso)
+		academia.DELETE("/curso/:id", cursos.DeletarCurso)
 
 		// ── Matérias ──────────────────────────────────────────────────────
-		academia.POST("/materia", handlers.CriarMateria)
-		academia.POST("/sumario", handlers.CriarSumario)
-		academia.PUT("/sumario/:id/dados", handlers.AtualizarDadosSumario)
-		academia.DELETE("/sumario/:id", handlers.DeletarSumario)
-		academia.PUT("/faltas-aluno/:id/desvincular-sumario", handlers.DesvincularSumarioFalta)
-		academia.PUT("/materia/:id/ativar", handlers.AtivarMateria)
-		academia.PUT("/materia/:id/desativar", handlers.DesativarMateria)
-		academia.PUT("/materia/:id/dados", handlers.AtualizarDadosMateria)
-		academia.DELETE("/materia/:id", handlers.DeletarMateria)
+		academia.POST("/materia", materias.CriarMateria)
+		academia.POST("/sumario", sumarios.CriarSumario)
+		academia.PUT("/sumario/:id/dados", sumarios.AtualizarDadosSumario)
+		academia.DELETE("/sumario/:id", sumarios.DeletarSumario)
+		academia.PUT("/faltas-aluno/:id/desvincular-sumario", faltas.DesvincularSumarioFalta)
+		academia.PUT("/materia/:id/ativar", materias.AtivarMateria)
+		academia.PUT("/materia/:id/desativar", materias.DesativarMateria)
+		academia.PUT("/materia/:id/dados", materias.AtualizarDadosMateria)
+		academia.DELETE("/materia/:id", materias.DeletarMateria)
 
 		// ── Turmas ────────────────────────────────────────────────────────
-		academia.POST("/turma", handlers.CriarTurma)
-		academia.PUT("/turma/:codigo/ativar", handlers.AtivarTurma)
-		academia.PUT("/turma/:codigo/desativar", handlers.DesativarTurma)
-		academia.PUT("/turma/:codigo/dados", handlers.AtualizarDadosTurma)
-		academia.DELETE("/turma/:codigo", handlers.DeletarTurma)
-		academia.POST("/turma/:codigo/estudante", handlers.AdicionarEstudanteATurma)
-		academia.DELETE("/turma/:codigo/estudantes/:codigo_estudante", handlers.RemoverEstudanteDaTurma)
+		academia.POST("/turma", turmas.CriarTurma)
+		academia.PUT("/turma/:codigo/ativar", turmas.AtivarTurma)
+		academia.PUT("/turma/:codigo/desativar", turmas.DesativarTurma)
+		academia.PUT("/turma/:codigo/dados", turmas.AtualizarDadosTurma)
+		academia.DELETE("/turma/:codigo", turmas.DeletarTurma)
+		academia.POST("/turma/:codigo/estudante", turmas.AdicionarEstudanteATurma)
+		academia.DELETE("/turma/:codigo/estudantes/:codigo_estudante", turmas.RemoverEstudanteDaTurma)
 
 		// ── Batch/async: estudantes usam resposta de lote; demais criam jobs ──
-		academia.POST("/estudante/register/async", handlers.RegisterEstudanteBatch)
-		academia.POST("/notas-aluno/async", handlers.RegistrarNotaBatchAsync)
-		academia.POST("/faltas-aluno/async", handlers.RegistrarFaltasBatchAsync)
-		academia.POST("/curso/async", handlers.CriarCursoBatchAsync)
-		academia.POST("/materia/async", handlers.CriarMateriaBatchAsync)
-		academia.POST("/turma/async", handlers.CriarTurmaBatchAsync)
-		academia.POST("/turma/estudante/async", handlers.AdicionarEstudanteBatchAsync)
-		academia.PUT("/dados/async", handlers.AtualizarDadosAcademiaBatchAsync)
-		academia.POST("/categorias-nota/async", handlers.CriarCategoriaNotaBatchAsync)
-		academia.DELETE("/categorias-nota/async", handlers.DeletarCategoriaNotaBatchAsync)
-		academia.PUT("/curso/ativar/async", handlers.AtivarCursoBatchAsync)
-		academia.PUT("/curso/desativar/async", handlers.DesativarCursoBatchAsync)
-		academia.PUT("/curso/dados/async", handlers.AtualizarDadosCursoBatchAsync)
-		academia.DELETE("/curso/async", handlers.DeletarCursoBatchAsync)
-		academia.PUT("/materia/ativar/async", handlers.AtivarMateriaBatchAsync)
-		academia.PUT("/materia/desativar/async", handlers.DesativarMateriaBatchAsync)
-		academia.PUT("/materia/dados/async", handlers.AtualizarDadosMateriaBatchAsync)
-		academia.DELETE("/materia/async", handlers.DeletarMateriaBatchAsync)
-		academia.PUT("/turma/ativar/async", handlers.AtivarTurmaBatchAsync)
-		academia.PUT("/turma/desativar/async", handlers.DesativarTurmaBatchAsync)
-		academia.PUT("/turma/dados/async", handlers.AtualizarDadosTurmaBatchAsync)
-		academia.DELETE("/turma/async", handlers.DeletarTurmaBatchAsync)
-		academia.DELETE("/turma/estudante/async", handlers.RemoverEstudanteTurmaBatchAsync)
+		academia.POST("/estudante/register/async", estudantes.RegisterEstudanteBatch)
+		academia.POST("/notas-aluno/async", notas.RegistrarNotaBatchAsync)
+		academia.POST("/faltas-aluno/async", faltas.RegistrarFaltasBatchAsync)
+		academia.POST("/curso/async", cursos.CriarCursoBatchAsync)
+		academia.POST("/materia/async", materias.CriarMateriaBatchAsync)
+		academia.POST("/turma/async", turmas.CriarTurmaBatchAsync)
+		academia.POST("/turma/estudante/async", turmas.AdicionarEstudanteBatchAsync)
+		academia.PUT("/dados/async", academias.AtualizarDadosAcademiaBatchAsync)
+		academia.POST("/categorias-nota/async", notas.CriarCategoriaNotaBatchAsync)
+		academia.DELETE("/categorias-nota/async", notas.DeletarCategoriaNotaBatchAsync)
+		academia.PUT("/curso/ativar/async", cursos.AtivarCursoBatchAsync)
+		academia.PUT("/curso/desativar/async", cursos.DesativarCursoBatchAsync)
+		academia.PUT("/curso/dados/async", cursos.AtualizarDadosCursoBatchAsync)
+		academia.DELETE("/curso/async", cursos.DeletarCursoBatchAsync)
+		academia.PUT("/materia/ativar/async", materias.AtivarMateriaBatchAsync)
+		academia.PUT("/materia/desativar/async", materias.DesativarMateriaBatchAsync)
+		academia.PUT("/materia/dados/async", materias.AtualizarDadosMateriaBatchAsync)
+		academia.DELETE("/materia/async", materias.DeletarMateriaBatchAsync)
+		academia.PUT("/turma/ativar/async", turmas.AtivarTurmaBatchAsync)
+		academia.PUT("/turma/desativar/async", turmas.DesativarTurmaBatchAsync)
+		academia.PUT("/turma/dados/async", turmas.AtualizarDadosTurmaBatchAsync)
+		academia.DELETE("/turma/async", turmas.DeletarTurmaBatchAsync)
+		academia.DELETE("/turma/estudante/async", turmas.RemoverEstudanteTurmaBatchAsync)
 	}
 
 	// ── Rotas de admin ────────────────────────────────────────────────────
@@ -696,37 +721,37 @@ func setupRouter() *gin.Engine {
 	admin.Use(middleware.AuthMiddleware())
 	admin.Use(middleware.RequireAdmin())
 	{
-		admin.POST("/register", middleware.RequireFPP(), handlers.RegisterAdmin)
-		admin.POST("/academia/cadastro", middleware.RequireFPP(), handlers.RegisterAcademia)
+		admin.POST("/register", middleware.RequireFPP(), administradores.RegisterAdmin)
+		admin.POST("/academia/cadastro", middleware.RequireFPP(), academias.RegisterAcademia)
 		// Tarefa 123 (SEC-04): reenvio de credenciais temporárias (somente fpp).
-		admin.POST("/academias/:codigo/credenciais/reenviar", middleware.RequireFPP(), handlers.ReenviarCredenciaisAcademia)
-		admin.POST("/administradores/:id/credenciais/reenviar", middleware.RequireFPP(), handlers.ReenviarCredenciaisAdmin)
-		admin.PUT("/academia/:codigo/ativar", middleware.RequireAdm(), handlers.AtivarAcademia)
-		admin.PUT("/academia/:codigo/desativar", middleware.RequireAdm(), handlers.DesativarAcademia)
-		admin.DELETE("/academia/:codigo", middleware.RequireFPP(), handlers.DeletarAcademia)
-		admin.GET("/solicitacoes-nif-academia", handlers.ListarSolicitacoesNIFAdmin)
-		admin.PUT("/solicitacoes-nif-academia/:codigo/aprovar", middleware.RequireAdm(), handlers.DecidirSolicitacaoAlteracaoNIFAcademiaHandler(true))
-		admin.PUT("/solicitacoes-nif-academia/:codigo/reprovar", middleware.RequireAdm(), handlers.DecidirSolicitacaoAlteracaoNIFAcademiaHandler(false))
-		admin.PUT("/admin/:id/ativar", middleware.RequireAdm(), handlers.AtivarAdmin)
-		admin.PUT("/admin/:id/desativar", middleware.RequireAdm(), handlers.DesativarAdmin)
-		admin.DELETE("/admin/:id", middleware.RequireAdm(), handlers.DeletarAdmin)                  // Tarefa 73
-		admin.GET("/auditoria/delecoes", middleware.RequireAdm(), handlers.ListarAuditoriaDelecoes) // Tarefa 73/2
-		admin.GET("/admin-lista", handlers.ListarTodosAdmins)
-		admin.GET("/metrics", handlers.GetSystemMetrics)
-		admin.GET("/storage/quota", handlers.GetStorageQuota)
-		admin.POST("/storage/migrar-local-para-mega", middleware.RequireFPP(), handlers.MigrarStorageLocalParaMega)
-		admin.POST("/projections/rebuild/:name", middleware.RequireFPP(), handlers.RebuildProjection)
-		admin.POST("/projections/rebuild/:name/async", middleware.RequireFPP(), handlers.RebuildProjectionAsync)
-		admin.GET("/consultar-admin/:email", handlers.GetAdminPorEmail)
-		admin.PUT("/admin/:id/role", middleware.RequireFPP(), handlers.AtualizarRoleAdmin)
-		admin.PUT("/admin/:id/dados", handlers.AtualizarDadosAdmin)
+		admin.POST("/academias/:codigo/credenciais/reenviar", middleware.RequireFPP(), autenticacao.ReenviarCredenciaisAcademia)
+		admin.POST("/administradores/:id/credenciais/reenviar", middleware.RequireFPP(), autenticacao.ReenviarCredenciaisAdmin)
+		admin.PUT("/academia/:codigo/ativar", middleware.RequireAdm(), academias.AtivarAcademia)
+		admin.PUT("/academia/:codigo/desativar", middleware.RequireAdm(), academias.DesativarAcademia)
+		admin.DELETE("/academia/:codigo", middleware.RequireFPP(), academias.DeletarAcademia)
+		admin.GET("/solicitacoes-nif-academia", academias.ListarSolicitacoesNIFAdmin)
+		admin.PUT("/solicitacoes-nif-academia/:codigo/aprovar", middleware.RequireAdm(), academias.DecidirSolicitacaoAlteracaoNIFAcademiaHandler(true))
+		admin.PUT("/solicitacoes-nif-academia/:codigo/reprovar", middleware.RequireAdm(), academias.DecidirSolicitacaoAlteracaoNIFAcademiaHandler(false))
+		admin.PUT("/admin/:id/ativar", middleware.RequireAdm(), administradores.AtivarAdmin)
+		admin.PUT("/admin/:id/desativar", middleware.RequireAdm(), administradores.DesativarAdmin)
+		admin.DELETE("/admin/:id", middleware.RequireAdm(), administradores.DeletarAdmin)                  // Tarefa 73
+		admin.GET("/auditoria/delecoes", middleware.RequireAdm(), administradores.ListarAuditoriaDelecoes) // Tarefa 73/2
+		admin.GET("/admin-lista", administradores.ListarTodosAdmins)
+		admin.GET("/metrics", administradores.GetSystemMetrics)
+		admin.GET("/storage/quota", administradores.GetStorageQuota)
+		admin.POST("/storage/migrar-local-para-mega", middleware.RequireFPP(), administradores.MigrarStorageLocalParaMega)
+		admin.POST("/projections/rebuild/:name", middleware.RequireFPP(), administradores.RebuildProjection)
+		admin.POST("/projections/rebuild/:name/async", middleware.RequireFPP(), administradores.RebuildProjectionAsync)
+		admin.GET("/consultar-admin/:email", administradores.GetAdminPorEmail)
+		admin.PUT("/admin/:id/role", middleware.RequireFPP(), administradores.AtualizarRoleAdmin)
+		admin.PUT("/admin/:id/dados", administradores.AtualizarDadosAdmin)
 
 		// ── Batch assíncronos (admin) ─────────────────────────────────────
-		admin.POST("/academia/register/async", middleware.RequireFPP(), handlers.RegisterAcademiaBatchAsync)
-		admin.PUT("/academia/ativar/async", middleware.RequireAdm(), handlers.AtivarAcademiaBatchAsync)
-		admin.PUT("/academia/desativar/async", middleware.RequireAdm(), handlers.DesativarAcademiaBatchAsync)
-		admin.PUT("/admin/ativar/async", middleware.RequireAdm(), handlers.AtivarAdminBatchAsync)
-		admin.PUT("/admin/desativar/async", middleware.RequireAdm(), handlers.DesativarAdminBatchAsync)
+		admin.POST("/academia/register/async", middleware.RequireFPP(), academias.RegisterAcademiaBatchAsync)
+		admin.PUT("/academia/ativar/async", middleware.RequireAdm(), academias.AtivarAcademiaBatchAsync)
+		admin.PUT("/academia/desativar/async", middleware.RequireAdm(), academias.DesativarAcademiaBatchAsync)
+		admin.PUT("/admin/ativar/async", middleware.RequireAdm(), administradores.AtivarAdminBatchAsync)
+		admin.PUT("/admin/desativar/async", middleware.RequireAdm(), administradores.DesativarAdminBatchAsync)
 	}
 
 	// Configurações globais do painel administrativo.
@@ -734,11 +759,17 @@ func setupRouter() *gin.Engine {
 	adminSistema.Use(middleware.AuthMiddleware())
 	adminSistema.Use(middleware.RequireAdmin())
 	{
-		adminSistema.POST("/definir-ano-letivo-geral", middleware.RequireFPP(), handlers.DefinirAnoLetivoGlobalSistema)
-		adminSistema.GET("/sistema/anos-letivos/configuracoes", middleware.RequireFPP(), handlers.ListarConfiguracoesAnosLetivos)
-		adminSistema.PUT("/sistema/anos-letivos/configuracoes/:type", middleware.RequireFPP(), handlers.AtualizarConfiguracaoAnoLetivo)
-		adminSistema.GET("/sistema/anos-letivos/finalizacao-limites", middleware.RequireFPP(), handlers.GetLimitesFinalizacaoAnosLetivos)
-		adminSistema.GET("/academias/anos-letivos/finalizacoes", middleware.RequireFPP(), handlers.ListarFinalizacoesAnoLetivoAdmin)
+		adminSistema.POST("/definir-ano-letivo-geral", middleware.RequireFPP(), administradores.DefinirAnoLetivoGlobalSistema)
+		adminSistema.GET("/sistema/anos-letivos/configuracoes", middleware.RequireFPP(), administradores.ListarConfiguracoesAnosLetivos)
+		adminSistema.PUT("/sistema/anos-letivos/configuracoes/:type", middleware.RequireFPP(), administradores.AtualizarConfiguracaoAnoLetivo)
+		adminSistema.GET("/sistema/anos-letivos/finalizacao-limites", middleware.RequireFPP(), administradores.GetLimitesFinalizacaoAnosLetivos)
+		adminSistema.GET("/academias/anos-letivos/finalizacoes", middleware.RequireFPP(), academias.ListarFinalizacoesAnoLetivoAdmin)
+
+		// Configurações operacionais editáveis (Parte 3): leitura para adm e fpp,
+		// alteração só fpp. Segredos nunca saem em claro.
+		adminSistema.GET("/sistema/configuracoes", middleware.RequireAdm(), administradores.ListarConfiguracoesSistema)
+		adminSistema.PUT("/sistema/configuracoes/:chave", middleware.RequireFPP(), administradores.DefinirConfiguracaoSistema)
+		adminSistema.DELETE("/sistema/configuracoes/:chave", middleware.RequireFPP(), administradores.RemoverConfiguracaoSistema)
 	}
 
 	return router
@@ -747,7 +778,7 @@ func setupRouter() *gin.Engine {
 // corsMiddleware — whitelist configurável via ALLOWED_ORIGINS.
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		allowedOriginsEnv := os.Getenv("ALLOWED_ORIGINS")
+		allowedOriginsEnv := sysconfig.String("ALLOWED_ORIGINS")
 		var allowedOrigins []string
 		if allowedOriginsEnv != "" {
 			for _, o := range strings.Split(allowedOriginsEnv, ",") {

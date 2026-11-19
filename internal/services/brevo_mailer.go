@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
+	"spuri/internal/sysconfig"
 	"time"
 )
 
@@ -36,8 +36,8 @@ func BrevoConfigurado() bool {
 // do SMTP, eliminado na Tarefa 123).
 func loadBrevoConfig() (BrevoConfig, bool) {
 	cfg := BrevoConfig{
-		APIKey:      os.Getenv("BREVO_API_KEY"),
-		SenderEmail: os.Getenv("EMAIL_FROM"),
+		APIKey:      sysconfig.String("BREVO_API_KEY"),
+		SenderEmail: sysconfig.String("EMAIL_FROM"),
 		SenderName:  "Spuri",
 	}
 	if cfg.APIKey == "" || cfg.SenderEmail == "" {

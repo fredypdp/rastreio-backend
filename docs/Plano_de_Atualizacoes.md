@@ -1,8 +1,8 @@
 # Plano de Atualizações — Regras de Negócio e Partes (v2)
 
-> Base: `Lista de tarefas.md` (2026-11-08) + `notificacoes_eventos_spuri.md` · Atualizado em 2026-11-17
+> Base: `Lista de tarefas.md` (2026-11-08) + `notificacoes_eventos_spuri.md` · Atualizado em 2026-11-19
 > **Back-end verificado:** `rastreio-backend`, `main` @ `d9c47fd`, por leitura do código, das rotas e dos documentos de tarefa. A suíte de testes **não foi executada**.
-> **Front-end não verificado:** o repositório `rastreio-frontend` não pôde ser clonado (exige credencial). Tudo sobre telas vem das regras do plano e dos documentos do back-end; cada tarefa de front começa pela análise do código.
+> **Front-end:** `rastreio-frontend`, `main` @ `740ce90` (2026-11-18), lido e validado com `tsc` e `eslint` na Tarefa 39. Os trechos do plano sobre telas que ainda não foram implementadas continuam vindo das regras do plano; cada tarefa de front começa pela análise do código.
 
 ## O que mudou nesta versão
 
@@ -27,9 +27,10 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 5. Se a implementação mudar uma regra, corrija a regra no texto e anote em **Registro de andamento** (última seção).
 6. O documento da tarefa e o texto do commit citam a Parte e os itens fechados (ex.: "Plano: Parte 5, itens 3 e 4").
 7. Ou de preferência (prefiro assim), marcar com ✅, principalmente no fim do título da parte implementada
+8. **Este arquivo (`docs/Plano_de_Atualizacoes.md`) atualizado vai em TODA entrega de back-end**, dentro do zip, ao lado do documento da tarefa, com os passos 1 a 7 já aplicados (itens marcados, Estado, tabela da Visão geral, ✅ e Registro de andamento). Uma entrega sem o plano atualizado está incompleta. Se a entrega for só de front-end, o plano vai mesmo assim no zip do back-end (ou em um zip avulso de `docs/`).
 
 **Outras orientações**
-- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a próxima tarefa livre é a **128** (a 127 está em Lista de Tarefas).
+- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a próxima tarefa livre é a **130** (a 129 fechou as Partes 2 e 3). Front-end (numeração própria): a próxima é a **40**.
 - **(sugestão)** = regra acrescentada por mim para fechar lacuna; pode ser cortada. **(a confirmar)** = decisão pendente, com padrão na seção final.
 - Ordem de deploy padrão: back-end primeiro, depois front-end. Exceção: partes que removem funcionalidade (1 e 12): front-end primeiro.
 - As partes estão na ordem de execução; as que não dependem uma da outra podem andar em paralelo (ver "Caminho crítico").
@@ -41,9 +42,9 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | Parte | O que é | Depende de | Estado | Tarefa |
 |---|---|---|---|---|
 | **Fase 1 — Fundações** | | | | |
-| 1 | Remover a matrícula pública | — | Pendente | |
-| 2 | Back-end em pacotes (refatoração) | 1 | Pendente | |
-| 3 | Configurações do sistema (variáveis de ambiente → banco) | 2 | Parcial | |
+| 1 ✅ | Remover a matrícula pública | — | Implementado | 128 (back) · 38 (front) |
+| 2 | Back-end em pacotes (refatoração) | 1 | Parcial (falta só o HTTP do financeiro) | 129 (back) |
+| 3 ✅ | Configurações do sistema (variáveis de ambiente → banco) | 2 | Implementado | 129 (back) · 39 (front) |
 | 4 | Usuários e permissões (encarregado, secretário, professor) | 2, 3 | Pendente | |
 | **Fase 2 — Credenciais** | | | | |
 | 5 | Credenciais temporárias: ajustes do cadastro e do reset | 4 | Parcial | |
@@ -108,9 +109,9 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 
 # Fase 1 — Fundações
 
-### Parte 1 — Remover a matrícula pública
+### Parte 1 — Remover a matrícula pública ✅
 
-**Estado:** Pendente · **Depende de:** —
+**Estado:** Implementado (Tarefa 128 no back-end, Tarefa 38 no front-end) · **Depende de:** —
 
 **Já existe (a remover):** rotas públicas `/solicitacao-matricula` (criar, busca, status, pagamento da matrícula); rotas de academia (aprovar, reprovar, cancelar, listar) e de admin; download de documentos da solicitação; agregado e projeção `SolicitacaoMatricula`; taxa de matrícula no módulo financeiro (`finance/matricula.go`, configurações em `/financeiro/matriculas/configuracoes`, efeitos de pagamento). Cerca de 2,5 mil linhas, fora os testes.
 
@@ -121,18 +122,18 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 - Sem academias cadastradas, não há dados de produção a preservar. A tarefa deve conferir se o ledger tem eventos de teste da solicitação antes de tirar os tipos de evento da lista permitida (`safe_queries.go`) e do replay.
 
 **Entregas**
-- [ ] Rotas públicas, de academia e de admin da solicitação removidas
-- [ ] Agregado, projeção e eventos da solicitação removidos
-- [ ] Taxa de matrícula removida do módulo financeiro
-- [ ] Documentos extra e validações usadas pelo cadastro da academia preservados e testados
-- [ ] Front-end: telas públicas e de gestão da solicitação removidas
-- [ ] Documentação da API atualizada
+- [x] Rotas públicas, de academia e de admin da solicitação removidas (Tarefa 128)
+- [x] Agregado, projeção e eventos da solicitação removidos (Tarefa 128)
+- [x] Taxa de matrícula removida do módulo financeiro (Tarefa 128)
+- [x] Documentos extra e validações usadas pelo cadastro da academia preservados e testados (Tarefa 128)
+- [x] Front-end: telas públicas e de gestão da solicitação removidas (Tarefa 38)
+- [x] Documentação da API atualizada (Tarefa 128)
 
 ---
 
 ### Parte 2 — Back-end em pacotes
 
-**Estado:** Pendente · **Depende de:** 1
+**Estado:** Parcial (Tarefa 129: tudo, menos o HTTP do financeiro) · **Depende de:** 1 (liberada)
 
 **Já existe:** `internal/handlers` é **um único pacote com 61 arquivos** (fora testes). `finance`, `projections`, `domain/aggregates`, `services`, `middleware`, `storage` já são pacotes. `finance` é a camada de serviço do financeiro; o HTTP do financeiro ainda está em `handlers`.
 
@@ -144,16 +145,22 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 - O HTTP do financeiro entra **por último** e pode ficar para depois da Parte 6 sem bloquear nada.
 
 **Entregas**
-- [ ] Pacote de apoio (helpers comuns de `handlers/helpers.go`)
-- [ ] Notas · [ ] Faltas · [ ] Estudantes · [ ] Turmas · [ ] Avaliações · [ ] Comunicação
-- [ ] Demais módulos (cursos, matérias, sumários, serviços extras, documentos)
-- [ ] Financeiro (camada HTTP)
+- [x] Pacote de apoio (helpers comuns de `handlers/helpers.go`) (Tarefa 129: `internal/handlers/apoio` e, para helpers de teste, `internal/handlers/testsupport`)
+- [x] Notas · [x] Faltas · [x] Estudantes · [x] Turmas · [x] Avaliações · [x] Comunicação (Tarefa 129)
+- [x] Demais módulos (cursos, matérias, sumários, serviços extras, documentos) (Tarefa 129; também academias, administradores, autenticação, lotes e registros)
+- [ ] Financeiro (camada HTTP): continua em `internal/handlers`; entra por último, como previsto
+
+**Como ficou (Tarefa 129)**
+- `internal/handlers/<módulo>/` para academias, administradores, autenticacao, avaliacoes, comunicacao, cursos, documentos, estudantes, faltas, lotes, materias, notas, registros, servicosextras, sumarios e turmas. `internal/handlers` guarda só o HTTP do financeiro.
+- `apoio` guarda o que mais de um módulo usa (helpers HTTP, o motor da avaliação final, a infraestrutura de lotes, o cadastro de estudante reaproveitado pelo cadastro em lote). Cada módulo ficou com os seus próprios wrappers de lote e itens de job (`CriarCursoBatch`, `AtivarAcademiaJobItem`...); só a infraestrutura genérica é compartilhada.
+- A regra "módulos não se importam" tem teste: `TestPacotesDeModuloNaoSeImportam` (pacote `apoio`).
+- Para efeito da regra 4 de "Como acompanhar", as Partes 3 e 4 estão liberadas: o que falta da Parte 2 (HTTP do financeiro) não bloqueia nada.
 
 ---
 
-### Parte 3 — Configurações do sistema (variáveis de ambiente → banco)
+### Parte 3 — Configurações do sistema (variáveis de ambiente → banco) ✅
 
-**Estado:** Parcial · **Depende de:** 2
+**Estado:** Implementado (Tarefa 129 no back-end, Tarefa 39 no front-end) · **Depende de:** 2 (liberada)
 
 **Já existe**
 - [x] **Cofre de segredos** cifrado para credenciais de provedores (chave derivada do `JWT_SECRET`; Tarefas 101 e 120).
@@ -172,11 +179,17 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 - Novos valores das próximas partes (limites de SMS, tarifa, tamanho de arquivo...) já nascem nesta tela.
 
 **Entregas**
-- [ ] Lista aprovada de variáveis
-- [ ] API de leitura e escrita (só administradores) com validação por tipo
-- [ ] Leitura banco → ambiente, com cache e indicação "na hora / no reinício"
-- [ ] Segredos mascarados e fora dos logs
-- [ ] Tela de administração (front)
+- [x] Lista aprovada de variáveis (Tarefa 129: a proposta acima, em `internal/sysconfig`; a lista final depende da sua confirmação)
+- [x] API de leitura e escrita (só administradores) com validação por tipo (Tarefa 129: `GET/PUT/DELETE /admin/sistema/configuracoes`)
+- [x] Leitura banco → ambiente, com cache e indicação "na hora / no reinício" (Tarefa 129)
+- [x] Segredos mascarados e fora dos logs (Tarefa 129: cifrados em tabela própria; nunca no ledger, na projeção, em resposta ou em log)
+- [x] Tela de administração (front) (Tarefa 39: `/configuracoes/sistema`)
+
+**Como ficou (Tarefa 129 e Tarefa 39)**
+- Quem pode: `adm` e `fpp` consultam; só `fpp` altera ou remove. Cada chave declara `aplicacao`: `imediato` (vale na próxima leitura nesta instância e em até 60 s nas outras) ou `reinicio` (lida uma vez no arranque: as cinco `RECONCILIACAO_*` e as três `MEGA_*`).
+- `MEGA_ROOT_FOLDER` ficou como **texto visível**, não como segredo: é só o nome de uma pasta e esconder o valor impediria o administrador de conferi-lo. Se preferir segredo, é uma linha na lista.
+- A tabela `projection_sistema_config` dos anos letivos **não** foi reaproveitada: a nova `projection_configuracao_sistema` (migration 139) tem lápide e guarda de versão, e os segredos vão para `configuracao_sistema_segredos`.
+- Para entrar nesta tela, um novo valor das próximas partes só precisa de uma linha em `sysconfig.definicoes` e de ler a chave com `sysconfig.String`.
 
 ---
 
@@ -905,13 +918,12 @@ Onde a lista original ou o arquivo de notificações deixava dúvida, usei o pad
 ## O que ainda preciso receber
 
 - **Itens 15 a 20** das notificações e a **frase incompleta** da seção 1 (pontos 23 e 24 da tabela acima).
-- **Parte 3:** aprovar ou corrigir a proposta de variáveis.
+- **Parte 3:** confirmar ou corrigir a lista de variáveis implementada (é a proposta da Parte 3, com `MEGA_ROOT_FOLDER` como texto visível).
 - **Parte 6:** credenciais de teste do PayPay e textos dos manuais (PayPay e AppyPay).
 - **Parte 12:** regras de cada academia superior, quando cada uma entrar.
 - **Parte 19:** tarifa por SMS, pacotes de crédito e limite de saldo baixo.
 - **Parte 21:** regra de data de vencimento da mensalidade.
 - **Parte 24:** ambiente de testes do Ulemo e regras fiscais.
-- **Front-end:** acesso ao repositório (ou um clone) para verificar as telas.
 
 ## Fora do escopo deste plano
 
@@ -930,4 +942,7 @@ Preencher a cada entrega (ver "Como acompanhar o andamento").
 | Data | Parte / item | Tarefa | Commit | Observação |
 |---|---|---|---|---|
 | 2026-11-17 | Plano v2: itens já existentes marcados `[x]` | — | — | Verificado em `main` @ `d9c47fd` |
+| 2026-11-18 | Parte 1 (todos os itens) | 128 (back) · 38 (front) | `673be19` (back) · `740ce90` (front) | Marcada só em 2026-11-19, junto com a Tarefa 129 |
+| 2026-11-19 | Parte 2 (menos o HTTP do financeiro) | 129 (back) | ver o texto do commit da Tarefa 129 | 273 rotas e handlers idênticos antes e depois; suíte: mesmos 1057 testes passam + 38 novos |
+| 2026-11-19 | Parte 3 (todos os itens) | 129 (back) · 39 (front) | ver o texto do commit da Tarefa 129 | Migration 139. Regra nova em "Como acompanhar": o plano atualizado vai em toda entrega |
 | | | | | |

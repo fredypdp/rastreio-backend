@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +17,8 @@ import (
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 	"spuri/internal/projections"
 )
 
@@ -89,19 +90,6 @@ func seedAcademiaParaMatriculaWebhook(t *testing.T, client *db.Client, codigo st
 
 func ptrString(s string) *string { return &s }
 
-func geraDigitos(n int) string {
-	digitos := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		return -1
-	}, uuid.NewString())
-	for len(digitos) < n {
-		digitos += "0"
-	}
-	return digitos[:n]
-}
-
 // novaCobrancaAvulsaREF emite uma cobrança REF avulsa (sem mensalidade nem
 // serviço extra) pelo caminho normal do serviço financeiro. Os testes de
 // webhook, consulta e pagamento externo só precisam de "uma cobrança aguardando
@@ -124,33 +112,9 @@ func novaCobrancaAvulsaREF(t *testing.T, service *finance.Service, academia stri
 	return charge
 }
 
-func integrationFinanceClient(t *testing.T) *db.Client {
-	t.Helper()
-	if os.Getenv("RUN_POSTGRES_INTEGRATION") != "1" {
-		t.Skip("teste de integração requer RUN_POSTGRES_INTEGRATION=1 e PostgreSQL")
-	}
-	previousDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.Chdir("../.."); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(previousDir) })
-	client, err := db.NewClient(db.DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
-	if err = client.RunMigrations(); err != nil {
-		t.Fatal(err)
-	}
-	return client
-}
-
 func TestIntegrationFinanceRejectsAcademyChargeOutsideScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	merchant := "INTSCOPE" + uuid.NewString()[:6]
 	chargeID := uuid.New()
 	payload, _ := json.Marshal(map[string]any{"status": "criada"})
@@ -158,9 +122,9 @@ func TestIntegrationFinanceRejectsAcademyChargeOutsideScope(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/financeiro/appypay/cobrancas/"+merchant, nil)
@@ -178,7 +142,7 @@ func TestIntegrationFinanceRejectsAcademyChargeOutsideScope(t *testing.T) {
 
 func TestIntegrationFinanceRejectsNonFPPAdmins(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	for _, role := range []string{"gerente", "adm"} {
 		t.Run(role, func(t *testing.T) {
 			adminID := uuid.New()
@@ -204,7 +168,7 @@ func TestIntegrationFinanceRejectsNonFPPAdmins(t *testing.T) {
 
 func TestIntegrationFinanceFPPAdminCannotCancelAcademyCharge(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	merchant := "INTCANCEL" + uuid.NewString()[:6]
 	chargeID := uuid.New()
 	payload, _ := json.Marshal(map[string]any{"status": "criada"})
@@ -216,9 +180,9 @@ func TestIntegrationFinanceFPPAdminCannotCancelAcademyCharge(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = client.DB().Exec(`DELETE FROM projection_admins WHERE id=$1`, adminID) })
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/financeiro/appypay/cobrancas/"+merchant+"/cancelar", bytes.NewBufferString(`{}`))
@@ -236,7 +200,7 @@ func TestIntegrationFinanceFPPAdminCannotCancelAcademyCharge(t *testing.T) {
 
 func TestIntegrationReceberWebhookAppyPayConfirmaCobrancaEEhIdempotente(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	t.Setenv("ENV", "test")
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
 	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
@@ -256,9 +220,9 @@ func TestIntegrationReceberWebhookAppyPayConfirmaCobrancaEEhIdempotente(t *testi
 	}
 	charge := novaCobrancaAvulsaREF(t, service, academia, 750)
 
-	previousService := FinanceiroService
-	FinanceiroService = service
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = service
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 	repository := db.NewAggregateRepository(client)
 	router := gin.New()
 	router.Use(func(c *gin.Context) {

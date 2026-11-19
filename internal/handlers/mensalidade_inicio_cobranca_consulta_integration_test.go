@@ -9,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 // ConsultarMesInicioCobranca (GET, Tarefa 111) é novo — antes não existia
@@ -20,14 +22,14 @@ import (
 // vizinhos: a academia só consulta o PRÓPRIO início de cobrança.
 func TestIntegrationConsultarMesInicioCobrancaHandlerRespeitaEscopo(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academiaDona := "INI" + uuid.NewString()[:6]
 	academiaOutra := "OUT" + uuid.NewString()[:6]
 	seedAcademiaParaRemocaoHandlers(t, client, academiaDona)
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	userID := uuid.New()
 	newGetCtx := func(codigoAcademiaAtor, codigoAcademiaQuery, anoLetivo string) (*gin.Context, *httptest.ResponseRecorder) {
@@ -54,7 +56,7 @@ func TestIntegrationConsultarMesInicioCobrancaHandlerRespeitaEscopo(t *testing.T
 	// 2) Define via o Service diretamente (mais rápido que passar pelo
 	// handler de criação) e então consulta via o HANDLER, que é o que este
 	// teste precisa validar.
-	if err := FinanceiroService.DefinirMesInicioCobranca(ctx.Request.Context(), finance.MesInicioCobrancaInput{
+	if err := apoio.FinanceiroService.DefinirMesInicioCobranca(ctx.Request.Context(), finance.MesInicioCobrancaInput{
 		CodigoAcademia: academiaDona, AnoLetivo: "2025_2026", MesInicio: 11,
 	}, uuid.NewString(), "academia", "127.0.0.1"); err != nil {
 		t.Fatalf("DefinirMesInicioCobranca falhou: %v", err)

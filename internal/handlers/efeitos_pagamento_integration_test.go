@@ -6,11 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"spuri/internal/db"
-	"spuri/internal/finance"
-
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"spuri/internal/db"
+	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 // O job de reconciliação confirma pagamentos FORA de uma requisição HTTP. Este
@@ -20,7 +21,7 @@ import (
 // o adaptador não deve produzir nenhum efeito de negócio.
 func TestIntegrationEfeitosPagamentoDoJobRodamForaDeUmaRequisicaoSemEfeitoIndevido(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	t.Setenv("ENV", "test")
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
 	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
@@ -38,9 +39,9 @@ func TestIntegrationEfeitosPagamentoDoJobRodamForaDeUmaRequisicaoSemEfeitoIndevi
 		t.Fatal(err)
 	}
 	charge := novaCobrancaAvulsaREF(t, service, academia, 750)
-	previousService := FinanceiroService
-	FinanceiroService = service
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = service
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	var ledgerAntes int
 	if err := client.DB().QueryRow(`SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_type <> 'Financeiro'`).Scan(&ledgerAntes); err != nil {

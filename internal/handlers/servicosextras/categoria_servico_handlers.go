@@ -1,0 +1,260 @@
+package servicosextras
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"spuri/internal/db"
+	"spuri/internal/domain/aggregates"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/middleware"
+	"spuri/internal/utils"
+)
+
+type categoriaServicoPayload struct {
+	Nome string `json:"nome"`
+}
+
+func bindCategoriaServicoPayload(c *gin.Context, r *categoriaServicoPayload) error {
+	d := json.NewDecoder(c.Request.Body)
+	d.DisallowUnknownFields()
+	if err := d.Decode(r); err != nil {
+		return fmt.Errorf("dados invalidos")
+	}
+	return nil
+}
+
+func categoriaServicoToJSON(cat *aggregates.CategoriaServico) gin.H {
+	return gin.H{"id": cat.GetID(), "codigo_academia": cat.CodigoAcademia, "nome": cat.Nome, "ativo": cat.Ativo, "created_at": cat.CreatedAt, "updated_at": cat.UpdatedAt}
+}
+
+// validarNomeCategoriaServicoDisponivel verifica, ANTES de gerar o evento
+// (CategoriaServicoCriada/Renomeada/Reativada), se já existe outra categoria
+// ATIVA com o mesmo nome (ignorando maiúsculas/minúsculas) nesta academia.
+//
+// Esta pré-checagem existe porque a unicidade de nome só é garantida por um
+// índice único parcial na PROJEÇÃO (ux_categorias_servico_nome_ativo em
+// projection_categorias_servico), não no event store. SaveWithAudit só grava
+// o evento no ledger — a projeção é atualizada depois, de forma assíncrona,
+// pelo Projection Manager. Sem esta pré-checagem, dois eventos com nomes
+// colidentes são aceitos normalmente pelo ledger (o handler HTTP responde
+// sucesso para ambos), mas quando o Manager tenta aplicar o SEGUNDO evento na
+// projeção, o INSERT/UPDATE viola o índice único. Esse erro não é
+// transitório, então processEventWithRetry (internal/projections/manager.go)
+// esgota as 3 tentativas e o checkpoint da projeção "categorias_servico" para
+// de avançar PERMANENTEMENTE nesse evento — bloqueando toda criação, edição,
+// ativação e desativação de categoria de serviço, em QUALQUER academia, até
+// intervenção manual. Um rebuild da projeção não resolve sozinho, pois
+// replaya os mesmos eventos na mesma ordem e falha exatamente no mesmo ponto.
+func validarNomeCategoriaServicoDisponivel(c *gin.Context, codigoAcademia, nome string, excluirID *uuid.UUID) error {
+	nome = strings.TrimSpace(nome)
+	cats, err := apoio.GetCategoriasServicoProjection(c).GetByAcademia(codigoAcademia, true)
+	if err != nil {
+		return fmt.Errorf("erro ao verificar nome de categoria: %v", err)
+	}
+	for _, existente := range cats {
+		if excluirID != nil && existente.ID == *excluirID {
+			continue
+		}
+		if strings.EqualFold(existente.Nome, nome) {
+			return fmt.Errorf("já existe uma categoria de serviço ativa com este nome nesta academia")
+		}
+	}
+	return nil
+}
+
+func CriarCategoriaServico(c *gin.Context) {
+	var r categoriaServicoPayload
+	if err := bindCategoriaServicoPayload(c, &r); err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	codigo, id, ok := apoio.Academy(c)
+	if !ok {
+		return
+	}
+	if err := validarNomeCategoriaServicoDisponivel(c, codigo, r.Nome, nil); err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	cat := aggregates.NewCategoriaServico()
+	if err := cat.Criar(codigo, r.Nome, id); err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	if err := apoio.GetRepository(c).SaveWithAudit(cat, db.AuditContext{UserID: id.String(), UserType: "academia", IP: c.ClientIP()}); err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"message": "categoria de serviço criada com sucesso", "data": categoriaServicoToJSON(cat)})
+}
+
+func loadCategoriaServico(c *gin.Context) (*aggregates.CategoriaServico, uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.RespondWithValidationError(c, fmt.Errorf("ID de categoria de serviço inválido"))
+		return nil, uuid.Nil, false
+	}
+	codigo, user, ok := apoio.Academy(c)
+	if !ok {
+		return nil, user, false
+	}
+	x, err := apoio.GetRepository(c).Load(id, "CategoriaServico")
+	if err != nil {
+		utils.RespondWithNotFoundError(c, "categoria de serviço")
+		return nil, user, false
+	}
+	cat, ok := x.(*aggregates.CategoriaServico)
+	if !ok || cat.CodigoAcademia != codigo {
+		utils.RespondWithForbiddenError(c, "categoria de serviço não pertence a esta academia")
+		return nil, user, false
+	}
+	return cat, user, true
+}
+
+func AtualizarCategoriaServico(c *gin.Context) {
+	var r categoriaServicoPayload
+	if err := bindCategoriaServicoPayload(c, &r); err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	cat, id, ok := loadCategoriaServico(c)
+	if !ok {
+		return
+	}
+	catID := cat.GetID()
+	if err := validarNomeCategoriaServicoDisponivel(c, cat.CodigoAcademia, r.Nome, &catID); err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	if err := cat.Renomear(r.Nome, id); err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	if err := apoio.GetRepository(c).SaveWithAudit(cat, db.AuditContext{UserID: id.String(), UserType: "academia", IP: c.ClientIP()}); err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "categoria de serviço atualizada com sucesso", "data": categoriaServicoToJSON(cat)})
+}
+
+func toggleCategoriaServico(c *gin.Context, ativar bool) {
+	cat, id, ok := loadCategoriaServico(c)
+	if !ok {
+		return
+	}
+	var err error
+	if ativar {
+		catID := cat.GetID()
+		if err = validarNomeCategoriaServicoDisponivel(c, cat.CodigoAcademia, cat.Nome, &catID); err != nil {
+			utils.RespondWithValidationError(c, err)
+			return
+		}
+		err = cat.Reativar(id)
+	} else {
+		err = cat.Desativar(id)
+	}
+	if err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	if err = apoio.GetRepository(c).SaveWithAudit(cat, db.AuditContext{UserID: id.String(), UserType: "academia", IP: c.ClientIP()}); err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": categoriaServicoToJSON(cat)})
+}
+
+func DesativarCategoriaServico(c *gin.Context) { toggleCategoriaServico(c, false) }
+
+func ReativarCategoriaServico(c *gin.Context) { toggleCategoriaServico(c, true) }
+
+// DeletarCategoriaServico remove logicamente uma categoria de serviço.
+//
+// Regras de negócio (checadas ANTES de delegar ao aggregate, mesmo padrão
+// de DeletarCurso em cursos_handlers.go):
+//  1. Categoria deve pertencer à academia autenticada (loadCategoriaServico)
+//  2. Categoria deve estar inativa (checado pelo aggregate em Deletar)
+//  3. Não pode haver serviços (mesmo inativos, não deletados) ainda
+//     vinculados a esta categoria
+//
+// Evento CategoriaServicoDeletada gravado no ledger (auditável).
+func DeletarCategoriaServico(c *gin.Context) {
+	cat, id, ok := loadCategoriaServico(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Motivo string `json:"motivo"` // opcional, recomendado para auditoria
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	vinculados, err := apoio.GetServicosExtrasProjection(c).CountByCategoria(cat.GetID())
+	if err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	if vinculados > 0 {
+		utils.RespondWithValidationError(c, fmt.Errorf("não é possível deletar: %d serviço(s) ainda estão vinculados a esta categoria", vinculados))
+		return
+	}
+
+	if err := cat.Deletar(id, req.Motivo); err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	if err := apoio.GetRepository(c).SaveWithAudit(cat, db.AuditContext{UserID: id.String(), UserType: "academia", IP: c.ClientIP()}); err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "categoria de serviço deletada com sucesso"})
+}
+
+// GetCategoriaServico busca uma única categoria pelo id — mesmo padrão de
+// GetServicoExtra (internal/handlers/servicosextras/servico_extra_handlers.go): lê da
+// projection (mais barato que reconstituir o agregado via ledger, como
+// loadCategoriaServico faz para as operações de escrita), 404 se não
+// existir, 403 se pertencer a outra academia. Usado pela tela de edição do
+// frontend, que antes buscava a lista inteira e filtrava pelo id no
+// cliente por não ter essa rota disponível.
+func GetCategoriaServico(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	cat, err := apoio.GetCategoriasServicoProjection(c).GetByID(id)
+	if err != nil || cat == nil {
+		utils.RespondWithNotFoundError(c, "categoria de serviço")
+		return
+	}
+	if role, _ := middleware.GetUserType(c); role != "admin" {
+		codigo, _, ok := apoio.Academy(c)
+		if !ok {
+			return
+		}
+		if cat.CodigoAcademia != codigo {
+			utils.RespondWithForbiddenError(c, "categoria de serviço não pertence a esta academia")
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": cat})
+}
+
+func ListarCategoriasServico(c *gin.Context) {
+	codigo, _, ok := apoio.Academy(c)
+	if !ok {
+		return
+	}
+	ativosOnly := strings.EqualFold(c.Query("ativos"), "true")
+	cats, err := apoio.GetCategoriasServicoProjection(c).GetByAcademia(codigo, ativosOnly)
+	if err != nil {
+		utils.RespondWithInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"categorias_servico": cats, "total": len(cats)})
+}

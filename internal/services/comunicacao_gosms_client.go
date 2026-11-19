@@ -2,7 +2,7 @@ package services
 
 // Cliente HTTP para a API da GoSMS (docs/Parceiros e integrações/GoSMS API
 // - Documentação.md, seção 5.1 — POST /v1/messages), usado pelo módulo real
-// de comunicação (internal/handlers/comunicacao_handlers.go). Isolado dos
+// de comunicação (internal/handlers/comunicacao/comunicacao_handlers.go). Isolado dos
 // outros domínios (não importa internal/db, internal/domain/aggregates nem
 // internal/finance) — recebe sempre o token de API já decifrado pelo
 // chamador, nunca lê variáveis de ambiente diretamente.

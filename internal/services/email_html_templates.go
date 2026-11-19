@@ -20,7 +20,7 @@ import (
 //
 // Motivo: o backend passou a ser responsável por enviar estes dois e-mails
 // diretamente (ver SolicitarVerificacaoEmail / SolicitarRecuperacaoSenha em
-// internal/handlers/auth_email_handlers.go), e o frontend deixou de os
+// internal/handlers/autenticacao/auth_email_handlers.go), e o frontend deixou de os
 // enviar. Para o e-mail entregue manter a MESMA identidade visual já
 // validada, o HTML precisou de ser portado para Go — não existia, até esta
 // tarefa, uma versão do design completo (com logótipo, dark-mode e os

@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"spuri/internal/db"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
 	"spuri/internal/utils"
 )
 
@@ -20,7 +20,7 @@ import (
 // decisions (anular/reativar obrigações) remain academy-exclusive and don't
 // use this function at all.
 func authorizeMensalidadeAcademia(c *gin.Context, codigo *string, write bool) bool {
-	_, typ, own, ok := financeActor(c)
+	_, typ, own, ok := apoio.FinanceActor(c)
 	if !ok {
 		return false
 	}
@@ -47,14 +47,14 @@ func ConfigurarMensalidade(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para configurar mensalidade desta academia")
 		return
 	}
-	id, typ, _, ok := financeActor(c)
+	id, typ, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	out, err := FinanceiroService.ConfigureMensalidade(c.Request.Context(), in, id.String(), typ, c.ClientIP())
+	out, err := apoio.FinanceiroService.ConfigureMensalidade(c.Request.Context(), in, id.String(), typ, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, out)
@@ -66,9 +66,9 @@ func ListarConfiguracoesMensalidade(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para consultar mensalidades desta academia")
 		return
 	}
-	out, err := FinanceiroService.ListMensalidadeConfiguracoes(c.Request.Context(), codigo)
+	out, err := apoio.FinanceiroService.ListMensalidadeConfiguracoes(c.Request.Context(), codigo)
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"codigo_academia": codigo, "configuracoes": out})
@@ -94,7 +94,7 @@ func RemoverConfiguracaoMensalidade(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para remover configuração de mensalidade desta academia")
 		return
 	}
-	id, typ, _, ok := financeActor(c)
+	id, typ, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
@@ -108,8 +108,8 @@ func RemoverConfiguracaoMensalidade(c *gin.Context) {
 		}
 		cursoID = &parsed
 	}
-	if err := FinanceiroService.RemoveMensalidadeConfiguracao(c.Request.Context(), in.CodigoAcademia, in.Nivel, in.AnoAcademico, cursoID, id.String(), typ, c.ClientIP()); err != nil {
-		financeError(c, err)
+	if err := apoio.FinanceiroService.RemoveMensalidadeConfiguracao(c.Request.Context(), in.CodigoAcademia, in.Nivel, in.AnoAcademico, cursoID, id.String(), typ, c.ClientIP()); err != nil {
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -125,13 +125,13 @@ func DefinirMesInicioCobranca(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para definir o início de cobrança desta academia")
 		return
 	}
-	id, typ, _, ok := financeActor(c)
+	id, typ, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	if err := FinanceiroService.DefinirMesInicioCobranca(c.Request.Context(), in, id.String(), typ, c.ClientIP()); err != nil {
-		financeError(c, err)
+	if err := apoio.FinanceiroService.DefinirMesInicioCobranca(c.Request.Context(), in, id.String(), typ, c.ClientIP()); err != nil {
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.Status(http.StatusCreated)
@@ -152,9 +152,9 @@ func ConsultarMesInicioCobranca(c *gin.Context) {
 		utils.RespondWithValidationError(c, errors.New("ano_letivo é obrigatório"))
 		return
 	}
-	mesInicio, err := FinanceiroService.ConsultarMesInicioCobranca(c.Request.Context(), codigo, anoLetivo)
+	mesInicio, err := apoio.FinanceiroService.ConsultarMesInicioCobranca(c.Request.Context(), codigo, anoLetivo)
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"codigo_academia": codigo, "ano_letivo": anoLetivo, "mes_inicio": mesInicio})
@@ -178,13 +178,13 @@ func RemoverMesInicioCobranca(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para remover o início de cobrança desta academia")
 		return
 	}
-	id, typ, _, ok := financeActor(c)
+	id, typ, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	if err := FinanceiroService.RemoveMesInicioCobranca(c.Request.Context(), in.CodigoAcademia, in.AnoLetivo, id.String(), typ, c.ClientIP()); err != nil {
-		financeError(c, err)
+	if err := apoio.FinanceiroService.RemoveMesInicioCobranca(c.Request.Context(), in.CodigoAcademia, in.AnoLetivo, id.String(), typ, c.ClientIP()); err != nil {
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -193,7 +193,7 @@ func RemoverMesInicioCobranca(c *gin.Context) {
 func ConsultarMensalidadesEstudante(c *gin.Context) {
 	codigo := strings.TrimSpace(c.Param("codigo"))
 	var estudanteID string
-	err := getDBClient(c).DB().QueryRowContext(c.Request.Context(), `SELECT id::text FROM projection_estudantes WHERE codigo_estudante=$1`, codigo).Scan(&estudanteID)
+	err := apoio.GetDBClient(c).DB().QueryRowContext(c.Request.Context(), `SELECT id::text FROM projection_estudantes WHERE codigo_estudante=$1`, codigo).Scan(&estudanteID)
 	if err == sql.ErrNoRows {
 		utils.RespondWithNotFoundError(c, "estudante")
 		return
@@ -202,7 +202,7 @@ func ConsultarMensalidadesEstudante(c *gin.Context) {
 		utils.RespondWithInternalError(c, err)
 		return
 	}
-	actorID, typ, own, ok := financeActor(c)
+	actorID, typ, own, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
@@ -229,9 +229,9 @@ func ConsultarMensalidadesEstudante(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para consultar mensalidades")
 		return
 	}
-	out, err := FinanceiroService.ListMensalidades(c.Request.Context(), codigo, somenteAcademia)
+	out, err := apoio.FinanceiroService.ListMensalidades(c.Request.Context(), codigo, somenteAcademia)
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	metodos := map[string][]string{}
@@ -241,7 +241,7 @@ func ConsultarMensalidadesEstudante(c *gin.Context) {
 		academias[mensalidade.CodigoAcademia] = true
 	}
 	for academia := range academias {
-		if itens, aviso, err := FinanceiroService.MetodosPagamentoMensalidadeComAviso(c.Request.Context(), academia); err == nil {
+		if itens, aviso, err := apoio.FinanceiroService.MetodosPagamentoMensalidadeComAviso(c.Request.Context(), academia); err == nil {
 			// Só os métodos que o provedor ativo da academia suporta (Tarefa
 			// 120); quando a lista fica vazia, o aviso explica o motivo
 			// (provedor não configurado, métodos não suportados...) (Tarefa 121).
@@ -262,26 +262,27 @@ func IniciarPagamentoMensalidades(c *gin.Context) {
 		utils.RespondWithValidationError(c, errors.New("payload inválido"))
 		return
 	}
-	id, typ, _, ok := financeActor(c)
+	id, typ, _, ok := apoio.FinanceActor(c)
 	if !ok || typ != "estudante" {
 		utils.RespondWithForbiddenError(c, "somente o estudante pode iniciar pagamento de mensalidades")
 		return
 	}
 	var codigo string
-	if err := getDBClient(c).DB().QueryRowContext(c.Request.Context(), `SELECT codigo_estudante FROM projection_estudantes WHERE id=$1`, id).Scan(&codigo); err != nil {
+	if err := apoio.GetDBClient(c).DB().QueryRowContext(c.Request.Context(), `SELECT codigo_estudante FROM projection_estudantes WHERE id=$1`, id).Scan(&codigo); err != nil {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
 	in.CodigoEstudante = codigo
-	out, err := FinanceiroService.IniciarPagamentoMensalidades(c.Request.Context(), in, id.String(), typ, c.ClientIP())
+	out, err := apoio.FinanceiroService.IniciarPagamentoMensalidades(c.Request.Context(), in, id.String(), typ, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, out)
 }
 
-func AnularObrigacoesMensalidade(c *gin.Context)   { alterarObrigacoesMensalidadeHandler(c, false) }
+func AnularObrigacoesMensalidade(c *gin.Context) { alterarObrigacoesMensalidadeHandler(c, false) }
+
 func ReativarObrigacoesMensalidade(c *gin.Context) { alterarObrigacoesMensalidadeHandler(c, true) }
 
 func alterarObrigacoesMensalidadeHandler(c *gin.Context, reativar bool) {
@@ -290,7 +291,7 @@ func alterarObrigacoesMensalidadeHandler(c *gin.Context, reativar bool) {
 		utils.RespondWithValidationError(c, errors.New("payload inválido"))
 		return
 	}
-	id, typ, own, ok := financeActor(c)
+	id, typ, own, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
@@ -311,12 +312,12 @@ func alterarObrigacoesMensalidadeHandler(c *gin.Context, reativar bool) {
 	}
 	var err error
 	if reativar {
-		err = FinanceiroService.ReativarObrigacoesMensalidade(c.Request.Context(), in, id.String(), typ, c.ClientIP())
+		err = apoio.FinanceiroService.ReativarObrigacoesMensalidade(c.Request.Context(), in, id.String(), typ, c.ClientIP())
 	} else {
-		err = FinanceiroService.AnularObrigacoesMensalidade(c.Request.Context(), in, id.String(), typ, c.ClientIP())
+		err = apoio.FinanceiroService.AnularObrigacoesMensalidade(c.Request.Context(), in, id.String(), typ, c.ClientIP())
 	}
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.Status(http.StatusCreated)
@@ -327,7 +328,7 @@ func alterarObrigacoesMensalidadeHandler(c *gin.Context, reativar bool) {
 // price resolution.
 func academiaPossuiVinculoMensalidade(c *gin.Context, codigoEstudante, codigoAcademia string) bool {
 	var ok bool
-	err := getDBClient(c).DB().QueryRowContext(c.Request.Context(), `
+	err := apoio.GetDBClient(c).DB().QueryRowContext(c.Request.Context(), `
 		SELECT EXISTS (
 			SELECT 1 FROM projection_estudantes WHERE codigo_estudante=$1 AND codigo_academia=$2
 			UNION ALL
@@ -336,9 +337,4 @@ func academiaPossuiVinculoMensalidade(c *gin.Context, codigoEstudante, codigoAca
 			  AND (t.estudantes ? $1 OR EXISTS (SELECT 1 FROM jsonb_each(t.historico_estudantes_ano_letivo) h WHERE h.value ? $1))
 		)`, codigoEstudante, codigoAcademia).Scan(&ok)
 	return err == nil && ok
-}
-
-func getDBClient(c *gin.Context) *db.Client {
-	v, _ := c.Get("dbClient")
-	return v.(*db.Client)
 }

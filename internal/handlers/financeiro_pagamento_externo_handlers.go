@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
 	"spuri/internal/utils"
 )
 
@@ -19,18 +19,18 @@ import (
 // nada quando a cobrança não está com status Success.
 func executarEfeitosPagamentoConfirmado(c *gin.Context, identifier, actorID, actorType string) error {
 	ctx := c.Request.Context()
-	paga, err := FinanceiroService.CobrancaEstaPaga(ctx, identifier)
+	paga, err := apoio.FinanceiroService.CobrancaEstaPaga(ctx, identifier)
 	if err != nil || !paga {
 		return err
 	}
-	if codigo, tipo, mes, ano, err := FinanceiroService.DadosServicoExtraDaCobranca(ctx, identifier); err == nil && codigo != "" {
+	if codigo, tipo, mes, ano, err := apoio.FinanceiroService.DadosServicoExtraDaCobranca(ctx, identifier); err == nil && codigo != "" {
 		switch tipo {
 		case "taxa_inscricao":
-			if err := efetivarVinculoServicoExtraPago(c, codigo); err != nil {
+			if err := apoio.EfetivarVinculoServicoExtraPago(c, codigo); err != nil {
 				return err
 			}
 		case "mensalidade", "preco_unico":
-			_ = FinanceiroService.ConfirmarLancamentoServicoExtraPago(ctx, codigo, tipo, ano, mes, actorID, actorType, c.ClientIP())
+			_ = apoio.FinanceiroService.ConfirmarLancamentoServicoExtraPago(ctx, codigo, tipo, ano, mes, actorID, actorType, c.ClientIP())
 		}
 	}
 	return nil
@@ -53,7 +53,7 @@ func RegistrarPagamentoExternoCobranca(c *gin.Context) {
 	if !bindJSONOpcional(c, &in) {
 		return
 	}
-	id, typ, own, ok := financeActor(c)
+	id, typ, own, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
@@ -62,7 +62,7 @@ func RegistrarPagamentoExternoCobranca(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "somente a academia dona pode marcar um pagamento como feito fora da plataforma")
 		return
 	}
-	out, err := FinanceiroService.RegistrarPagamentoExternoCobranca(c.Request.Context(), own, c.Param("id"), in, id.String(), typ, c.ClientIP())
+	out, err := apoio.FinanceiroService.RegistrarPagamentoExternoCobranca(c.Request.Context(), own, c.Param("id"), in, id.String(), typ, c.ClientIP())
 	if err != nil {
 		// Pagamento já feito dentro da plataforma: completa os efeitos que
 		// faltavam antes de recusar.
@@ -72,7 +72,7 @@ func RegistrarPagamentoExternoCobranca(c *gin.Context) {
 				return
 			}
 		}
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	if effectErr := executarEfeitosPagamentoConfirmado(c, c.Param("id"), id.String(), typ); effectErr != nil {
@@ -90,7 +90,7 @@ func RegistrarPagamentoExternoMensalidades(c *gin.Context) {
 		utils.RespondWithValidationError(c, errors.New("payload inválido"))
 		return
 	}
-	id, typ, own, ok := financeActor(c)
+	id, typ, own, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
@@ -104,9 +104,9 @@ func RegistrarPagamentoExternoMensalidades(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "estudante não pertence a esta academia")
 		return
 	}
-	out, err := FinanceiroService.RegistrarPagamentoExternoMensalidades(c.Request.Context(), own, in, id.String(), typ, c.ClientIP())
+	out, err := apoio.FinanceiroService.RegistrarPagamentoExternoMensalidades(c.Request.Context(), own, in, id.String(), typ, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, out)

@@ -12,9 +12,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-
 	"spuri/internal/db"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 // handlerStatusTransport simula a AppyPay com um status de consulta mutável
@@ -62,7 +63,7 @@ func newPagamentoExternoHandlerRouter(client *db.Client, userType, academia stri
 func newCobrancaPendenteFixture(t *testing.T) *pagamentoExternoHandlerFixture {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	t.Setenv("ENV", "test")
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
 	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
@@ -79,9 +80,9 @@ func newCobrancaPendenteFixture(t *testing.T) *pagamentoExternoHandlerFixture {
 		t.Fatal(err)
 	}
 	charge := novaCobrancaAvulsaREF(t, service, academia, 750)
-	previous := FinanceiroService
-	FinanceiroService = service
-	t.Cleanup(func() { FinanceiroService = previous })
+	previous := apoio.FinanceiroService
+	apoio.FinanceiroService = service
+	t.Cleanup(func() { apoio.FinanceiroService = previous })
 
 	return &pagamentoExternoHandlerFixture{
 		client: client, router: newPagamentoExternoHandlerRouter(client, "academia", academia), academia: academia,

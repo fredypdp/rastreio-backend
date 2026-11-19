@@ -15,7 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
+	"spuri/internal/sysconfig"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,7 +38,7 @@ func EndpointsAtuais() Endpoints {
 // academias e para o Spuri no mesmo ambiente, e vem de variável de ambiente
 // em vez de ser configurado por credencial.
 func appyPayResource() (string, error) {
-	v := strings.TrimSpace(os.Getenv("APPYPAY_RESOURCE"))
+	v := strings.TrimSpace(sysconfig.String("APPYPAY_RESOURCE"))
 	if v == "" {
 		return "", errors.New("APPYPAY_RESOURCE não configurada")
 	}

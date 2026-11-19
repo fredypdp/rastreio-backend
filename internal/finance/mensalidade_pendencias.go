@@ -121,7 +121,7 @@ func (s *Service) escopoMensalidadeEstudantes(ctx context.Context, academia stri
 // resultado a cobranças de mensalidade quando usado; é uma decisão de design
 // deliberada, documentada na tarefa que introduziu este filtro.
 // Devolve []string (representação textual dos UUIDs), não []uuid.UUID:
-// mesma convenção já usada em internal/handlers/avaliacao_final_regras.go
+// mesma convenção já usada em internal/handlers/avaliacoes/avaliacao_final_regras.go
 // (uuidStrings) para parâmetros ANY($n::uuid[]) via pq.Array — pq.Array não
 // suporta []uuid.UUID diretamente por reflection.
 // mes (tarefa 60) filtra adicionalmente por um mês específico de calendário

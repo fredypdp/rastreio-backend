@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"spuri/internal/db"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 type consultaCobrancaMockTransport struct{ status string }
@@ -40,7 +42,7 @@ func (t *consultaCobrancaMockTransport) RoundTrip(req *http.Request) (*http.Resp
 // ficar persistida no read model.
 func TestIntegrationConsultarCobrancaAppyPayPersisteSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	t.Setenv("ENV", "test")
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
 	t.Setenv("JWT_SECRET", "test-only-secret-material-at-least-32")
@@ -63,9 +65,9 @@ func TestIntegrationConsultarCobrancaAppyPayPersisteSuccess(t *testing.T) {
 		t.Fatalf("cobrança REF retornou success na criação, cenário não reproduz o fluxo real (deveria ser Pending): %q", charge.Status)
 	}
 
-	previousService := FinanceiroService
-	FinanceiroService = service
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = service
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	// AppyPay confirma o pagamento de forma assíncrona (pagamento na
 	// referência bancária). A academia/candidato descobre isso consultando o

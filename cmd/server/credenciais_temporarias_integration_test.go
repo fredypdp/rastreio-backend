@@ -16,7 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"spuri/internal/db"
-	"spuri/internal/handlers"
+	"spuri/internal/handlers/apoio"
 	"spuri/internal/middleware"
 	"spuri/internal/projections"
 )
@@ -75,7 +75,7 @@ func prepararSMS(t *testing.T, fx *turmaVinculoFixture, producao bool) *capturaS
 		t.Fatal(err)
 	}
 	cap := &capturaSMS{}
-	restaurar := handlers.SubstituirEnvioSMSParaTeste(func(_ context.Context, _ string, destinatario, conteudo string) (string, error) {
+	restaurar := apoio.SubstituirEnvioSMSParaTeste(func(_ context.Context, _ string, destinatario, conteudo string) (string, error) {
 		cap.mu.Lock()
 		defer cap.mu.Unlock()
 		if cap.falhar != nil {

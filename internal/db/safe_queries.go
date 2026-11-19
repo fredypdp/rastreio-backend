@@ -204,6 +204,8 @@ var validEventTypes = map[string]bool{
 	"RemetenteComunicacaoConfigurado": true,
 	// Tarefa 117: configuração de limite de faltas e reprovação por faltas.
 	"ConfiguracaoFaltasDefinida":    true,
+	"ConfiguracaoSistemaDefinida":   true,
+	"ConfiguracaoSistemaRemovida":   true,
 	"MensagemComunicacaoRegistrada": true,
 	// ── Documentos extra (catálogo por academia) ─────────────────────────────
 	"DocumentoExtraCriado":     true,
@@ -235,6 +237,7 @@ var validAggregateTypes = map[string]bool{
 	"Sumario":              true,
 	"RemetenteComunicacao": true,
 	"ConfiguracaoFaltas":   true,
+	"ConfiguracaoSistema":  true,
 	"MensagemComunicacao":  true,
 	"DocumentoExtra":       true,
 }

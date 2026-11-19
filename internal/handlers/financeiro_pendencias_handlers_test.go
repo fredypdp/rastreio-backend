@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"spuri/internal/db"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 // seedAcademiaEscolarPrivadaComTurma cria a academia + turma mínimas
@@ -67,15 +69,15 @@ func seedMensalidadeConfigParaHTTP(t *testing.T, client *db.Client, academia, an
 // nenhuma cobrança real por trás do item.
 func TestIntegrationListarCobrancasAppyPayComEscopoRetornaPendenciaSintetica(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academia := "PND" + strings.ReplaceAll(uuid.NewString(), "-", "")[:7]
 	estudante := "ESTPND1"
 	seedAcademiaEscolarPrivadaComTurma(t, client, academia, "T-HTTP-PND", "2026_2027", "7_ano_fundamental", estudante)
 	seedMensalidadeConfigParaHTTP(t, client, academia, "7_ano_fundamental", 15000)
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	call := func(query string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
@@ -148,15 +150,15 @@ func TestIntegrationListarCobrancasAppyPayComEscopoRetornaPendenciaSintetica(t *
 // estado=Failed deve vir vazio, e não "todos os pagamentos".
 func TestIntegrationListarCobrancasAppyPayFiltroEstadoExcluiPendenciasSinteticas(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academia := "BUG" + strings.ReplaceAll(uuid.NewString(), "-", "")[:7]
 	estudante := "ESTBUG1"
 	seedAcademiaEscolarPrivadaComTurma(t, client, academia, "T-HTTP-BUG", "2026_2027", "7_ano_fundamental", estudante)
 	seedMensalidadeConfigParaHTTP(t, client, academia, "7_ano_fundamental", 15000)
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	call := func(query string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
@@ -237,16 +239,16 @@ func TestIntegrationListarCobrancasAppyPayFiltroEstadoExcluiPendenciasSinteticas
 // deve e nunca tentou pagar, marcados com status="pendente".
 func TestIntegrationConsultarCobrancasEstudanteIncluiPendenciaSintetica(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academia := "PNDE" + strings.ReplaceAll(uuid.NewString(), "-", "")[:6]
 	estudante := "ESTPND2"
 	seedAcademiaEscolarPrivadaComTurma(t, client, academia, "T-HTTP-PNDE", "2026_2027", "7_ano_fundamental", estudante)
 	seedMensalidadeConfigParaHTTP(t, client, academia, "7_ano_fundamental", 15000)
 	seedEstudanteParaCobrancas(t, client, estudante, academia)
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -284,15 +286,15 @@ func TestIntegrationConsultarCobrancasEstudanteIncluiPendenciaSintetica(t *testi
 // parâmetros que o passo final do drill-down do frontend usa.
 func TestIntegrationListarCobrancasAppyPayFiltraPorMes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academia := "MES" + strings.ReplaceAll(uuid.NewString(), "-", "")[:7]
 	estudante := "ESTHMS1"
 	seedAcademiaEscolarPrivadaComTurma(t, client, academia, "T-HTTP-MES", "2026_2027", "7_ano_fundamental", estudante)
 	seedMensalidadeConfigParaHTTP(t, client, academia, "7_ano_fundamental", 15000)
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	call := func(query string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()

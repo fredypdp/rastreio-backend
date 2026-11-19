@@ -20,7 +20,7 @@ import (
 
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
-	"spuri/internal/handlers"
+	"spuri/internal/handlers/estudantes"
 	"spuri/internal/middleware"
 	"spuri/internal/projections"
 )
@@ -325,7 +325,7 @@ func jobCadastro(t *testing.T, fx *turmaVinculoFixture, item map[string]string) 
 	c.Set("dbClient", fx.client)
 	c.Set("repository", fx.repository)
 	c.Set("projManager", projManager)
-	handlers.RegisterEstudantePorAcademiaJobItem(c)
+	estudantes.RegisterEstudantePorAcademiaJobItem(c)
 	return w
 }
 func TestTurmaVinculo08CadastroEmMassaTrataItensComESemCodigoTurmaDeFormaIndependente(t *testing.T) {
@@ -398,7 +398,7 @@ func TestTurmaVinculo09FalhaPosCriacaoGeraTurmaAvisoSemAbortarCadastro(t *testin
 	c.Set("repository", fx.repository)
 	c.Set("projManager", projManager)
 	_ = tokenSemAnoLetivo
-	handlers.RegisterEstudantePorAcademiaJobItem(c)
+	estudantes.RegisterEstudantePorAcademiaJobItem(c)
 
 	if w.Code < 200 || w.Code > 299 || !strings.Contains(w.Body.String(), "turma_aviso") {
 		t.Fatalf("status=%d %s", w.Code, w.Body.String())

@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"spuri/internal/db"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 func provedoresHandlersSetup(t *testing.T) (*db.Client, func(ctx *gin.Context, academia string)) {
@@ -17,11 +19,11 @@ func provedoresHandlersSetup(t *testing.T) (*db.Client, func(ctx *gin.Context, a
 	gin.SetMode(gin.TestMode)
 	t.Setenv("ENV", "test")
 	t.Setenv("APPYPAY_RESOURCE", "integration-resource")
-	client := integrationFinanceClient(t)
-	previous := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	FinanceiroService.SetHTTPClient(&http.Client{Transport: handlerAppyPayMockTransport{}})
-	t.Cleanup(func() { FinanceiroService = previous })
+	client := testsupport.IntegrationFinanceClient(t)
+	previous := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	apoio.FinanceiroService.SetHTTPClient(&http.Client{Transport: handlerAppyPayMockTransport{}})
+	t.Cleanup(func() { apoio.FinanceiroService = previous })
 	userID := uuid.New()
 	return client, func(ctx *gin.Context, academia string) {
 		ctx.Set("dbClient", client)

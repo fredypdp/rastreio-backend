@@ -12,30 +12,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"spuri/internal/finance"
-	"spuri/internal/middleware"
+	"spuri/internal/handlers/apoio"
 	"spuri/internal/utils"
 )
 
-// FinanceiroService is initialised with the application database in initDB.
-var FinanceiroService = finance.NewService(nil)
-
-func financeActor(c *gin.Context) (uuid.UUID, string, string, bool) {
-	id, ok := middleware.GetUserID(c)
-	if !ok {
-		return uuid.Nil, "", "", false
-	}
-	typeName, ok := middleware.GetUserType(c)
-	if !ok {
-		return uuid.Nil, "", "", false
-	}
-	return id, typeName, c.GetString("codigo_academia"), true
-}
 func financeAdminAllowed(c *gin.Context) bool {
-	_, t, _, ok := financeActor(c)
+	_, t, _, ok := apoio.FinanceActor(c)
 	if !ok || t != "admin" {
 		return false
 	}
-	return verificarPermissaoAdmin(c, "fpp") == nil
+	return apoio.VerificarPermissaoAdmin(c, "fpp") == nil
 }
 
 // authorizeFinanceScope autoriza o ator autenticado a agir sobre um contexto
@@ -48,7 +34,7 @@ func financeAdminAllowed(c *gin.Context) bool {
 // "spuri" (as configurações do próprio Spuri, que não pertencem a nenhuma
 // academia) e para a própria academia sobre si mesma.
 func authorizeFinanceScope(c *gin.Context, context *string, academy *string, write bool) bool {
-	_, t, own, ok := financeActor(c)
+	_, t, own, ok := apoio.FinanceActor(c)
 	if !ok {
 		return false
 	}
@@ -81,9 +67,9 @@ func authorizeFinanceScope(c *gin.Context, context *string, academy *string, wri
 // rotação (que gera um novo segredo, invalidando o anterior). Já escreve a
 // resposta de erro (404 ou 403) no contexto quando retorna false.
 func credentialScopeAuthorized(c *gin.Context, id uuid.UUID, write bool) bool {
-	contexto, academia, err := FinanceiroService.CredentialScope(c.Request.Context(), id)
+	contexto, academia, err := apoio.FinanceiroService.CredentialScope(c.Request.Context(), id)
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return false
 	}
 	if !authorizeFinanceScope(c, &contexto, &academia, write) {
@@ -91,21 +77,6 @@ func credentialScopeAuthorized(c *gin.Context, id uuid.UUID, write bool) bool {
 		return false
 	}
 	return true
-}
-
-func financeError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, finance.ErrNotFound):
-		utils.RespondWithNotFoundError(c, "recurso financeiro")
-	case errors.Is(err, finance.ErrPagamentoExistente):
-		utils.RespondWithConflictError(c, finance.ErrPagamentoExistente.Error())
-	case errors.Is(err, finance.ErrConflict):
-		utils.RespondWithConflictError(c, "operação financeira equivalente em processamento")
-	case errors.Is(err, finance.ErrUpstream):
-		utils.RespondWithServiceUnavailable(c, err)
-	default:
-		utils.RespondWithValidationError(c, err)
-	}
 }
 
 func CriarCobranca(c *gin.Context) {
@@ -122,18 +93,19 @@ func CriarCobranca(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para este contexto financeiro")
 		return
 	}
-	id, t, _, ok := financeActor(c)
+	id, t, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	out, err := FinanceiroService.CreateCharge(c.Request.Context(), in, id.String(), t, c.ClientIP())
+	out, err := apoio.FinanceiroService.CreateCharge(c.Request.Context(), in, id.String(), t, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, out)
 }
+
 func GerarQRCode(c *gin.Context) {
 	var in finance.QRCodeRequest
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -147,18 +119,19 @@ func GerarQRCode(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para este contexto financeiro")
 		return
 	}
-	id, t, _, ok := financeActor(c)
+	id, t, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	out, err := FinanceiroService.CreateGPOQRCode(c.Request.Context(), in, id.String(), t, c.ClientIP())
+	out, err := apoio.FinanceiroService.CreateGPOQRCode(c.Request.Context(), in, id.String(), t, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, out)
 }
+
 func ConsultarCobranca(c *gin.Context) {
 	contexto := c.Query("contexto_tipo")
 	academia := c.Query("codigo_academia")
@@ -166,14 +139,14 @@ func ConsultarCobranca(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para este contexto financeiro")
 		return
 	}
-	id, t, _, ok := financeActor(c)
+	id, t, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	out, err := FinanceiroService.ConsultCharge(c.Request.Context(), contexto, academia, c.Param("id"), id.String(), t, c.ClientIP())
+	out, err := apoio.FinanceiroService.ConsultCharge(c.Request.Context(), contexto, academia, c.Param("id"), id.String(), t, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	// Uma cobrança confirmada pela AppyPay só quando alguém consulta o status
@@ -251,8 +224,8 @@ func ListarCobrancas(c *gin.Context) {
 		utils.RespondWithValidationError(c, err)
 		return
 	}
-	limit := parseBoundedInt(c.Query("limit"), 50, 1, 1000)
-	offset := parseBoundedInt(c.Query("offset"), 0, 0, 1_000_000)
+	limit := apoio.ParseBoundedInt(c.Query("limit"), 50, 1, 1000)
+	offset := apoio.ParseBoundedInt(c.Query("offset"), 0, 0, 1_000_000)
 	estados := c.QueryArray("estado")
 	origens := c.QueryArray("tipo")
 	// pendências sem cobrança só são computadas quando pelo menos um dos
@@ -269,22 +242,22 @@ func ListarCobrancas(c *gin.Context) {
 	// de qualquer forma.
 	var pendencias []finance.MensalidadeMesView
 	if (turmaID != nil || cursoID != nil || anoAcademico != "" || anoLetivo != "") && finance.DeveIncluirPendenciasSemCobranca(estados, origens) {
-		pendencias, err = FinanceiroService.PendenciasSemCobranca(c.Request.Context(), academia, turmaID, cursoID, anoAcademico, anoLetivo, mes)
+		pendencias, err = apoio.FinanceiroService.PendenciasSemCobranca(c.Request.Context(), academia, turmaID, cursoID, anoAcademico, anoLetivo, mes)
 		if err != nil {
-			financeError(c, err)
+			apoio.FinanceError(c, err)
 			return
 		}
-		pendencias, err = FinanceiroService.FiltrarPendenciasComCobrancaRealVinculada(c.Request.Context(), pendencias)
+		pendencias, err = apoio.FinanceiroService.FiltrarPendenciasComCobrancaRealVinculada(c.Request.Context(), pendencias)
 		if err != nil {
-			financeError(c, err)
+			apoio.FinanceError(c, err)
 			return
 		}
 	}
 	res, err := finance.ListarPagamentosUnificado(pendencias, func(limitCobrancas, offsetCobrancas int) (*finance.CobrancaListResult, error) {
-		return FinanceiroService.ListCobrancas(c.Request.Context(), contexto, academia, estados, origens, turmaID, cursoID, anoAcademico, anoLetivo, mes, limitCobrancas, offsetCobrancas)
+		return apoio.FinanceiroService.ListCobrancas(c.Request.Context(), contexto, academia, estados, origens, turmaID, cursoID, anoAcademico, anoLetivo, mes, limitCobrancas, offsetCobrancas)
 	}, limit, offset)
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"pagamentos": res.Pagamentos, "total": len(res.Pagamentos), "total_geral": res.Total, "limit": limit, "offset": offset})
@@ -301,7 +274,7 @@ func ListarCobrancas(c *gin.Context) {
 func ConsultarCobrancasEstudante(c *gin.Context) {
 	codigo := strings.TrimSpace(c.Param("codigo"))
 	var estudanteID string
-	err := getDBClient(c).DB().QueryRowContext(c.Request.Context(), `SELECT id::text FROM projection_estudantes WHERE codigo_estudante=$1`, codigo).Scan(&estudanteID)
+	err := apoio.GetDBClient(c).DB().QueryRowContext(c.Request.Context(), `SELECT id::text FROM projection_estudantes WHERE codigo_estudante=$1`, codigo).Scan(&estudanteID)
 	if err == sql.ErrNoRows {
 		utils.RespondWithNotFoundError(c, "estudante")
 		return
@@ -310,7 +283,7 @@ func ConsultarCobrancasEstudante(c *gin.Context) {
 		utils.RespondWithInternalError(c, err)
 		return
 	}
-	actorID, typ, own, ok := financeActor(c)
+	actorID, typ, own, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
@@ -349,8 +322,8 @@ func ConsultarCobrancasEstudante(c *gin.Context) {
 	}
 	anoAcademico := c.Query("ano_academico")
 	anoLetivo := c.Query("ano_letivo")
-	limit := parseBoundedInt(c.Query("limit"), 50, 1, 1000)
-	offset := parseBoundedInt(c.Query("offset"), 0, 0, 1_000_000)
+	limit := apoio.ParseBoundedInt(c.Query("limit"), 50, 1, 1000)
+	offset := apoio.ParseBoundedInt(c.Query("offset"), 0, 0, 1_000_000)
 	estados := c.QueryArray("estado")
 	origens := c.QueryArray("tipo")
 	// pendências sem cobrança são sempre calculadas aqui (sem exigir nenhum
@@ -364,14 +337,14 @@ func ConsultarCobrancasEstudante(c *gin.Context) {
 	// resultado — ver finance.DeveIncluirPendenciasSemCobranca.
 	var pendencias []finance.MensalidadeMesView
 	if finance.DeveIncluirPendenciasSemCobranca(estados, origens) {
-		pendencias, err = FinanceiroService.PendenciasSemCobrancaEstudante(c.Request.Context(), codigo, somenteAcademia)
+		pendencias, err = apoio.FinanceiroService.PendenciasSemCobrancaEstudante(c.Request.Context(), codigo, somenteAcademia)
 		if err != nil {
-			financeError(c, err)
+			apoio.FinanceError(c, err)
 			return
 		}
-		pendencias, err = FinanceiroService.FiltrarPendenciasComCobrancaRealVinculada(c.Request.Context(), pendencias)
+		pendencias, err = apoio.FinanceiroService.FiltrarPendenciasComCobrancaRealVinculada(c.Request.Context(), pendencias)
 		if err != nil {
-			financeError(c, err)
+			apoio.FinanceError(c, err)
 			return
 		}
 	}
@@ -379,10 +352,10 @@ func ConsultarCobrancasEstudante(c *gin.Context) {
 	// GET /financeiro/cobrancas, tarefa 60) — passamos nil para manter o
 	// comportamento anterior inalterado aqui.
 	res, err := finance.ListarPagamentosUnificado(pendencias, func(limitCobrancas, offsetCobrancas int) (*finance.CobrancaListResult, error) {
-		return FinanceiroService.ListCobrancasEstudante(c.Request.Context(), codigo, somenteAcademia, estados, origens, turmaID, cursoID, anoAcademico, anoLetivo, nil, limitCobrancas, offsetCobrancas)
+		return apoio.FinanceiroService.ListCobrancasEstudante(c.Request.Context(), codigo, somenteAcademia, estados, origens, turmaID, cursoID, anoAcademico, anoLetivo, nil, limitCobrancas, offsetCobrancas)
 	}, limit, offset)
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"pagamentos": res.Pagamentos, "total": len(res.Pagamentos), "total_geral": res.Total, "limit": limit, "offset": offset})
@@ -399,7 +372,7 @@ func CancelarCobranca(c *gin.Context) {
 		utils.RespondWithValidationError(c, errors.New("payload inválido"))
 		return
 	}
-	id, actorType, ownAcademy, ok := financeActor(c)
+	id, actorType, ownAcademy, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
@@ -418,7 +391,7 @@ func CancelarCobranca(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para cancelar esta cobrança")
 		return
 	}
-	out, err := FinanceiroService.CancelCharge(c.Request.Context(), contexto, academia, c.Param("id"), in.Motivo, id.String(), actorType, c.ClientIP())
+	out, err := apoio.FinanceiroService.CancelCharge(c.Request.Context(), contexto, academia, c.Param("id"), in.Motivo, id.String(), actorType, c.ClientIP())
 	if err != nil {
 		// Um pagamento descoberto durante o cancelamento ainda precisa dos
 		// efeitos de confirmação (matrícula, serviço extra) — o mesmo que o
@@ -429,7 +402,7 @@ func CancelarCobranca(c *gin.Context) {
 				return
 			}
 		}
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, out)
@@ -441,12 +414,12 @@ func CancelarCobranca(c *gin.Context) {
 // restante (idempotência, ledger, efeitos de negócio) é comum a todos.
 func ReceberWebhook(provedorID, metodo string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		prov, err := FinanceiroService.ProvedorPorID(provedorID)
+		prov, err := apoio.FinanceiroService.ProvedorPorID(provedorID)
 		if err != nil {
 			c.Status(http.StatusNotFound)
 			return
 		}
-		owner, err := FinanceiroService.AuthenticateWebhook(c.Request.Context(), prov.ID(), c.Request.Header)
+		owner, err := apoio.FinanceiroService.AuthenticateWebhook(c.Request.Context(), prov.ID(), c.Request.Header)
 		if err != nil {
 			c.Status(http.StatusUnauthorized)
 			return
@@ -461,7 +434,7 @@ func ReceberWebhook(provedorID, metodo string) gin.HandlerFunc {
 			c.Status(http.StatusBadRequest)
 			return
 		}
-		_, confirmedSuccess, err := FinanceiroService.AcceptWebhook(c.Request.Context(), prov.ID(), metodo, eventID, owner, payload)
+		_, confirmedSuccess, err := apoio.FinanceiroService.AcceptWebhook(c.Request.Context(), prov.ID(), metodo, eventID, owner, payload)
 		if err != nil {
 			c.Status(http.StatusInternalServerError)
 			return

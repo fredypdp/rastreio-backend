@@ -88,7 +88,7 @@ var identificadorGoSMSRegex = regexp.MustCompile(`^[A-Z0-9]{1,11}$`)
 // responsável por já ter deixado r.ID igual ao ID determinístico de
 // RemetenteAggregateID(provedor) antes de chamar Configurar (via SetID
 // quando o agregado é novo, ou via repository.Load quando já existe — ver
-// ResolverRemetenteAggregate em internal/handlers/comunicacao_handlers.go).
+// ResolverRemetenteAggregate em internal/handlers/comunicacao/comunicacao_handlers.go).
 // tokenAPICifrado já deve vir cifrado pelo chamador
 // (services.EncryptComunicacaoSegredo) — este método nunca lida com o
 // token em texto plano.

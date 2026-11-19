@@ -6,12 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/finance"
-
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 // Tarefa 121: o pagador só vê os métodos que o provedor ativo da academia
@@ -73,8 +74,8 @@ func servicoPorNome(t *testing.T, corpo map[string]any, nome string) map[string]
 func TestIntegrationHandlersServicosExtrasFiltramMetodosParaOPagadorEMantemAVisaoDaAcademia(t *testing.T) {
 	client, setActor := provedoresHandlersSetup(t)
 	academia := "SVX" + uuid.NewString()[:6]
-	idAcademia := seedAcademiaParaCategoriaServico(t, client, academia)
-	idEstudante := seedEstudanteComAnoEscolar(t, client, academia, "7_ano_fundamental")
+	idAcademia := testsupport.SeedAcademiaParaCategoriaServico(t, client, academia)
+	idEstudante := testsupport.SeedEstudanteComAnoEscolar(t, client, academia, "7_ano_fundamental")
 	semearServicoPago(t, client, academia, "Transporte", `{"REF","XYZ"}`, `{"XYZ"}`, true)
 	semearServicoPago(t, client, academia, "Só XYZ", `{"XYZ"}`, `{}`, false)
 	if _, err := client.DB().Exec(`INSERT INTO projection_servicos_extras
@@ -89,7 +90,7 @@ func TestIntegrationHandlersServicosExtrasFiltramMetodosParaOPagadorEMantemAVisa
 		ctx.Set("dbClient", client)
 		ctx.Set("user_id", idEstudante)
 		ctx.Set("user_type", "estudante")
-		ListarServicosExtrasCatalogoEstudante(ctx)
+		apoio.ListarServicosExtrasCatalogoEstudante(ctx)
 		var corpo map[string]any
 		decodeJSON(t, rec, &corpo)
 		if rec.Code != http.StatusOK {
@@ -101,7 +102,7 @@ func TestIntegrationHandlersServicosExtrasFiltramMetodosParaOPagadorEMantemAVisa
 		ctx, rec := newDeleteJSONContext(http.MethodGet, "/academia/servico/"+academia+"/servicos-extras", nil)
 		ctx.Set("dbClient", client)
 		ctx.Params = gin.Params{{Key: "codigo_academia", Value: academia}}
-		ListarServicosExtrasPublico(ctx)
+		apoio.ListarServicosExtrasPublico(ctx)
 		var corpo map[string]any
 		decodeJSON(t, rec, &corpo)
 		return corpo
@@ -111,7 +112,7 @@ func TestIntegrationHandlersServicosExtrasFiltramMetodosParaOPagadorEMantemAVisa
 		ctx.Set("dbClient", client)
 		ctx.Set("user_id", idAcademia)
 		ctx.Set("user_type", "academia")
-		ListarServicosExtrasAcademia(ctx)
+		apoio.ListarServicosExtrasAcademia(ctx)
 		var corpo map[string]any
 		decodeJSON(t, rec, &corpo)
 		if rec.Code != http.StatusOK {
@@ -189,7 +190,7 @@ func TestIntegrationHandlersCriarEAtualizarServicoExtraValidamMetodosNoProvedor(
 	client, setActor := provedoresHandlersSetup(t)
 	repository := db.NewAggregateRepository(client)
 	academia := "SVV" + uuid.NewString()[:6]
-	idAcademia := seedAcademiaParaCategoriaServico(t, client, academia)
+	idAcademia := testsupport.SeedAcademiaParaCategoriaServico(t, client, academia)
 	ctx, rec := newDeleteJSONContext(http.MethodPost, "/financeiro/credenciais", credenciaisAppyPayNeutras(academia))
 	setActor(ctx, academia)
 	ConfigurarCredencial(ctx)
@@ -205,7 +206,7 @@ func TestIntegrationHandlersCriarEAtualizarServicoExtraValidamMetodosNoProvedor(
 	criar := func(corpo map[string]any) (*gin.Context, map[string]any, int) {
 		c, r := newDeleteJSONContext(http.MethodPost, "/academia/servicos-extras", corpo)
 		comoAcademia(c)
-		CriarServicoExtra(c)
+		apoio.CriarServicoExtra(c)
 		var out map[string]any
 		decodeJSON(t, r, &out)
 		return c, out, r.Code
@@ -226,7 +227,7 @@ func TestIntegrationHandlersCriarEAtualizarServicoExtraValidamMetodosNoProvedor(
 		c, r := newDeleteJSONContext(http.MethodPut, "/academia/servicos-extras/"+id, corpo)
 		comoAcademia(c)
 		c.Params = gin.Params{{Key: "id", Value: id}}
-		AtualizarServicoExtra(c)
+		apoio.AtualizarServicoExtra(c)
 		var o map[string]any
 		decodeJSON(t, r, &o)
 		return o, r.Code
@@ -276,7 +277,7 @@ func TestIntegrationHandlersInscricoesDoEstudanteFiltramOsMetodosDaTaxa(t *testi
 	}
 	disps := map[string]finance.PagamentoDisponivel{}
 	aplicar := func(s *aggregates.SolicitacaoServicoExtra) gin.H {
-		return solicitacaoServicoExtraParaPagador(context.Background(), disps, s, solicitacaoServicoExtraToJSON(s))
+		return apoio.SolicitacaoServicoExtraParaPagador(context.Background(), disps, s, apoio.SolicitacaoServicoExtraToJSON(s))
 	}
 
 	// Sem taxa de inscrição: a serialização fica intacta e nem consulta o provedor.

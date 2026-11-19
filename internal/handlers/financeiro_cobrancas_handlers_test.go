@@ -10,6 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 // TestIntegrationListarCobrancasAppyPayFiltraPorEscopoEEstado cobre o
@@ -17,7 +19,7 @@ import (
 // filtros de estado/tipo funcionam através da rota real.
 func TestIntegrationListarCobrancasAppyPayFiltraPorEscopoEEstado(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academiaA := "LSTA" + strings.ReplaceAll(uuid.NewString(), "-", "")[:6]
 	academiaB := "LSTB" + strings.ReplaceAll(uuid.NewString(), "-", "")[:6]
 
@@ -41,9 +43,9 @@ func TestIntegrationListarCobrancasAppyPayFiltraPorEscopoEEstado(t *testing.T) {
 	insert(academiaA, "cancelada", "codigo_solicitacao", "SOL-LST-1")
 	insert(academiaB, "criada", "", "")
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	call := func(academia, query string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
@@ -135,7 +137,7 @@ func TestIntegrationListarCobrancasAppyPayFiltraPorEscopoEEstado(t *testing.T) {
 // gravam mais esse valor daqui pra frente.
 func TestIntegrationListarCobrancasAppyPayFiltroFailedIncluiFalhadaLocal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academia := "LSTF" + strings.ReplaceAll(uuid.NewString(), "-", "")[:6]
 
 	insert := func(status string) {
@@ -154,9 +156,9 @@ func TestIntegrationListarCobrancasAppyPayFiltroFailedIncluiFalhadaLocal(t *test
 	insert("Failed")
 	insert("Success")
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -192,7 +194,7 @@ func TestIntegrationListarCobrancasAppyPayFiltroFailedIncluiFalhadaLocal(t *test
 // um admin sem a permissão "fpp" não pode listar cobranças.
 func TestIntegrationListarCobrancasAppyPayRejeitaAdminSemPermissaoFPP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	adminID := uuid.New()
 	if _, err := client.DB().Exec(`INSERT INTO projection_admins (id,nome,email,senha_hash,role,status,created_by) VALUES ($1,'gerente-lst',$2,'hash','gerente','ativo',$1)`, adminID, "gerente-lst-"+uuid.NewString()+"@example.test"); err != nil {
 		t.Fatal(err)

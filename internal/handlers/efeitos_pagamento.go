@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/gin-gonic/gin"
 	"spuri/internal/db"
 	"spuri/internal/finance"
-
-	"github.com/gin-gonic/gin"
+	"spuri/internal/handlers/apoio"
 )
 
 // aplicarEfeitosPagamento executa os efeitos de negócio de uma cobrança
@@ -23,14 +23,14 @@ import (
 // cobrança.
 func aplicarEfeitosPagamento(c *gin.Context, identificador, actorID, actorType, ip string) error {
 	ctx := c.Request.Context()
-	if codigo, tipo, mes, ano, err := FinanceiroService.DadosServicoExtraDaCobranca(ctx, identificador); err == nil && codigo != "" {
+	if codigo, tipo, mes, ano, err := apoio.FinanceiroService.DadosServicoExtraDaCobranca(ctx, identificador); err == nil && codigo != "" {
 		switch tipo {
 		case "taxa_inscricao":
-			if err := efetivarVinculoServicoExtraPago(c, codigo); err != nil {
+			if err := apoio.EfetivarVinculoServicoExtraPago(c, codigo); err != nil {
 				return err
 			}
 		case "mensalidade", "preco_unico":
-			_ = FinanceiroService.ConfirmarLancamentoServicoExtraPago(ctx, codigo, tipo, ano, mes, actorID, actorType, ip)
+			_ = apoio.FinanceiroService.ConfirmarLancamentoServicoExtraPago(ctx, codigo, tipo, ano, mes, actorID, actorType, ip)
 		}
 	}
 	return nil

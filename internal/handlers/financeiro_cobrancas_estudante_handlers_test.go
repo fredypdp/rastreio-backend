@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"spuri/internal/db"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
+	"spuri/internal/handlers/testsupport"
 )
 
 // seedEstudanteParaCobrancas cria a linha mínima válida de
@@ -32,7 +34,7 @@ func seedEstudanteParaCobrancas(t *testing.T, client *db.Client, codigoEstudante
 // histórico completo, sem filtro de estado por padrão.
 func TestIntegrationConsultarCobrancasEstudanteEstudanteVeTodosOsEstados(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academia := "COBEST" + strings.ReplaceAll(uuid.NewString(), "-", "")[:4]
 	codigoEstudante := "ESTCOB1"
 	estudanteID := seedEstudanteParaCobrancas(t, client, codigoEstudante, academia)
@@ -52,9 +54,9 @@ func TestIntegrationConsultarCobrancasEstudanteEstudanteVeTodosOsEstados(t *test
 	insert("Success")
 	insert("Failed")
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -101,7 +103,7 @@ func TestIntegrationConsultarCobrancasEstudanteEstudanteVeTodosOsEstados(t *test
 // compartilham a mesma função de expansão do filtro.
 func TestIntegrationConsultarCobrancasEstudanteFiltroEstadoFailedIncluiFalhadaLocal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academia := "COBEST" + strings.ReplaceAll(uuid.NewString(), "-", "")[:4]
 	codigoEstudante := "ESTCOB4"
 	estudanteID := seedEstudanteParaCobrancas(t, client, codigoEstudante, academia)
@@ -122,9 +124,9 @@ func TestIntegrationConsultarCobrancasEstudanteFiltroEstadoFailedIncluiFalhadaLo
 	insert("Failed")
 	insert("Success")
 
-	previousService := FinanceiroService
-	FinanceiroService = finance.NewService(client)
-	t.Cleanup(func() { FinanceiroService = previousService })
+	previousService := apoio.FinanceiroService
+	apoio.FinanceiroService = finance.NewService(client)
+	t.Cleanup(func() { apoio.FinanceiroService = previousService })
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -160,7 +162,7 @@ func TestIntegrationConsultarCobrancasEstudanteFiltroEstadoFailedIncluiFalhadaLo
 // sabendo o código dele.
 func TestIntegrationConsultarCobrancasEstudanteRejeitaOutroEstudante(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academia := "COBEST" + strings.ReplaceAll(uuid.NewString(), "-", "")[:4]
 	codigoEstudante := "ESTCOB2"
 	seedEstudanteParaCobrancas(t, client, codigoEstudante, academia)
@@ -184,7 +186,7 @@ func TestIntegrationConsultarCobrancasEstudanteRejeitaOutroEstudante(t *testing.
 // recebe 403, mesmo sabendo o código dele.
 func TestIntegrationConsultarCobrancasEstudanteAcademiaSemVinculoEProibida(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	client := integrationFinanceClient(t)
+	client := testsupport.IntegrationFinanceClient(t)
 	academiaDona := "COBEST" + strings.ReplaceAll(uuid.NewString(), "-", "")[:4]
 	outraAcademia := "COBEST" + strings.ReplaceAll(uuid.NewString(), "-", "")[:4]
 	codigoEstudante := "ESTCOB3"

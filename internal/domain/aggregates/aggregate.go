@@ -148,6 +148,8 @@ func (f *DefaultAggregateFactory) Create(aggregateType string) (Aggregate, error
 		return NewTurma(), nil
 	case "ConfiguracaoFaltas":
 		return NewConfiguracaoFaltas(), nil
+	case "ConfiguracaoSistema":
+		return NewConfiguracaoSistema(), nil
 	case "SolicitacaoEdicaoDadoEstudante":
 		return NewSolicitacaoEdicaoDadoEstudante(), nil
 	case "SolicitacaoAlteracaoNIFAcademia":

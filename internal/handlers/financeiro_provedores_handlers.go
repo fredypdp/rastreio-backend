@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"spuri/internal/finance"
+	"spuri/internal/handlers/apoio"
 	"spuri/internal/utils"
 )
 
@@ -22,7 +23,7 @@ import (
 // campos de credencial de cada um (para o frontend montar o formulário) e os
 // métodos de pagamento que suportam. Não contém segredos.
 func ListarProvedores(c *gin.Context) {
-	c.JSON(http.StatusOK, FinanceiroService.Provedores())
+	c.JSON(http.StatusOK, apoio.FinanceiroService.Provedores())
 }
 
 // ConsultarProvedorContexto devolve o provedor ativo do contexto e, para cada
@@ -34,9 +35,9 @@ func ConsultarProvedorContexto(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para consultar o provedor de pagamento")
 		return
 	}
-	out, err := FinanceiroService.ConsultarProvedorContexto(c.Request.Context(), contexto, academia)
+	out, err := apoio.FinanceiroService.ConsultarProvedorContexto(c.Request.Context(), contexto, academia)
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, out)
@@ -58,14 +59,14 @@ func DefinirProvedorContexto(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para definir o provedor de pagamento")
 		return
 	}
-	id, t, _, ok := financeActor(c)
+	id, t, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	out, err := FinanceiroService.DefinirProvedor(c.Request.Context(), in.ContextoTipo, in.CodigoAcademia, in.Provedor, id.String(), t, c.ClientIP())
+	out, err := apoio.FinanceiroService.DefinirProvedor(c.Request.Context(), in.ContextoTipo, in.CodigoAcademia, in.Provedor, id.String(), t, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, out)
@@ -117,14 +118,14 @@ func configurarCredencial(c *gin.Context, id *uuid.UUID, in finance.CredentialIn
 		utils.RespondWithForbiddenError(c, "sem permissão para configurar estas credenciais")
 		return
 	}
-	actorID, t, _, ok := financeActor(c)
+	actorID, t, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	out, webhookSecret, err := FinanceiroService.ConfigureCredential(c.Request.Context(), id, in, actorID.String(), t, c.ClientIP())
+	out, webhookSecret, err := apoio.FinanceiroService.ConfigureCredential(c.Request.Context(), id, in, actorID.String(), t, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(status, resposta(out, webhookSecret))
@@ -139,7 +140,7 @@ func ListarCredenciais(c *gin.Context) {
 		utils.RespondWithForbiddenError(c, "sem permissão para consultar credenciais financeiras")
 		return
 	}
-	out, err := FinanceiroService.ListCredentials(c.Request.Context(), contexto, academia)
+	out, err := apoio.FinanceiroService.ListCredentials(c.Request.Context(), contexto, academia)
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
 		return
@@ -178,14 +179,14 @@ func removerCredencial(c *gin.Context, contexto, academia, provedor string) {
 		utils.RespondWithForbiddenError(c, "sem permissão para remover estas credenciais")
 		return
 	}
-	id, t, _, ok := financeActor(c)
+	id, t, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	resultado, err := FinanceiroService.RemoveCredential(c.Request.Context(), contexto, academia, provedor, id.String(), t, c.ClientIP())
+	resultado, err := apoio.FinanceiroService.RemoveCredential(c.Request.Context(), contexto, academia, provedor, id.String(), t, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, resultado)
@@ -203,9 +204,9 @@ func ConsultarSegredoWebhook(c *gin.Context) {
 	if !credentialScopeAuthorized(c, id, false) {
 		return
 	}
-	secret, err := FinanceiroService.WebhookSecret(c.Request.Context(), id)
+	secret, err := apoio.FinanceiroService.WebhookSecret(c.Request.Context(), id)
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"webhook_secret": secret, "webhook_header_name": finance.WebhookHeaderName})
@@ -222,14 +223,14 @@ func RotacionarSegredoWebhook(c *gin.Context) {
 	if !credentialScopeAuthorized(c, id, true) {
 		return
 	}
-	actorID, actorType, _, ok := financeActor(c)
+	actorID, actorType, _, ok := apoio.FinanceActor(c)
 	if !ok {
 		utils.RespondWithUnauthorizedError(c)
 		return
 	}
-	secret, err := FinanceiroService.RotateWebhookSecret(c.Request.Context(), id, actorID.String(), actorType, c.ClientIP())
+	secret, err := apoio.FinanceiroService.RotateWebhookSecret(c.Request.Context(), id, actorID.String(), actorType, c.ClientIP())
 	if err != nil {
-		financeError(c, err)
+		apoio.FinanceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"webhook_secret": secret, "webhook_header_name": finance.WebhookHeaderName})

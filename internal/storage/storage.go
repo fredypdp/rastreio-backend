@@ -13,6 +13,7 @@ import (
 	"time"
 
 	mega "github.com/t3rm1n4l/go-mega"
+	"spuri/internal/sysconfig"
 )
 
 // AVISO: o gerenciamento de arquivos via Mega está validado e em produção.
@@ -121,11 +122,11 @@ func NewMegaProvider() (StorageProvider, error) {
 	if root == "" {
 		root = "data/mega_storage"
 	}
-	rootFolder := strings.Trim(strings.TrimSpace(os.Getenv("MEGA_ROOT_FOLDER")), "/")
+	rootFolder := strings.Trim(strings.TrimSpace(sysconfig.String("MEGA_ROOT_FOLDER")), "/")
 	if useLocalMegaFallback() {
 		return &MegaProvider{root: root, rootFolder: rootFolder, local: true}, nil
 	}
-	if strings.TrimSpace(os.Getenv("MEGA_EMAIL")) == "" || strings.TrimSpace(os.Getenv("MEGA_PASSWORD")) == "" {
+	if strings.TrimSpace(sysconfig.String("MEGA_EMAIL")) == "" || strings.TrimSpace(sysconfig.String("MEGA_PASSWORD")) == "" {
 		return nil, fmt.Errorf("%w: MEGA_EMAIL e MEGA_PASSWORD são obrigatórios quando STORAGE_PROVIDER=mega", ErrInvalidConfiguration)
 	}
 	provider := &MegaProvider{root: root, rootFolder: rootFolder}
@@ -140,7 +141,7 @@ func NewLocalProvider() StorageProvider {
 	if root == "" {
 		root = "data/mega_storage"
 	}
-	return &MegaProvider{root: root, rootFolder: strings.Trim(strings.TrimSpace(os.Getenv("MEGA_ROOT_FOLDER")), "/"), local: true}
+	return &MegaProvider{root: root, rootFolder: strings.Trim(strings.TrimSpace(sysconfig.String("MEGA_ROOT_FOLDER")), "/"), local: true}
 }
 
 // useLocalMegaFallback decide se o provider deve operar sobre o filesystem
@@ -201,7 +202,7 @@ func (m *MegaProvider) login() error {
 	client := mega.New()
 	client.SetTimeOut(15 * time.Second)
 	client.SetRetries(2)
-	if err := client.Login(os.Getenv("MEGA_EMAIL"), os.Getenv("MEGA_PASSWORD")); err != nil {
+	if err := client.Login(sysconfig.String("MEGA_EMAIL"), sysconfig.String("MEGA_PASSWORD")); err != nil {
 		return fmt.Errorf("falha ao autenticar no Mega: %w", sanitizeMegaError(err))
 	}
 	m.client = client
@@ -298,8 +299,8 @@ func sanitizeMegaError(err error) error {
 		return nil
 	}
 	msg := err.Error()
-	msg = strings.ReplaceAll(msg, os.Getenv("MEGA_PASSWORD"), "[redacted]")
-	msg = strings.ReplaceAll(msg, os.Getenv("MEGA_EMAIL"), "[redacted]")
+	msg = strings.ReplaceAll(msg, sysconfig.String("MEGA_PASSWORD"), "[redacted]")
+	msg = strings.ReplaceAll(msg, sysconfig.String("MEGA_EMAIL"), "[redacted]")
 	low := strings.ToLower(msg)
 	switch {
 	case errors.Is(err, mega.ENOENT) || strings.Contains(low, "not found") || strings.Contains(low, "enoent"):
