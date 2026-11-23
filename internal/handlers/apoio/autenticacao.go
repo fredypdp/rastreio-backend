@@ -31,7 +31,7 @@ func RejectDedicatedContactFields(c *gin.Context) bool {
 		return true
 	}
 	if _, ok := raw["telefone_encarregado"]; ok {
-		msg := "O campo 'telefone_encarregado' não é aceito nesta rota. Use PUT /estudante/encarregado/telefone."
+		msg := "O campo 'telefone_encarregado' não é aceito nesta rota. O telefone do encarregado pertence à conta do encarregado (PUT /me/telefone) ou é trocado pela academia (PUT /academia/estudante/:codigo/encarregado)."
 		c.JSON(http.StatusBadRequest, gin.H{"error": "VALIDATION_ERROR", "message": msg, "details": []gin.H{{"field": "telefone_encarregado", "code": "campo_nao_permitido", "message": msg}}})
 		return true
 	}
@@ -130,33 +130,10 @@ func EnviarCredenciaisSMS(ctx context.Context, c *gin.Context, ator AtorComunica
 	return ResultadoCredenciais{Canal: "sms", Enviada: true}
 }
 
-// TelefoneDestinoCredenciaisEstudante escolhe o telefone que recebe as
-// credenciais: superior → telefone do estudante; escolar → telefone do
-// encarregado; sem nível definido, o que existir. O resultado é normalizado
-// para o formato 9XXXXXXXX exigido pelo envio de SMS. Chama-se ANTES de criar a
-// conta, para não criar contas cujas credenciais não podem ser entregues.
-func TelefoneDestinoCredenciaisEstudante(anoFund, anoMedio, anoSuperior, telEstudante, telEncarregado *string) (string, error) {
-	preenchido := func(v *string) bool { return v != nil && strings.TrimSpace(*v) != "" }
-	var bruto *string
-	switch {
-	case preenchido(anoSuperior):
-		bruto = telEstudante
-	case preenchido(anoFund) || preenchido(anoMedio):
-		bruto = telEncarregado
-	case preenchido(telEstudante):
-		bruto = telEstudante
-	default:
-		bruto = telEncarregado
-	}
-	if !preenchido(bruto) {
-		return "", fmt.Errorf("não há telefone para enviar as credenciais do estudante: informe o telefone do estudante (ensino superior) ou do encarregado (ensino escolar)")
-	}
-	destino, err := normalizarDestinatarioComunicacao(*bruto)
-	if err != nil {
-		return "", fmt.Errorf("o telefone que recebe as credenciais deve ser um número móvel angolano de 9 dígitos iniciado por 9 (ex.: 923456789): %w", err)
-	}
-	return destino, nil
-}
+// (Parte 5) O telefone das credenciais do ESTUDANTE já não é escolhido aqui:
+// vem da regra única de contato, services.ResolverContato /
+// services.ResolverContatoDoEstudante, que no nível escolar usa sempre o
+// encarregado e nunca cai no telefone do estudante.
 
 // telefoneDestinoCredenciaisAcademia valida o telefone obrigatório da academia
 // (destino do SMS de credenciais) e devolve-o normalizado (9XXXXXXXX).

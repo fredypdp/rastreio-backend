@@ -17,23 +17,42 @@ import (
 // POST /academia/estudante/register
 // ============================================================================
 
+// BlocoEncarregado é o encarregado informado no cadastro do estudante do nível
+// escolar (Plano, Partes 4 e 5). Se já existe um encarregado com o mesmo
+// telefone (ou e-mail), ele é REUTILIZADO (vínculo sem novas credenciais); senão
+// a conta é criada e as credenciais vão por SMS ao telefone informado, que é o
+// do próprio encarregado.
+type BlocoEncarregado struct {
+	Nome           string  `json:"nome"`
+	Genero         string  `json:"genero"`
+	DataNascimento string  `json:"data_nascimento"`
+	Telefone       string  `json:"telefone"`
+	Email          *string `json:"email"`
+	// Relação com o educando (opcional; "outro" exige relacao_outro).
+	Relacao      *string `json:"relacao"`
+	RelacaoOutro *string `json:"relacao_outro"`
+}
+
 // CadastroEstudanteAcademiaRequest — genero e data_nascimento são obrigatórios.
 type CadastroEstudanteAcademiaRequest struct {
-	Nome                string                                   `json:"nome"            binding:"required"`
-	Genero              string                                   `json:"genero"          binding:"required"`
-	DataNascimento      time.Time                                `json:"data_nascimento" binding:"required"`
-	Email               string                                   `json:"email"`
-	Telefone            string                                   `json:"telefone"`
-	TelefoneEncarregado string                                   `json:"telefone_encarregado"`
-	BilheteIdentidade   string                                   `json:"bilhete_identidade"`
-	BilheteEncarregado  string                                   `json:"bilhete_identidade_encarregado"`
-	AnoEscolar          string                                   `json:"ano_escolar_fundamental"`
-	AnoEscolarMedio     string                                   `json:"ano_escolar_medio"`
-	AnoSuperior         string                                   `json:"ano_superior"`
-	CursoMedioID        string                                   `json:"curso_medio_id"`
-	CursoSuperiorID     string                                   `json:"curso_superior_id"`
-	Documentos          map[string]aggregates.DocumentoMatricula `json:"documentos,omitempty"`
-	CodigoTurma         string                                   `json:"codigo_turma"`
+	Nome           string    `json:"nome"            binding:"required"`
+	Genero         string    `json:"genero"          binding:"required"`
+	DataNascimento time.Time `json:"data_nascimento" binding:"required"`
+	Email          string    `json:"email"`
+	Telefone       string    `json:"telefone"`
+	// TelefoneEncarregado é o alias antigo de encarregado.telefone (continua aceito).
+	TelefoneEncarregado string `json:"telefone_encarregado"`
+	// Encarregado é obrigatório para o nível escolar (Parte 5).
+	Encarregado        BlocoEncarregado                         `json:"encarregado"`
+	BilheteIdentidade  string                                   `json:"bilhete_identidade"`
+	BilheteEncarregado string                                   `json:"bilhete_identidade_encarregado"`
+	AnoEscolar         string                                   `json:"ano_escolar_fundamental"`
+	AnoEscolarMedio    string                                   `json:"ano_escolar_medio"`
+	AnoSuperior        string                                   `json:"ano_superior"`
+	CursoMedioID       string                                   `json:"curso_medio_id"`
+	CursoSuperiorID    string                                   `json:"curso_superior_id"`
+	Documentos         map[string]aggregates.DocumentoMatricula `json:"documentos,omitempty"`
+	CodigoTurma        string                                   `json:"codigo_turma"`
 }
 
 func PodeAuditarEstudante(c *gin.Context, estudante *projections.EstudanteDTO) bool {
@@ -90,30 +109,47 @@ func (pdf AsyncUploadedPDF) ToUploadedPDF(fallbackField string) UploadedPDF {
 }
 
 type CadastroEstudanteJSONItem struct {
-	CodigoTemporario       string                                   `json:"codigo_temporario"`
-	Nome                   string                                   `json:"nome"`
-	Genero                 string                                   `json:"genero"`
-	DataNascimento         string                                   `json:"data_nascimento"`
-	Email                  string                                   `json:"email"`
-	Telefone               string                                   `json:"telefone"`
-	TelefoneEncarregado    string                                   `json:"telefone_encarregado"`
-	BilheteIdentidade      string                                   `json:"bilhete_identidade"`
-	BilheteEncarregado     string                                   `json:"bilhete_identidade_encarregado"`
-	AnoEscolar             string                                   `json:"ano_escolar_fundamental"`
-	AnoEscolarMedio        string                                   `json:"ano_escolar_medio"`
-	AnoSuperior            string                                   `json:"ano_superior"`
-	CursoMedioID           string                                   `json:"curso_medio_id"`
-	CursoSuperiorID        string                                   `json:"curso_superior_id"`
-	CodigoTurma            string                                   `json:"codigo_turma"`
-	DeclaracaoAnoAcademico string                                   `json:"declaracao_ano_academico"`
-	Documentos             map[string]aggregates.DocumentoMatricula `json:"documentos"`
-	Arquivos               map[string]AsyncUploadedPDF              `json:"arquivos,omitempty"`
+	CodigoTemporario    string           `json:"codigo_temporario"`
+	Nome                string           `json:"nome"`
+	Genero              string           `json:"genero"`
+	DataNascimento      string           `json:"data_nascimento"`
+	Email               string           `json:"email"`
+	Telefone            string           `json:"telefone"`
+	TelefoneEncarregado string           `json:"telefone_encarregado"`
+	Encarregado         BlocoEncarregado `json:"encarregado"`
+	// Forma "plana" do bloco (mesmos nomes do multipart): vale quando "encarregado" não é enviado.
+	EncarregadoNome           string                                   `json:"encarregado_nome"`
+	EncarregadoGenero         string                                   `json:"encarregado_genero"`
+	EncarregadoDataNascimento string                                   `json:"encarregado_data_nascimento"`
+	EncarregadoTelefone       string                                   `json:"encarregado_telefone"`
+	EncarregadoEmail          *string                                  `json:"encarregado_email"`
+	EncarregadoRelacao        *string                                  `json:"encarregado_relacao"`
+	EncarregadoRelacaoOutro   *string                                  `json:"encarregado_relacao_outro"`
+	BilheteIdentidade         string                                   `json:"bilhete_identidade"`
+	BilheteEncarregado        string                                   `json:"bilhete_identidade_encarregado"`
+	AnoEscolar                string                                   `json:"ano_escolar_fundamental"`
+	AnoEscolarMedio           string                                   `json:"ano_escolar_medio"`
+	AnoSuperior               string                                   `json:"ano_superior"`
+	CursoMedioID              string                                   `json:"curso_medio_id"`
+	CursoSuperiorID           string                                   `json:"curso_superior_id"`
+	CodigoTurma               string                                   `json:"codigo_turma"`
+	DeclaracaoAnoAcademico    string                                   `json:"declaracao_ano_academico"`
+	Documentos                map[string]aggregates.DocumentoMatricula `json:"documentos"`
+	Arquivos                  map[string]AsyncUploadedPDF              `json:"arquivos,omitempty"`
 }
 
 func (item CadastroEstudanteJSONItem) ToCadastroRequest() (CadastroEstudanteAcademiaRequest, string, error) {
 	dataNascimento, err := parseCadastroEstudanteAsyncDate(item.DataNascimento)
 	if err != nil {
 		return CadastroEstudanteAcademiaRequest{}, "", err
+	}
+	bloco := item.Encarregado
+	if bloco.Nome == "" && bloco.Telefone == "" {
+		bloco = BlocoEncarregado{
+			Nome: item.EncarregadoNome, Genero: item.EncarregadoGenero, DataNascimento: item.EncarregadoDataNascimento,
+			Telefone: item.EncarregadoTelefone, Email: item.EncarregadoEmail,
+			Relacao: item.EncarregadoRelacao, RelacaoOutro: item.EncarregadoRelacaoOutro,
+		}
 	}
 	return CadastroEstudanteAcademiaRequest{
 		Nome:                strings.TrimSpace(item.Nome),
@@ -122,6 +158,7 @@ func (item CadastroEstudanteJSONItem) ToCadastroRequest() (CadastroEstudanteAcad
 		Email:               strings.TrimSpace(item.Email),
 		Telefone:            strings.TrimSpace(item.Telefone),
 		TelefoneEncarregado: strings.TrimSpace(item.TelefoneEncarregado),
+		Encarregado:         bloco,
 		BilheteIdentidade:   strings.TrimSpace(item.BilheteIdentidade),
 		BilheteEncarregado:  strings.TrimSpace(item.BilheteEncarregado),
 		AnoEscolar:          strings.TrimSpace(item.AnoEscolar),

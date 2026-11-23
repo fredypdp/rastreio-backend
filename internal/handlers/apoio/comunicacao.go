@@ -15,6 +15,7 @@ import (
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/projections"
 	"spuri/internal/services"
+	"spuri/internal/utils"
 )
 
 // Tarefa 123 (SEC-04) — envio padronizado de SMS.
@@ -149,20 +150,11 @@ var destinatarioNacionalComunicacaoRegex = regexp.MustCompile(`^9\d{8}$`)
 // dígitos (o mesmo aceito diretamente pela GoSMS e usado para montar o
 // E.164 da Ziett).
 func normalizarDestinatarioComunicacao(v string) (string, error) {
-	clean := strings.TrimSpace(v)
-	clean = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(clean)
-	if strings.HasPrefix(clean, "+244") {
-		clean = strings.TrimPrefix(clean, "+244")
-	} else if strings.HasPrefix(clean, "244") && len(clean) == 12 {
-		clean = strings.TrimPrefix(clean, "244")
+	n, err := utils.NormalizarTelefoneNacional(v)
+	if err != nil {
+		return "", fmt.Errorf("destinatário %s", err.Error())
 	}
-	if strings.HasPrefix(clean, "0") && len(clean) == 10 {
-		clean = strings.TrimPrefix(clean, "0")
-	}
-	if !destinatarioNacionalComunicacaoRegex.MatchString(clean) {
-		return "", fmt.Errorf("destinatário deve ser um número móvel angolano válido, no formato nacional de 9 dígitos iniciado por 9 (ex.: 923456789), com ou sem prefixo +244")
-	}
-	return clean, nil
+	return n, nil
 }
 
 const conteudoMensagemComunicacaoMaxLen = 1000

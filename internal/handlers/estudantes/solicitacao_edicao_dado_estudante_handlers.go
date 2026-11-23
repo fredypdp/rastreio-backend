@@ -377,40 +377,9 @@ func limparDocumentoBIOrfao(c *gin.Context, documento *aggregates.DocumentoMatri
 	}
 }
 
-func AtualizarTelefoneEncarregado(c *gin.Context) {
-	userID, _ := middleware.GetUserID(c)
-	var raw map[string]string
-	if err := c.ShouldBindJSON(&raw); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-	for k := range raw {
-		if k != "telefone_encarregado" {
-			utils.RespondWithValidationError(c, fmt.Errorf("campo não permitido: %s", k))
-			return
-		}
-	}
-	tel := strings.TrimSpace(raw["telefone_encarregado"])
-	if err := utils.ValidatePhoneStrictNational(tel); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-	loaded, err := apoio.GetRepository(c).Load(userID, "Estudante")
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-	agg := loaded.(*aggregates.Estudante)
-	if err := agg.AlterarTelefoneEncarregado(tel); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-	if err := apoio.GetRepository(c).SaveWithAudit(agg, db.AuditContext{UserID: userID.String(), UserType: "estudante", IP: c.ClientIP()}); err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "telefone do encarregado atualizado com sucesso"})
-}
+// (Parte 5) PUT /estudante/encarregado/telefone foi removida: o telefone do
+// encarregado pertence à CONTA do encarregado (PUT /me/telefone) ou é trocado
+// pela academia (PUT /academia/estudante/:codigo/encarregado).
 
 func ListarSolicitacoesEdicaoEstudante(c *gin.Context) {
 	userID, _ := middleware.GetUserID(c)

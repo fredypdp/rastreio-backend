@@ -48,6 +48,27 @@ func AlterarSenha(c *gin.Context) {
 		}
 	}
 
+	// ── Secretário, professor e encarregado (Parte 4) ──────────────────────
+	if tipo, _ := userType.(string); ehContaPessoa(tipo) {
+		uid := userID.(uuid.UUID)
+		conta, err := apoio.GetContasProjection(c).GetByID(uid, tipo)
+		if err != nil || conta == nil {
+			utils.RespondWithNotFoundError(c, tipo)
+			return
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(conta.SenhaHash), []byte(req.SenhaAtual)); err != nil {
+			utils.RespondWithUnauthorizedError(c)
+			return
+		}
+		if err := alterarSenhaContaPessoa(c, tipo, uid, req.NovaSenha, motivo); err != nil {
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		log.Printf("Senha alterada (event sourcing) para %s: %v", tipo, uid)
+		responderSenhaAlterada(c, motivo, uid, tipo)
+		return
+	}
+
 	// ── Admin ──────────────────────────────────────────────────────────────
 	if userType == "admin" {
 		uid := userID.(uuid.UUID)
@@ -199,6 +220,8 @@ func GetMeuPerfil(c *gin.Context) {
 		getPerfilAcademia(c, userID)
 	case "admin":
 		getPerfilAdmin(c, userID)
+	case "secretario", "professor", "encarregado":
+		perfilContaPessoa(c, userType, userID)
 	default:
 		utils.RespondWithValidationError(c, fmt.Errorf("tipo de usuário inválido"))
 	}
@@ -410,6 +433,10 @@ func contaComSenhaTemporaria(client *db.Client, userType string, id uuid.UUID) b
 		"admin":     "projection_admins",
 		"academia":  "projection_academias",
 		"estudante": "projection_estudantes",
+		// Parte 4: os três tipos novos vivem numa só tabela (id é único).
+		"secretario":  "projection_contas_pessoa",
+		"professor":   "projection_contas_pessoa",
+		"encarregado": "projection_contas_pessoa",
 	}
 	tabela, ok := tabelas[userType]
 	if !ok || client == nil {

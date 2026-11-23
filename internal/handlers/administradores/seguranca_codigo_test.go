@@ -102,7 +102,11 @@ func fonte(t *testing.T, arquivos map[string]string, sufixo string) string {
 func TestSegurancaPontosDeCriacaoUsamSenhaTemporaria(t *testing.T) {
 	arquivos := arquivosGoDeProducao(t)
 	exigem := map[string][]string{
-		"internal/handlers/estudantes/estudante_handlers.go":  {"GenerateTempPassword()", "DefinirSenhaTemporaria()", "TelefoneDestinoCredenciaisEstudante("},
+		// Parte 5: o destino das credenciais do estudante vem da regra única de contato.
+		"internal/handlers/estudantes/estudante_handlers.go": {"GenerateTempPassword()", "DefinirSenhaTemporaria()", "ResolverContato("},
+		// Parte 4: secretário, professor e encarregado também nascem com senha temporária.
+		"internal/handlers/apoio/conta_pessoa_plano.go":       {"GenerateTempPassword()", "DefinirSenhaTemporaria()"},
+		"internal/handlers/contas/contas_handlers.go":         {"DefinirSenhaTemporaria()"},
 		"internal/handlers/academias/academia_handlers.go":    {"GenerateTempPassword()", "DefinirSenhaTemporaria()", "TelefoneDestinoCredenciaisAcademia("},
 		"internal/handlers/administradores/admin_handlers.go": {"GenerateTempPassword()", "DefinirSenhaTemporaria()"},
 	}

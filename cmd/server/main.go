@@ -24,6 +24,7 @@ import (
 	"spuri/internal/handlers/autenticacao"
 	"spuri/internal/handlers/avaliacoes"
 	"spuri/internal/handlers/comunicacao"
+	"spuri/internal/handlers/contas"
 	"spuri/internal/handlers/cursos"
 	"spuri/internal/handlers/documentos"
 	"spuri/internal/handlers/estudantes"
@@ -178,6 +179,7 @@ func initProjections() error {
 
 	// ── Tier 1 — sem dependências externas ───────────────────────────────
 	projManager.RegisterProjection("admins", projections.NewAdminProjection(dbClient))
+	projManager.RegisterProjection("contas", projections.NewContasProjection(dbClient))
 	projManager.RegisterProjection("academias", projections.NewAcademiaProjection(dbClient))
 	projManager.RegisterProjection("cursos", projections.NewCursosProjection(dbClient))
 	projManager.RegisterProjection("servicos_extras", projections.NewServicoExtraProjection(dbClient))
@@ -534,7 +536,6 @@ func setupRouter() *gin.Engine {
 		estudante.GET("/servicos-extras/minhas-inscricoes/:id/documento/download", servicosextras.DownloadDocumentoSolicitacaoServicoExtraEstudante)
 		estudante.GET("/servicos-extras/minhas-inscricoes/:id/pendencias", servicosextras.MinhasPendenciasServicoExtra)
 		estudante.PUT("/servicos-extras/minhas-inscricoes/:id/cancelar", servicosextras.CancelarSolicitacaoServicoExtraEstudante)
-		estudante.PUT("/encarregado/telefone", estudantes.AtualizarTelefoneEncarregado)
 		estudante.GET("/solicitacoes-edicao", estudantes.ListarSolicitacoesEdicaoEstudante)
 		estudante.GET("/solicitacoes-edicao/:codigo/documento/download", documentos.DownloadDocumentoSolicitacaoEdicaoEstudante)
 		estudante.PUT("/bilhete-identidade", estudantes.AtualizarBilheteIdentidadeSemAcademia)
@@ -551,6 +552,30 @@ func setupRouter() *gin.Engine {
 		estudante.POST("/solicitacoes-status/desvinculacao", academias.CriarSolicitacaoStatusAcademicoHandler("desvinculacao"))
 		estudante.POST("/solicitacoes-status/revinculacao/:codigo_academia", academias.CriarSolicitacaoStatusAcademicoHandler("revinculacao"))
 		estudante.DELETE("/conta", estudantes.DeletarContaEstudante) // Tarefa 73
+		// Parte 4: depois de concluir o nível escolar o estudante pode desvincular-se do encarregado.
+		estudante.DELETE("/encarregado", contas.DesvincularEncarregado)
+	}
+
+	// ── Área do professor (Parte 4): consulta restrita aos seus vínculos ──
+	professor := router.Group("/professor")
+	professor.Use(middleware.AuthMiddleware())
+	professor.Use(middleware.RequireProfessor())
+	{
+		professor.GET("/vinculos", contas.ListarMeusVinculos)
+		professor.GET("/turmas", contas.ListarMinhasTurmas)
+		professor.GET("/turmas/:codigo/estudantes", contas.ListarEstudantesDaTurma)
+		professor.GET("/turmas/:codigo/notas", contas.ConsultarNotasDaTurma)
+		professor.GET("/turmas/:codigo/faltas", contas.ConsultarFaltasDaTurma)
+	}
+
+	// ── Área do encarregado (Parte 4). Para agir em nome de um educando nas
+	// rotas do estudante, o cabeçalho X-Educando indica o código do estudante.
+	encarregado := router.Group("/encarregado")
+	encarregado.Use(middleware.AuthMiddleware())
+	encarregado.Use(middleware.RequireEncarregado())
+	{
+		encarregado.GET("/educandos", contas.ListarMeusEducandos)
+		encarregado.PUT("/educandos/:codigo/relacao", contas.AtualizarRelacaoEducando)
 	}
 
 	// ── Rotas de leitura compartilhadas de academia ────────────────────────
@@ -609,6 +634,28 @@ func setupRouter() *gin.Engine {
 	{
 		academia.PUT("/dados", academias.AtualizarDadosAcademia)
 		academia.PUT("/nivel-escolar", academias.AtualizarNivelEscolarAcademia)
+
+		// Parte 4 — secretários (RESERVADO à academia), professores e encarregados.
+		academia.GET("/permissoes", contas.ListarPermissoes)
+		academia.POST("/secretarios", contas.CriarSecretario)
+		academia.GET("/secretarios", contas.ListarSecretarios)
+		academia.GET("/secretarios/:id", contas.ObterSecretario)
+		academia.PUT("/secretarios/:id", contas.EditarSecretario)
+		academia.PUT("/secretarios/:id/ativar", contas.AtivarSecretario)
+		academia.PUT("/secretarios/:id/desativar", contas.DesativarSecretario)
+		academia.DELETE("/secretarios/:id", contas.EliminarSecretario)
+		academia.POST("/professores", contas.CriarProfessor)
+		academia.GET("/professores", contas.ListarProfessores)
+		academia.GET("/professores/:id", contas.ObterProfessor)
+		academia.PUT("/professores/:id", contas.EditarProfessor)
+		academia.PUT("/professores/:id/ativar", contas.AtivarProfessor)
+		academia.PUT("/professores/:id/desativar", contas.DesativarProfessor)
+		academia.DELETE("/professores/:id", contas.EliminarProfessor)
+		academia.POST("/professores/:id/vinculos", contas.AtribuirVinculoProfessor)
+		academia.DELETE("/professores/:id/vinculos/:vinculo_id", contas.RemoverVinculoProfessor)
+		academia.PUT("/vinculos-professor/:vinculo_id/reatribuir", contas.ReatribuirVinculo)
+		academia.GET("/encarregados/buscar", contas.BuscarEncarregado)
+		academia.PUT("/estudante/:codigo/encarregado", contas.TrocarEncarregado)
 		academia.POST("/servicos-extras", apoio.CriarServicoExtra)
 		academia.POST("/categorias-servico", servicosextras.CriarCategoriaServico)
 		academia.PUT("/categorias-servico/:id", servicosextras.AtualizarCategoriaServico)

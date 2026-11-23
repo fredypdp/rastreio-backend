@@ -11,12 +11,15 @@ import (
 	"github.com/gin-gonic/gin"
 	"spuri/internal/db"
 	"spuri/internal/handlers/apoio"
+	"spuri/internal/services"
 )
 
 func sp(s string) *string { return &s }
 
-// Tarefa 123 (SEC-04): o SMS de credenciais vai para o telefone certo, no formato 9XXXXXXXX.
-func TestTelefoneDestinoCredenciaisEstudante(t *testing.T) {
+// Tarefa 123 (SEC-04) + Parte 5: o SMS de credenciais vai para o telefone certo,
+// no formato 9XXXXXXXX, pela regra única de contato. Para o nível escolar nunca
+// cai no telefone do estudante e, sem nível definido, não há destino.
+func TestDestinoDasCredenciaisDoEstudantePelaRegraUnicaDeContato(t *testing.T) {
 	casos := []struct {
 		nome                             string
 		fund, medio, sup, telEst, telEnc *string
@@ -26,21 +29,31 @@ func TestTelefoneDestinoCredenciaisEstudante(t *testing.T) {
 		{"escolar fundamental → encarregado", sp("1_ano_fundamental"), nil, nil, sp("911111111"), sp("922222222"), "922222222", false},
 		{"escolar médio → encarregado", nil, sp("10_ano_medio"), nil, sp("911111111"), sp("922222222"), "922222222", false},
 		{"superior → o próprio estudante", nil, nil, sp("1_ano_superior"), sp("911111111"), sp("922222222"), "911111111", false},
-		{"sem nível: estudante primeiro", nil, nil, nil, sp("911111111"), sp("922222222"), "911111111", false},
-		{"sem nível: só encarregado", nil, nil, nil, nil, sp("922222222"), "922222222", false},
-		{"normaliza espaços", sp("x"), nil, nil, nil, sp("922 222 222"), "922222222", false},
-		{"normaliza +244", sp("x"), nil, nil, nil, sp("+244922222222"), "922222222", false},
-		{"escolar sem telefone do encarregado (o do estudante não serve)", sp("x"), nil, nil, sp("911111111"), nil, "", true},
-		{"superior sem telefone do estudante (o do encarregado não serve)", nil, nil, sp("x"), nil, sp("922222222"), "", true},
-		{"nenhum telefone", nil, nil, nil, nil, nil, "", true},
-		{"telefone em branco", sp("x"), nil, nil, nil, sp("   "), "", true},
-		{"fixo não é móvel", sp("x"), nil, nil, nil, sp("222123456"), "", true},
-		{"curto demais", sp("x"), nil, nil, nil, sp("92222"), "", true},
+		{"sem nível: não há destino (já não cai no estudante)", nil, nil, nil, sp("911111111"), sp("922222222"), "", true},
+		{"normaliza espaços", sp("1_ano_fundamental"), nil, nil, nil, sp("922 222 222"), "922222222", false},
+		{"normaliza +244", sp("1_ano_fundamental"), nil, nil, nil, sp("+244922222222"), "922222222", false},
+		{"escolar sem telefone do encarregado (o do estudante não serve)", sp("1_ano_fundamental"), nil, nil, sp("911111111"), nil, "", true},
+		{"superior sem telefone do estudante (o do encarregado não serve)", nil, nil, sp("1_ano_superior"), nil, sp("922222222"), "", true},
+		{"telefone em branco", sp("1_ano_fundamental"), nil, nil, nil, sp("   "), "", true},
+		{"fixo não é móvel", sp("1_ano_fundamental"), nil, nil, nil, sp("222123456"), "", true},
+		{"curto demais", sp("1_ano_fundamental"), nil, nil, nil, sp("92222"), "", true},
+	}
+	val := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
 	}
 	for _, c := range casos {
-		got, err := apoio.TelefoneDestinoCredenciaisEstudante(c.fund, c.medio, c.sup, c.telEst, c.telEnc)
-		if (err != nil) != c.erro || got != c.quer {
-			t.Errorf("%s: (%q, %v), quer (%q, erro=%v)", c.nome, got, err, c.quer, c.erro)
+		perfil := services.PerfilNivelEstudante{AnoFundamental: c.fund, AnoMedio: c.medio, AnoSuperior: c.sup}
+		est := services.ContatoPessoa{Telefone: val(c.telEst)}
+		var enc *services.ContatoPessoa
+		if c.telEnc != nil {
+			enc = &services.ContatoPessoa{Telefone: val(c.telEnc)}
+		}
+		got, err := services.ResolverContato(perfil, est, enc)
+		if (err != nil) != c.erro || got.Telefone != c.quer {
+			t.Errorf("%s: (%q, %v), quer (%q, erro=%v)", c.nome, got.Telefone, err, c.quer, c.erro)
 		}
 	}
 }

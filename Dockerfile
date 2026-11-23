@@ -46,6 +46,5 @@ EXPOSE 8080
 # 🔥 INICIAR DIRETAMENTE - Migrations rodadas pelo Go
 CMD ["./spuri"]
 
-LABEL maintainer="Spuri Team"
-LABEL description="Spuri Event Sourcing API"
-LABEL version="2.0.3"
+LABEL maintainer="Spuri"
+LABEL version="3.0.2"

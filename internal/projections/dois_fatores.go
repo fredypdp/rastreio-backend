@@ -14,11 +14,13 @@ import (
 // (e é reconstruída em qualquer rebuild, pois nasce FALSE por padrão).
 
 // tabelasDoisFatores é uma whitelist fechada: o nome da tabela nunca vem do
-// cliente, mas mesmo assim só estes três valores chegam ao SQL montado abaixo.
+// cliente, mas mesmo assim só estes valores chegam ao SQL montado abaixo.
 var tabelasDoisFatores = map[string]bool{
 	"projection_admins":     true,
 	"projection_academias":  true,
 	"projection_estudantes": true,
+	// Parte 4: secretário, professor e encarregado (uma só tabela).
+	"projection_contas_pessoa": true,
 }
 
 // execer abstrai *sqlx.DB / *sql.Tx para o UPDATE abaixo.

@@ -52,6 +52,21 @@ func atualizarMeuContato(c *gin.Context, campo string) {
 		utils.RespondWithConflictError(c, "email já cadastrado no sistema")
 		return
 	}
+	// Parte 4: secretário, professor e encarregado usam o caminho genérico.
+	if ehContaPessoa(userType) {
+		var e, t *string
+		if campo == "email" {
+			e = &valor
+		} else {
+			t = &valor
+		}
+		if err := atualizarContatoContaPessoa(c, userType, userID, e, t); err != nil {
+			utils.RespondWithValidationError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("%s atualizado com sucesso", campo)})
+		return
+	}
 	repo := apoio.GetRepository(c)
 	aggType := map[string]string{"estudante": "Estudante", "academia": "Academia", "admin": "Admin"}[userType]
 	if aggType == "" {
@@ -96,14 +111,6 @@ func atualizarMeuContato(c *gin.Context, campo string) {
 }
 
 func emailEmUsoPorOutro(c *gin.Context, email, self string) bool {
-	if e, _ := apoio.GetEstudanteProjection(c).GetByEmail(email); e != nil && e.ID.String() != self {
-		return true
-	}
-	if a, _ := apoio.GetAcademiaProjection(c).GetByEmail(email); a != nil && a.ID.String() != self {
-		return true
-	}
-	if a, _ := apoio.GetAdminProjection(c).GetByEmail(email); a != nil && a.ID.String() != self {
-		return true
-	}
-	return false
+	// Inclui as contas de secretário, professor e encarregado (Parte 4).
+	return apoio.EmailEmUso(c, email, self)
 }

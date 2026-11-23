@@ -160,6 +160,27 @@ func Login(c *gin.Context) {
 		}
 	}
 
+	// ── 4. Secretário, professor e encarregado (Parte 4) ───────────────────
+	// Código (SC/PF/EN + 6 dígitos) ou e-mail verificado.
+	if !userFound {
+		conta, err := buscarLoginContaPessoa(c, req.Usuario)
+		if err != nil {
+			log.Printf("❌ [Login/contas] Erro ao buscar conta: %v", err)
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		if conta != nil {
+			emailNaoVerificado = conta.EmailNaoVerificado
+			userID = conta.ID
+			userName = conta.Nome
+			senhaHash = conta.Hash
+			identifier = conta.Codigo
+			userStatus = conta.Status
+			userType = conta.Tipo
+			userFound = true
+		}
+	}
+
 	// ── Comparação bcrypt (timing-safe) ────────────────────────────────────
 	// Sempre executada — mesmo quando userFound=false — para que o tempo de
 	// resposta seja idêntico entre "usuário não existe" e "senha errada".
@@ -238,6 +259,16 @@ func avaliarStatusLogin(userType, userStatus string) (string, bool) {
 			return "", false
 		}
 		return "academia inativa. Entre em contato com o administrador.", true
+	case "secretario", "professor":
+		if userStatus == "ativo" {
+			return "", false
+		}
+		return "conta inativa. Entre em contato com a academia.", true
+	case "encarregado":
+		if userStatus == "ativo" {
+			return "", false
+		}
+		return "conta inativa. Entre em contato com a academia do seu educando ou com o suporte.", true
 	default: // admin
 		if userStatus == "ativo" {
 			return "", false
@@ -288,6 +319,8 @@ func deveAlterarSenhaDe(c *gin.Context, userID uuid.UUID, userType string) bool 
 		table = "projection_academias"
 	case "estudante":
 		table = "projection_estudantes"
+	case "secretario", "professor", "encarregado":
+		table = "projection_contas_pessoa"
 	default:
 		return false
 	}

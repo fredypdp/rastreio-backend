@@ -58,6 +58,7 @@ func registerEstudantePorAcademiaMultipart(c *gin.Context) {
 		BilheteIdentidade: get("bilhete_identidade"), BilheteEncarregado: get("bilhete_identidade_encarregado"),
 		AnoEscolar: get("ano_escolar_fundamental"), AnoEscolarMedio: get("ano_escolar_medio"), AnoSuperior: get("ano_superior"),
 		CursoMedioID: get("curso_medio_id"), CursoSuperiorID: get("curso_superior_id"), CodigoTurma: get("codigo_turma"),
+		Encarregado: encarregadoDoFormulario(get),
 	}
 
 	files := map[string]apoio.UploadedPDF{}
@@ -72,6 +73,24 @@ func registerEstudantePorAcademiaMultipart(c *gin.Context) {
 		}
 	}
 	registerEstudantePorAcademiaComRequest(c, req, files, get("declaracao_ano_academico"))
+}
+
+// encarregadoDoFormulario lê o bloco do encarregado do multipart (campos
+// encarregado_nome, encarregado_genero, encarregado_data_nascimento,
+// encarregado_telefone, encarregado_email, encarregado_relacao e
+// encarregado_relacao_outro).
+func encarregadoDoFormulario(get func(string) string) apoio.BlocoEncarregado {
+	opcional := func(k string) *string {
+		if v := get(k); v != "" {
+			return &v
+		}
+		return nil
+	}
+	return apoio.BlocoEncarregado{
+		Nome: get("encarregado_nome"), Genero: get("encarregado_genero"), DataNascimento: get("encarregado_data_nascimento"),
+		Telefone: get("encarregado_telefone"), Email: opcional("encarregado_email"),
+		Relacao: opcional("encarregado_relacao"), RelacaoOutro: opcional("encarregado_relacao_outro"),
+	}
 }
 
 func registerEstudantePorAcademiaComRequest(c *gin.Context, req apoio.CadastroEstudanteAcademiaRequest, files map[string]apoio.UploadedPDF, declaracaoAnoAcademico string) {
@@ -154,6 +173,17 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req apoio.Cadast
 			return
 		}
 	}
+	// Parte 5: no nível escolar o contato é o do encarregado (bloco "encarregado";
+	// "telefone_encarregado" continua aceito como alias do telefone do bloco).
+	nivelEscolar := services.EstudanteEEscolar(services.PerfilNivelEstudante{
+		AnoFundamental: apoio.StringPtrIfNotBlank(req.AnoEscolar), AnoMedio: apoio.StringPtrIfNotBlank(req.AnoEscolarMedio), AnoSuperior: apoio.StringPtrIfNotBlank(req.AnoSuperior),
+	})
+	if nivelEscolar {
+		if strings.TrimSpace(req.Encarregado.Telefone) == "" {
+			req.Encarregado.Telefone = req.TelefoneEncarregado
+		}
+		req.TelefoneEncarregado = req.Encarregado.Telefone
+	}
 	documentosParaValidacao := apoio.DocumentosMatriculaParaValidacao(files, declaracaoAnoAcademico)
 	for campo, documento := range req.Documentos {
 		key, doc := apoio.DocumentoMatriculaNormalizadoComBase(campo, declaracaoAnoAcademico, "", documento)
@@ -178,11 +208,34 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req apoio.Cadast
 	}
 	// SEC-04: as credenciais seguem por SMS. Valida-se o telefone de destino ANTES
 	// de criar a conta, para não criar contas cujas credenciais não possam ser entregues.
-	telefoneDestinoCredenciais, err := apoio.TelefoneDestinoCredenciaisEstudante(validado.AnoEscolarFundamental, validado.AnoEscolarMedio, validado.AnoSuperior, validado.TelefoneEstudante, validado.TelefoneEncarregado)
+	quemCadastra := academiaID
+	if id, tipo, atua := middleware.GetAtor(c); atua && tipo == "secretario" {
+		quemCadastra = id
+	}
+	perfilNivel := services.PerfilNivelEstudante{AnoFundamental: validado.AnoEscolarFundamental, AnoMedio: validado.AnoEscolarMedio, AnoSuperior: validado.AnoSuperior}
+	contatoEstudante := services.ContatoPessoa{Nome: req.Nome, Telefone: ptrOuVazio(validado.TelefoneEstudante), Email: validado.Email}
+	var plano *apoio.PlanoEncarregado
+	var contatoEncarregado *services.ContatoPessoa
+	if nivelEscolar {
+		var okPlano bool
+		plano, okPlano = apoio.PlanejarEncarregado(c, req.Encarregado, &quemCadastra)
+		if !okPlano {
+			return
+		}
+		contatoEncarregado = &services.ContatoPessoa{Nome: plano.Nome(), Telefone: plano.Telefone()}
+	}
+	planoConcluido := false
+	defer func() {
+		if plano != nil && !planoConcluido {
+			plano.Concluir(false)
+		}
+	}()
+	contato, err := services.ResolverContato(perfilNivel, contatoEstudante, contatoEncarregado)
 	if err != nil {
 		utils.RespondWithValidationError(c, err)
 		return
 	}
+	telefoneDestinoCredenciais := contato.Telefone
 
 	client := apoio.GetDbClient(c)
 	codigoEstudante, err := utils.GenerateUniqueCodigoEstudante(client.DB())
@@ -218,6 +271,10 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req apoio.Cadast
 			_ = provider.Delete(dir)
 			if permitirPendenciaDocumentosEmFalhaStorage(c, pendenteDocumentos) {
 				log.Printf("[WARN] falha no upload dos documentos; cadastrando estudante %s em pendência documental para repescagem: %v", req.Nome, err)
+				if plano != nil {
+					plano.Concluir(false)
+					planoConcluido = true
+				}
 				registerEstudantePorAcademiaComRequestModo(c, req, nil, declaracaoAnoAcademico, true)
 				return
 			}
@@ -235,6 +292,10 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req apoio.Cadast
 			_ = provider.Delete(dir)
 			if permitirPendenciaDocumentosEmFalhaStorage(c, pendenteDocumentos) {
 				log.Printf("[WARN] falha no upload dos documentos extra; cadastrando estudante %s em pendência documental para repescagem: %v", req.Nome, err)
+				if plano != nil {
+					plano.Concluir(false)
+					planoConcluido = true
+				}
 				registerEstudantePorAcademiaComRequestModo(c, req, nil, declaracaoAnoAcademico, true)
 				return
 			}
@@ -323,7 +384,25 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req apoio.Cadast
 		return
 	}
 	audit := db.AuditContext{UserID: academiaID.String(), UserType: "academia", IP: c.ClientIP()}
-	if err := apoio.GetRepository(c).SaveWithAudit(estudante, audit); err != nil {
+	if plano != nil {
+		// Estudante e encarregado nascem juntos: ou os dois entram no ledger, ou nenhum.
+		enc, errEnc := plano.Agregado(c)
+		if errEnc == nil {
+			errEnc = plano.Vincular(enc, estudante.ID, codigoEstudante, &quemCadastra)
+		}
+		if errEnc != nil {
+			_ = provider.Delete(dir)
+			utils.RespondWithValidationError(c, errEnc)
+			return
+		}
+		if err := apoio.GetRepository(c).SaveManyWithAudit(audit, estudante, enc); err != nil {
+			_ = provider.Delete(dir)
+			utils.RespondWithInternalError(c, err)
+			return
+		}
+		plano.Concluir(true)
+		planoConcluido = true
+	} else if err := apoio.GetRepository(c).SaveWithAudit(estudante, audit); err != nil {
 		_ = provider.Delete(dir)
 		utils.RespondWithInternalError(c, err)
 		return
@@ -342,9 +421,24 @@ func registerEstudantePorAcademiaComRequestModo(c *gin.Context, req apoio.Cadast
 	// criação. No cadastro em lote assíncrono (jobs) cada item chega aqui pelo
 	// worker, por isso o envio é por item, dentro do próprio worker.
 	atorCredenciais := apoio.AtorComunicacao{ID: academiaID, Tipo: "academia", CodigoAcademia: academia.CodigoAcademia}
+	// Parte 5: as credenciais do encarregado NOVO vão primeiro, e as do estudante por último,
+	// ambas para o mesmo telefone (o do encarregado). Encarregado já existente não recebe nada.
+	var credenciaisEncarregado *apoio.ResultadoCredenciais
+	if plano != nil {
+		credenciaisEncarregado = plano.EnviarCredenciais(c, atorCredenciais, audit)
+	}
 	credenciais := apoio.EnviarCredenciaisSMS(c.Request.Context(), c, atorCredenciais, audit, telefoneDestinoCredenciais, req.Nome, codigoEstudante, senhaTemporaria, false)
 
 	data := gin.H{"id": estudante.ID, "codigo_estudante": codigoEstudante, "codigo_academia": academia.CodigoAcademia, "documentos": documentos, "status": estudante.Status, "credenciais": credenciais}
+	if plano != nil {
+		// As credenciais do encarregado NOVO vão para o mesmo telefone (o dele). Encarregado
+		// já existente só é vinculado: sem novas credenciais.
+		infoEnc := gin.H{"id": plano.ID(), "codigo": plano.Codigo(), "conta_nova": plano.ContaNova()}
+		if credenciaisEncarregado != nil {
+			infoEnc["credenciais"] = credenciaisEncarregado
+		}
+		data["encarregado"] = infoEnc
+	}
 	if codigoTurma != "" {
 		data["codigo_turma"] = codigoTurma
 		if err := apoio.VincularEstudanteATurma(c, academia, codigoEstudante, req.AnoEscolar, req.AnoEscolarMedio, req.AnoSuperior, req.CursoMedioID, req.CursoSuperiorID, codigoTurma, true, academiaID); err != nil {
@@ -1474,4 +1568,11 @@ func redigirCamposSensiveis(v interface{}) interface{} {
 		return t
 	}
 	return v
+}
+
+func ptrOuVazio(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

@@ -27,10 +27,16 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 5. Se a implementação mudar uma regra, corrija a regra no texto e anote em **Registro de andamento** (última seção).
 6. O documento da tarefa e o texto do commit citam a Parte e os itens fechados (ex.: "Plano: Parte 5, itens 3 e 4").
 7. Ou de preferência (prefiro assim), marcar com ✅, principalmente no fim do título da parte implementada
-8. **Este arquivo (`docs/Plano_de_Atualizacoes.md`) atualizado vai em TODA entrega de back-end**, dentro do zip, ao lado do documento da tarefa, com os passos 1 a 7 já aplicados (itens marcados, Estado, tabela da Visão geral, ✅ e Registro de andamento). Uma entrega sem o plano atualizado está incompleta. Se a entrega for só de front-end, o plano vai mesmo assim no zip do back-end (ou em um zip avulso de `docs/`).
+8. **Este arquivo (`docs/Plano_de_Atualizacoes.md`) atualizado vai em TODA entrega de back-end**, dentro do zip, ao lado do documento da tarefa e da `Documentação da API.md` com a versão atualizada (passo 9), com os passos 1 a 7 já aplicados (itens marcados, Estado, tabela da Visão geral, ✅ e Registro de andamento). Uma entrega sem o plano atualizado está incompleta. Se a entrega for só de front-end, o plano vai mesmo assim no zip do back-end (ou em um zip avulso de `docs/`).
+9. **A `Documentação da API.md` vai em toda entrega que mexe na API, com a linha `Versão atual:` (no topo) atualizada no formato de Versionamento Semântico `MAJOR.MINOR.PATCH`.** Escolha o número assim:
+   - **MAJOR** — algo que funcionava deixa de funcionar para quem já consome a API: rota removida ou renomeada, campo JSON removido ou com outro significado, campo novo **obrigatório** num pedido, regra que passa a negar o que antes era permitido.
+   - **MINOR** — acréscimo compatível: rota nova, campo novo opcional, permissão nova, código de erro novo em fluxo novo.
+   - **PATCH** — correção de comportamento ou de texto sem mudar o contrato.
+
+   Atualize junto: `modificado:` no cabeçalho e a tabela **Versionamento da API** (seção 1.2 da documentação), com a versão, a(s) tarefa(s) e um resumo de uma linha. O documento da tarefa informa a versão anterior e a nova. Uma entrega que altera a API sem atualizar a versão está incompleta.
 
 **Outras orientações**
-- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a próxima tarefa livre é a **130** (a 129 fechou as Partes 2 e 3). Front-end (numeração própria): a próxima é a **40**.
+- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a próxima tarefa livre é a **132** (a 130 fechou a Parte 4 e a 131, a Parte 5). Front-end (numeração própria): a próxima é a **42** (a 40 fechou a Parte 4 e a 41, a Parte 5).
 - **(sugestão)** = regra acrescentada por mim para fechar lacuna; pode ser cortada. **(a confirmar)** = decisão pendente, com padrão na seção final.
 - Ordem de deploy padrão: back-end primeiro, depois front-end. Exceção: partes que removem funcionalidade (1 e 12): front-end primeiro.
 - As partes estão na ordem de execução; as que não dependem uma da outra podem andar em paralelo (ver "Caminho crítico").
@@ -45,9 +51,9 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | 1 ✅ | Remover a matrícula pública | — | Implementado | 128 (back) · 38 (front) |
 | 2 | Back-end em pacotes (refatoração) | 1 | Parcial (falta só o HTTP do financeiro) | 129 (back) |
 | 3 ✅ | Configurações do sistema (variáveis de ambiente → banco) | 2 | Implementado | 129 (back) · 39 (front) |
-| 4 | Usuários e permissões (encarregado, secretário, professor) | 2, 3 | Pendente | |
+| 4 ✅ | Usuários e permissões (encarregado, secretário, professor) | 2, 3 | Implementado | 130 (back) · 40 (front) |
 | **Fase 2 — Credenciais** | | | | |
-| 5 | Credenciais temporárias: ajustes do cadastro e do reset | 4 | Parcial | |
+| 5 ✅ | Credenciais temporárias: ajustes do cadastro e do reset | 4 | Implementado | 131 (back) · 41 (front) |
 | **Fase 3 — Finanças** | | | | |
 | 6 | Provedor PayPay e troca de provedor | 4 | Parcial | |
 | 7 | Serviços extras: mês de início da cobrança | 2 | Pendente | |
@@ -193,11 +199,11 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 
 ---
 
-### Parte 4 — Usuários e permissões
+### Parte 4 — Usuários e permissões ✅
 
-**Estado:** Pendente · **Depende de:** 2, 3
+**Estado:** Implementado (Tarefas 130 e 40) · **Depende de:** 2, 3
 
-**Já existe:** só três tipos de login: **admin** (`gerente`/`adm`/`fpp`), **academia** e **estudante**. O **encarregado** é apenas o telefone e o BI dentro do cadastro do estudante (sem nome, sem login). Não existem professor nem secretário.
+**Já existia (antes da Tarefa 130):** só três tipos de login: **admin** (`gerente`/`adm`/`fpp`), **academia** e **estudante**. O **encarregado** era apenas o telefone e o BI dentro do cadastro do estudante (sem nome, sem login). Não existiam professor nem secretário. **Agora:** os três tipos existem (`secretario`, `professor`, `encarregado`); o BI do encarregado segue nos documentos de matrícula do estudante e o telefone passou a ser da conta do encarregado.
 
 **Quem pode o quê** (— = o plano não altera)
 
@@ -210,13 +216,16 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | Consultar notas e faltas | ✔ | ✔ | ✔ (só as suas turmas) | ✔ (as próprias) | ✔ (educandos, nível escolar) | — |
 | Pagar cobranças do estudante | ✘ | ✘ | ✘ | ✔ | ✔ (educandos, nível escolar) | ✘ |
 | Resetar credenciais de estudante | ✔ (seus) | ✔ (seus) | ✘ | ✘ | ✘ | ✔ (só sem academia) |
+| Gerir turmas, cursos, matérias, sumários, serviços extras, finanças, comunicação, ano letivo | ✔ | ✔ (**as que a academia conceder**) | ✘ | ✘ | ✘ | — |
+| Gerir secretários; alterar dados, NIF, alvará e nível da academia; credenciais do provedor de pagamento | ✔ | ✘ (reservado à academia) | ✘ | ✘ | ✘ | — |
 | Gerir planos de assinatura | ✘ | ✘ | ✘ | ✘ | ✘ | ✔ (só FPP) |
 
 **Regras comuns:** criação segue a cadeia de credenciais temporárias que já existe (enviadas ao telefone **do próprio usuário**, troca obrigatória no primeiro acesso); telefone obrigatório (sugestão). Desativar não apaga o que a pessoa fez.
 
 **Secretário**
 - Criado pela academia; pertence a uma só academia.
-- Mesmas permissões da academia, **exceto lançar notas e faltas**. Não cria outro secretário (sugestão).
+- Mesmas funções da academia, **exceto lançar notas e faltas** e **o que é da própria conta da academia ou retroativo em relação a ele**: gerir secretários (criar, editar permissões, desativar, eliminar), alterar os dados/NIF/alvará/nível escolar da academia e as credenciais do provedor de pagamento. Estas ações são **reservadas à academia** e nenhuma permissão as concede.
+- **Permissões escolhidas por secretário:** ao criar cada secretário, a academia marca quais permissões ele terá, num catálogo (estudantes, turmas, cursos, matérias, **sumários**, notas e faltas só para consulta, avaliações, serviços extras, financeiro, comunicação, ano letivo, professores). "Gerir" traz "ver" junto. O servidor recusa permissão fora do catálogo (por exemplo, lançar notas). Detalhe na seção 26 da Documentação da API.
 - Campos: nome, data de nascimento, gênero, telefone, e-mail.
 
 **Professor**
@@ -233,21 +242,27 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 - Um educando tem **um encarregado por vez**; a academia pode trocá-lo (sugestão).
 
 **Entregas**
-- [ ] Tipos de login `secretario`, `professor`, `encarregado` e middlewares de permissão
-- [ ] Cadastro de secretário · [ ] Cadastro de professor com vínculos turma+disciplina
-- [ ] Cadastro e vínculo de encarregado (migrando o telefone/BI hoje no estudante)
-- [ ] Regra de acesso do encarregado (nível escolar, fim do período, desvinculação)
-- [ ] Matriz de permissões aplicada às rotas existentes
-- [ ] Front-end: telas de cadastro e áreas de cada tipo
-- [ ] Documentação da API atualizada
+- [x] Tipos de login `secretario`, `professor`, `encarregado` e middlewares de permissão (Tarefa 130)
+- [x] Cadastro de secretário, com permissões escolhidas pela academia (Tarefa 130) · [x] Cadastro de professor com vínculos turma+disciplina (Tarefa 130)
+- [x] Cadastro e vínculo de encarregado (migrando o telefone/BI hoje no estudante) (Tarefas 130 e 131)
+- [x] Regra de acesso do encarregado (nível escolar, fim do período, desvinculação) (Tarefa 130)
+- [x] Matriz de permissões aplicada às rotas existentes (Tarefa 130; negar por padrão, com teste de varredura do router)
+- [x] Front-end: telas de cadastro e áreas de cada tipo (Tarefa 40)
+- [x] Documentação da API atualizada (Tarefa 130; versão 4.0.0)
+
+**Como ficou a implementação (resumo; o detalhe está na Documentação da API, seções 3.6 e 26 a 28)**
+- O secretário age **como a academia** e o encarregado **como o educando** (cabeçalho `X-Educando`), depois de uma porta com *negar por padrão*: rota não classificada em `internal/permissoes/rotas.go` fica inacessível. Um teste percorre o router e falha se aparecer rota sem decisão.
+- A auditoria grava **quem agiu** (`ator_id`, `ator_tipo`) e a conta em nome de quem se agiu.
+- O professor tem **rotas próprias de consulta** (`/professor/*`), já filtradas pelos vínculos; lançar e corrigir notas e faltas é a Parte 11.
+- O estudante e o encarregado novo são gravados **na mesma transação**.
 
 ---
 
 # Fase 2 — Credenciais
 
-### Parte 5 — Credenciais temporárias: ajustes do cadastro e do reset
+### Parte 5 — Credenciais temporárias: ajustes do cadastro e do reset ✅
 
-**Estado:** Parcial · **Depende de:** 4
+**Estado:** Implementado (Tarefas 131 e 41) · **Depende de:** 4
 
 **Já existe (Tarefa 123 / SEC-04)**
 - [x] Cadastro do estudante envia as credenciais por SMS ao telefone certo: **superior → estudante; escolar → encarregado** (`TelefoneDestinoCredenciaisEstudante`).
@@ -262,11 +277,16 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 **Entregas**
 - [x] Destino das credenciais por nível (Tarefa 123)
 - [x] Reset/reenvio com intervalo e auditoria (Tarefa 123)
-- [ ] Reset: admin `adm`/`fpp` só para estudante sem academia; secretário como a academia
-- [ ] Cadastro escolar com conta do encarregado e credenciais só ao telefone dele
-- [ ] Remover o caminho que cai no telefone do estudante no nível escolar
-- [ ] Regra única de contato (telefone e e-mail) em função reutilizável
-- [ ] Testes por perfil e por nível
+- [x] Reset: admin `adm`/`fpp` só para estudante sem academia; secretário como a academia (Tarefa 131)
+- [x] Cadastro escolar com conta do encarregado e credenciais só ao telefone dele (Tarefas 131 e 41)
+- [x] Remover o caminho que cai no telefone do estudante no nível escolar (Tarefa 131)
+- [x] Regra única de contato (telefone e e-mail) em função reutilizável: `services.ResolverContato` / `ResolverContatoDoEstudante` (Tarefa 131)
+- [x] Testes por perfil e por nível (Tarefa 131)
+
+**Como ficou a implementação**
+- O encarregado novo e o estudante nascem juntos; as credenciais dos dois vão para o telefone do encarregado (as dele primeiro). Encarregado já existente (mesmo telefone ou e-mail) é só vinculado, sem novas credenciais. Dois estudantes cadastrados em sequência com o mesmo encarregado novo reaproveitam a mesma conta, mesmo antes de a projeção processar o primeiro.
+- `PUT /estudante/encarregado/telefone` foi **removida** (o telefone é da conta do encarregado). A restrição única do telefone do encarregado no estudante saiu (migration 141): um encarregado pode ter vários educandos.
+- Cadastro em massa: o modelo Excel ganhou as colunas I a N do encarregado.
 
 ---
 
@@ -914,9 +934,19 @@ Onde a lista original ou o arquivo de notificações deixava dúvida, usei o pad
 | 26 | Evento 34 (lembrete de mensalidade) | Bloqueado: não existe data de vencimento. Preciso da regra | 21 |
 | 27 | Item 1 do arquivo (recuperação "troca a senha na hora") | **Desatualizado:** a Tarefa 123 já trocou por link. Resta o canal SMS | 18 |
 | 28 | Item 5 do arquivo (limitadores "no-op") | **Desatualizado:** foram removidos; login e e-mail seguem sem limite. Virou pré-requisito | 17 |
+| 29 | Permissões do secretário | A academia escolhe, ao criar cada secretário, entre um catálogo fechado (`GET /academia/permissoes`). Reservado à academia: gerir secretários, dados/NIF/alvará/nível da academia, credenciais do provedor de pagamento. Negado a todos os secretários: lançar notas/faltas e pagar | 4 |
+| 30 | E-mail e idade dos novos tipos | E-mail opcional e único entre **todos** os tipos de conta; idade mínima de 18 anos para secretário, professor e encarregado | 4 |
+| 31 | Código de login dos novos tipos | `SC`, `PF` e `EN` + 6 dígitos (não colide com o do estudante nem o da academia) | 4 |
+| 32 | Relação do encarregado | `pai`, `mae`, `irmao`, `irma`, `outro` (texto obrigatório se `outro`) | 4 |
+| 33 | Vínculo de professor | A turma e a matéria têm de existir na academia, estar ativas e ser do mesmo nível (e do mesmo curso, quando ambas têm) | 4 |
+| 34 | Encarregado em "leitura" | Só `GET` de notas e faltas, com o ano académico forçado ao período escolar; todo o resto devolve `ENCARREGADO_SOMENTE_LEITURA` | 4 |
+| 35 | Telefone do encarregado | É o identificador do encarregado (único entre encarregados). O estudante guarda um retrato dele no cadastro (exigido por uma restrição da tabela), mas a fonte do contacto é a conta do encarregado | 5 |
+| 36 | Estudante que concluiu o escolar e se desvinculou do encarregado | Passa a responder por si na regra única de contato (adulto) | 5 |
+| 37 | Credenciais de secretário, professor e encarregado | Não há reenvio (fora do escopo, ver abaixo): se o SMS falhar, a academia elimina a conta e a recria | 4, 5 |
 
 ## O que ainda preciso receber
 
+- **Partes 4 e 5:** confirmar ou corrigir os pontos 29 a 37 da tabela acima. O que mais pesa: o ponto 29 (que ações são reservadas à academia) e o ponto 37 (reenvio de credenciais para os novos tipos).
 - **Itens 15 a 20** das notificações e a **frase incompleta** da seção 1 (pontos 23 e 24 da tabela acima).
 - **Parte 3:** confirmar ou corrigir a lista de variáveis implementada (é a proposta da Parte 3, com `MEGA_ROOT_FOLDER` como texto visível).
 - **Parte 6:** credenciais de teste do PayPay e textos dos manuais (PayPay e AppyPay).
@@ -945,4 +975,6 @@ Preencher a cada entrega (ver "Como acompanhar o andamento").
 | 2026-11-18 | Parte 1 (todos os itens) | 128 (back) · 38 (front) | `673be19` (back) · `740ce90` (front) | Marcada só em 2026-11-19, junto com a Tarefa 129 |
 | 2026-11-19 | Parte 2 (menos o HTTP do financeiro) | 129 (back) | ver o texto do commit da Tarefa 129 | 273 rotas e handlers idênticos antes e depois; suíte: mesmos 1057 testes passam + 38 novos |
 | 2026-11-19 | Parte 3 (todos os itens) | 129 (back) · 39 (front) | ver o texto do commit da Tarefa 129 | Migration 139. Regra nova em "Como acompanhar": o plano atualizado vai em toda entrega |
+| 2026-11-21 | Parte 4 (todos os itens) | 130 (back) · 40 (front) | ver o texto do commit da Tarefa 130 | Migration 140. API 4.0.0. Back-end validado com PostgreSQL real; front-end com `tsc`, `eslint` e `next build` (sem teste em navegador) |
+| 2026-11-21 | Parte 5 (todos os itens) | 131 (back) · 41 (front) | ver o texto do commit da Tarefa 131 | Migration 141. Mudança incompatível: cadastro escolar exige o encarregado e `PUT /estudante/encarregado/telefone` saiu. Versão da API da Tarefa 129 corrigida para 3.1.0 |
 | | | | | |

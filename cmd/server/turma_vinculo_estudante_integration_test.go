@@ -154,7 +154,14 @@ func geraDigitosTurmaVinculo(n int) string {
 	return digitos[:n]
 }
 func camposCadastro(nome string) map[string]string {
-	return map[string]string{"nome": nome, "genero": "masculino", "data_nascimento": "2014-01-01", "ano_escolar_fundamental": "1_ano_fundamental", "telefone_encarregado": "9" + geraDigitosTurmaVinculo(8), "bilhete_identidade_encarregado": "BI" + strings.ReplaceAll(nome, " ", "")}
+	telEnc := "9" + geraDigitosTurmaVinculo(8)
+	return map[string]string{
+		"nome": nome, "genero": "masculino", "data_nascimento": "2014-01-01", "ano_escolar_fundamental": "1_ano_fundamental",
+		"telefone_encarregado": telEnc, "bilhete_identidade_encarregado": "BI" + strings.ReplaceAll(nome, " ", ""),
+		// Parte 5: o nível escolar exige a conta do encarregado (nova, ou reutilizada pelo telefone).
+		"encarregado_nome": "Encarregado de " + nome, "encarregado_genero": "feminino", "encarregado_data_nascimento": "1980-04-05",
+		"encarregado_telefone": telEnc,
+	}
 }
 
 func postCadastro(t *testing.T, fx *turmaVinculoFixture, campos map[string]string) *httptest.ResponseRecorder {

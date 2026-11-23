@@ -174,6 +174,9 @@ func VerificarEmail(c *gin.Context) {
 		}
 		c.JSON(http.StatusOK, gin.H{"message": msg, "email": tokenInfo.Email})
 
+	case "secretario", "professor", "encarregado":
+		verificarEmailContaPessoa(c, tokenInfo)
+
 	default:
 		utils.RespondWithValidationError(c, fmt.Errorf("tipo de usuário inválido no token: %s", tokenInfo.UserType))
 	}
@@ -216,6 +219,13 @@ func SolicitarVerificacaoEmail(c *gin.Context) {
 			userID,
 		).Scan(&email, &nome); err != nil {
 			utils.RespondWithNotFoundError(c, "administrador")
+			return
+		}
+	case "secretario", "professor", "encarregado":
+		var errConta error
+		email, nome, errConta = emailEnomeDaConta(c, userType, userID)
+		if errConta != nil || email == "" {
+			utils.RespondWithValidationError(c, fmt.Errorf("a conta não possui email cadastrado"))
 			return
 		}
 	default:
@@ -277,10 +287,10 @@ func SolicitarRecuperacaoSenha(c *gin.Context) {
 		return
 	}
 
-	tiposParaTentar := []string{"estudante", "academia", "admin"}
+	tiposParaTentar := []string{"estudante", "academia", "admin", "secretario", "professor", "encarregado"}
 	if req.Tipo != "" {
-		if req.Tipo != "estudante" && req.Tipo != "academia" && req.Tipo != "admin" {
-			utils.RespondWithValidationError(c, fmt.Errorf("tipo deve ser 'estudante', 'academia' ou 'admin'"))
+		if req.Tipo != "estudante" && req.Tipo != "academia" && req.Tipo != "admin" && !ehContaPessoa(req.Tipo) {
+			utils.RespondWithValidationError(c, fmt.Errorf("tipo deve ser 'estudante', 'academia', 'admin', 'secretario', 'professor' ou 'encarregado'"))
 			return
 		}
 		tiposParaTentar = []string{req.Tipo}
@@ -322,6 +332,12 @@ func SolicitarRecuperacaoSenha(c *gin.Context) {
 				 FROM projection_admins WHERE email = $1`,
 				req.Identificador,
 			).Scan(&idStr, &e, &n, &verificado)
+		case "secretario", "professor", "encarregado":
+			if id, em, nm, ver, ok := buscarContaParaRecuperacao(c, tipo, req.Identificador); ok {
+				idStr, e, n, verificado = id.String(), em, nm, ver
+			} else {
+				errBusca = errContaPessoaNaoEncontrada
+			}
 		}
 		if errBusca != nil {
 			continue // não encontrado neste tipo — tenta o próximo
@@ -530,6 +546,9 @@ func ResetarSenha(c *gin.Context) {
 			"message":         "Senha resetada com sucesso!",
 			"proximos_passos": "Faça login com sua nova senha.",
 		})
+
+	case "secretario", "professor", "encarregado":
+		resetarSenhaContaPessoa(c, tokenInfo, string(hashedPassword), invalidarPendentes)
 
 	default:
 		utils.RespondWithValidationError(c, fmt.Errorf("tipo de usuário inválido no token: %s", tokenInfo.UserType))

@@ -24,7 +24,13 @@ import (
 
 func GetRepository(c *gin.Context) *db.AggregateRepository {
 	repo, _ := c.Get("repository")
-	return repo.(*db.AggregateRepository)
+	r := repo.(*db.AggregateRepository)
+	// Parte 4: quando o secretário age como a academia (ou o encarregado como o
+	// educando), a auditoria de TODO evento grava quem realmente agiu.
+	if id, tipo, ok := middleware.GetAtor(c); ok {
+		return r.ComAtor(id.String(), tipo)
+	}
+	return r
 }
 
 // getDbClient retorna o *db.Client injetado pelo middleware de setup.

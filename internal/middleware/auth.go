@@ -168,8 +168,7 @@ func rotaPermitidaEstudanteInativo(method, fullPath string) bool {
 	// Conta
 	case "POST /logout", "PUT /alterar-senha", "PUT /me/email", "PUT /me/telefone",
 		"POST /dois-fatores/ativacao/solicitar", "POST /dois-fatores/ativacao/confirmar",
-		"POST /dois-fatores/desativacao/solicitar", "POST /dois-fatores/desativacao/confirmar",
-		"PUT /estudante/encarregado/telefone":
+		"POST /dois-fatores/desativacao/solicitar", "POST /dois-fatores/desativacao/confirmar":
 		return true
 	// Pagamentos
 	case "POST /financeiro/mensalidades/pagamento",
@@ -292,8 +291,11 @@ func AuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		c.Set("user_id", claims.UserID)
-		c.Set("user_type", claims.UserType)
+		// Parte 4: secretário age como a academia e encarregado como o educando,
+		// depois da porta de permissões (identidade_efetiva.go).
+		if !aplicarIdentidade(c, claims) {
+			return
+		}
 
 		log.Printf("✅ [AuthMiddleware] Autenticado - UserID: %s, UserType: %s", claims.UserID, claims.UserType)
 		c.Next()
@@ -357,8 +359,7 @@ func OptionalAuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		c.Set("user_id", claims.UserID)
-		c.Set("user_type", claims.UserType)
+		aplicarIdentidadeOpcional(c, claims)
 
 		log.Printf("✅ [OptionalAuthMiddleware] Autenticado - UserID: %s, UserType: %s", claims.UserID, claims.UserType)
 		c.Next()
@@ -399,6 +400,22 @@ func consultarEstadoUsuario(c *gin.Context, userID uuid.UUID, userType string) (
 		return nil, nil
 	}
 	client := clientRaw.(*db.Client)
+
+	if ehContaPessoa(userType) {
+		var est estadoUsuario
+		err := client.DB().QueryRow(
+			`SELECT status, deve_alterar_senha, sessoes_validas_desde FROM projection_contas_pessoa WHERE id::text = $1 AND tipo = $2`,
+			userID.String(), userType,
+		).Scan(&est.Status, &est.DeveAlterarSenha, &est.SessoesValidasDesde)
+		if err == sql.ErrNoRows {
+			return nil, sql.ErrNoRows
+		}
+		if err != nil {
+			log.Printf("⚠️ [AuthMiddleware] Erro ao verificar status do usuário tipo %s: %v", userType, err)
+			return nil, errEstadoIndisponivel
+		}
+		return &est, finalizarVerificacaoStatusUsuario(userType, est.Status, nil)
+	}
 
 	var table string
 	switch userType {
@@ -460,7 +477,7 @@ func finalizarVerificacaoStatusUsuario(userType, status string, err error) error
 	switch userType {
 	case "admin":
 		statusBloqueado = status != "ativo"
-	case "academia":
+	case "academia", "secretario", "professor", "encarregado":
 		statusBloqueado = status != "ativo"
 	case "estudante":
 		// estudante inativo passa (bloqueio de escrita é no middleware por método)
@@ -488,6 +505,30 @@ func RequireAcademia() gin.HandlerFunc {
 		if !exists || userType != "academia" {
 			log.Printf("❌ [RequireAcademia] Acesso negado - UserType: %v", userType)
 			utils.RespondWithError(c, http.StatusForbidden, "acesso negado: apenas academias", nil)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// RequireProfessor deixa passar apenas contas de professor (Parte 4).
+func RequireProfessor() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if ut, _ := c.Get("user_type"); ut != "professor" {
+			utils.RespondWithError(c, http.StatusForbidden, "acesso negado: apenas professores", nil)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// RequireEncarregado deixa passar apenas contas de encarregado (Parte 4).
+func RequireEncarregado() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if ut, _ := c.Get("user_type"); ut != "encarregado" {
+			utils.RespondWithError(c, http.StatusForbidden, "acesso negado: apenas encarregados", nil)
 			c.Abort()
 			return
 		}

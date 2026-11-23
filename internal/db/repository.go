@@ -19,6 +19,27 @@ type AggregateRepository struct {
 	eventStore *EventStore
 	factory    aggregates.AggregateFactory
 	ctx        context.Context
+	// ator é quem REALMENTE agiu quando a identidade da requisição foi
+	// substituída (secretário agindo como a academia, encarregado como o
+	// educando). Vai para o metadata de cada evento gravado com SaveWithAudit.
+	ator *AtorAuditoria
+}
+
+// AtorAuditoria identifica a pessoa por trás de uma ação feita "em nome de"
+// outra conta. user_id/user_type do AuditContext continuam sendo a conta em
+// nome de quem se agiu; ator_id/ator_tipo dizem quem agiu.
+type AtorAuditoria struct {
+	ID   string
+	Tipo string
+}
+
+// ComAtor devolve uma cópia do repositório que registra o ator em todo evento
+// gravado com auditoria. Um ator vazio devolve o próprio repositório.
+func (r *AggregateRepository) ComAtor(id, tipo string) *AggregateRepository {
+	if id == "" || tipo == "" {
+		return r
+	}
+	return &AggregateRepository{eventStore: r.eventStore, factory: r.factory, ctx: r.ctx, ator: &AtorAuditoria{ID: id, Tipo: tipo}}
 }
 
 // AuditContext carrega informações do usuário que está realizando a operação.
@@ -60,6 +81,7 @@ func (r *AggregateRepository) WithContext(ctx context.Context) *AggregateReposit
 		eventStore: r.eventStore,
 		factory:    r.factory,
 		ctx:        ctx,
+		ator:       r.ator,
 	}
 }
 
@@ -239,6 +261,65 @@ func (r *AggregateRepository) saveWithAuditOnce(aggregate aggregates.Aggregate, 
 	}
 
 	aggregate.ClearUncommittedEvents()
+	notifyLedgerWritten()
+	return nil
+}
+
+// SaveManyWithAudit grava os eventos de VÁRIOS agregados na MESMA transação:
+// ou todos entram no ledger, ou nenhum. Usado onde duas contas precisam nascer
+// juntas (estudante do nível escolar + o seu encarregado). Mesmo retry do
+// SaveWithAudit para falhas de serialização/conflito de versão.
+func (r *AggregateRepository) SaveManyWithAudit(audit AuditContext, aggs ...aggregates.Aggregate) error {
+	const maxAttempts = 10
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err = r.saveManyWithAuditOnce(audit, aggs)
+		if err == nil || !(utils.IsSerializationFailure(err) || utils.IsAggregateVersionConflict(err)) {
+			return err
+		}
+		backoff := time.Duration(15*(attempt+1)) * time.Millisecond
+		jitter := time.Duration(rand.Intn(15*(attempt+1)+1)) * time.Millisecond
+		time.Sleep(backoff + jitter)
+	}
+	return err
+}
+
+func (r *AggregateRepository) saveManyWithAuditOnce(audit AuditContext, aggs []aggregates.Aggregate) error {
+	pendentes := make([]aggregates.Aggregate, 0, len(aggs))
+	for _, a := range aggs {
+		if a != nil && len(a.GetUncommittedEvents()) > 0 {
+			pendentes = append(pendentes, a)
+		}
+	}
+	if len(pendentes) == 0 {
+		return nil
+	}
+	tx, err := r.eventStore.client.BeginTx(r.ctx)
+	if err != nil {
+		return fmt.Errorf("erro ao iniciar transação: %w", err)
+	}
+	defer tx.Rollback()
+	for _, a := range pendentes {
+		currentVersion, err := r.getAggregateVersionTx(r.ctx, tx, a.GetID())
+		if err != nil {
+			return fmt.Errorf("erro ao obter versão: %w", err)
+		}
+		for i, domainEvent := range a.GetUncommittedEvents() {
+			dbEvent, err := r.dbEventWithAudit(domainEvent, a.GetType(), currentVersion+i+1, audit)
+			if err != nil {
+				return fmt.Errorf("erro ao converter evento: %w", err)
+			}
+			if err := r.eventStore.AppendTx(r.ctx, tx, dbEvent); err != nil {
+				return fmt.Errorf("erro ao salvar evento: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("erro ao confirmar transação: %w", err)
+	}
+	for _, a := range pendentes {
+		a.ClearUncommittedEvents()
+	}
 	notifyLedgerWritten()
 	return nil
 }
@@ -453,12 +534,17 @@ func (r *AggregateRepository) dbEventWithAudit(
 		return nil, fmt.Errorf("erro ao serializar payload do evento %s: %w", domainEvent.GetEventType(), err)
 	}
 
-	metadataJSON, err := json.Marshal(map[string]interface{}{
+	metadata := map[string]interface{}{
 		"timestamp": time.Now().Unix(),
 		"user_id":   audit.UserID,
 		"user_type": audit.UserType,
 		"ip":        audit.IP,
-	})
+	}
+	if r.ator != nil {
+		metadata["ator_id"] = r.ator.ID
+		metadata["ator_tipo"] = r.ator.Tipo
+	}
+	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao serializar metadata de auditoria do evento %s: %w", domainEvent.GetEventType(), err)
 	}

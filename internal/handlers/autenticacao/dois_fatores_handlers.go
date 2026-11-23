@@ -101,6 +101,13 @@ func carregarIdentidadeAuth(ctx context.Context, conn *sqlx.DB, tipo string, id 
 		if err := row.Scan(&ident.Nome, &ident.Identificador, &email, &ident.Status, &ident.SenhaHash, &ident.EmailVerificado, &ident.DoisFatoresAtivo); err != nil {
 			return nil, naoEncontradoOuErro(err)
 		}
+	case "secretario", "professor", "encarregado":
+		row = conn.QueryRowContext(ctx,
+			`SELECT nome, codigo, email, status, senha_hash, email_verificado, dois_fatores_ativo
+			   FROM projection_contas_pessoa WHERE id = $1 AND tipo = $2 AND status <> 'deletado'`, id, tipo)
+		if err := row.Scan(&ident.Nome, &ident.Identificador, &email, &ident.Status, &ident.SenhaHash, &ident.EmailVerificado, &ident.DoisFatoresAtivo); err != nil {
+			return nil, naoEncontradoOuErro(err)
+		}
 	default:
 		return nil, fmt.Errorf("tipo de usuário inválido: %s", tipo)
 	}
@@ -439,7 +446,7 @@ func ReenviarLoginDoisFatores(c *gin.Context) {
 func usuarioAutenticado(c *gin.Context) (uuid.UUID, string, bool) {
 	userID, okID := middleware.GetUserID(c)
 	userType, okType := middleware.GetUserType(c)
-	if !okID || !okType || !(userType == "admin" || userType == "academia" || userType == "estudante") {
+	if !okID || !okType || !(userType == "admin" || userType == "academia" || userType == "estudante" || ehContaPessoa(userType)) {
 		utils.RespondWithUnauthorizedError(c)
 		return uuid.Nil, "", false
 	}
@@ -651,7 +658,8 @@ type doisFatoresAggregate interface {
 // aplicarEstadoDoisFatores carrega o agregado, aplica o comando e grava o
 // evento (DoisFatoresAtivados/Desativados) com auditoria.
 func aplicarEstadoDoisFatores(c *gin.Context, userID uuid.UUID, userType string, ativar bool) error {
-	aggType := map[string]string{"admin": "Admin", "academia": "Academia", "estudante": "Estudante"}[userType]
+	aggType := map[string]string{"admin": "Admin", "academia": "Academia", "estudante": "Estudante",
+		"secretario": "Secretario", "professor": "Professor", "encarregado": "Encarregado"}[userType]
 	if aggType == "" {
 		return fmt.Errorf("tipo de usuário inválido: %s", userType)
 	}

@@ -265,6 +265,7 @@ func TestCredenciaisTemporarias02TelefoneDeDestinoInvalidoNaoCriaConta(t *testin
 
 	campos := camposCadastro("Estudante Telefone Fixo")
 	campos["telefone_encarregado"] = "222123456" // fixo: 9 dígitos, mas não é móvel
+	campos["encarregado_telefone"] = "222123456"
 	rec := postCadastro(t, fx, campos)
 	if rec.Code != http.StatusUnprocessableEntity && rec.Code != http.StatusBadRequest {
 		t.Fatalf("esperava 4xx para telefone de destino não móvel, recebi %d: %s", rec.Code, rec.Body.String())

@@ -348,6 +348,7 @@ func (m *Manager) commitCheckpoint(projection Projection, eventID int64) error {
 var defaultRebuildOrder = []string{
 	"admins",
 	"academias",
+	"contas",
 	"cursos",
 	"materias",
 	"categorias_nota",

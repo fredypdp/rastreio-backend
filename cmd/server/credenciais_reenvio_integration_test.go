@@ -91,6 +91,8 @@ func cadastrarEstudanteEntregue(t *testing.T, fx *turmaVinculoFixture, sms *capt
 	id = dataMap(resp)["id"].(string)
 	codigo = codigoEstudante(resp)
 	ultimoEvento = aplicarEventosEstudante(t, fx, id, 0)
+	// Parte 5: o encarregado do estudante escolar também chega à projeção (em produção, o gerenciador faz isso).
+	reconstruirContas(t, fx)
 	m := reSenhaNoSMS.FindStringSubmatch(sms.ultimo(t).Conteudo)
 	if m == nil {
 		t.Fatalf("SMS sem senha: %q", sms.ultimo(t).Conteudo)

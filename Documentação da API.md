@@ -1,8 +1,8 @@
 ---
-modificado: 12-11-2026 00:00
+modificado: 21-11-2026 09:15
 criado: 05-04-2026 13:01
 ---
-Versão atual: 3.0.1
+Versão atual: 3.0.2
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -41,6 +41,13 @@ Versão atual: 3.0.1
 22. [Sumários](#22-sumários)
 23. [Serviços Extras](#23-serviços-extras)
 24. [Documentos Extras](#24-documentos-extras)
+25. [Comunicação](#25-comunicação)
+26. [Secretários](#26-secretários)
+27. [Professores](#27-professores)
+28. [Encarregados](#28-encarregados)
+22. [Sumários](#22-sumários)
+23. [Serviços Extras](#23-serviços-extras)
+24. [Documentos Extras](#24-documentos-extras)
 
 ---
 
@@ -53,7 +60,10 @@ Versão atual: 3.0.1
 | **Admin FPP**     | Administrador máximo. Cria academias, outros admins, faz rebuilds. |
 | **Admin ADM**     | Ativa/desativa academias e admins de nível inferior.               |
 | **Admin Gerente** | Consultas e ações básicas administrativas.                         |
-| **Academia**      | Gere estudantes, notas, faltas, cursos, matérias e turmas.         |
+| **Academia**      | Gere estudantes, cursos, matérias, turmas, secretários e professores. |
+| **Secretário**    | Trabalha **em nome da academia**, só com as permissões que ela lhe concedeu (seção 26). |
+| **Professor**     | Consulta as turmas e matérias a que está vinculado (seção 27). |
+| **Encarregado**   | Responde pelos estudantes do nível escolar (educandos) (seção 28). |
 | **Estudante**     | Visualiza os próprios dados académicos.                            |
 
 ---
@@ -90,6 +100,22 @@ Todas as rotas retornam erros exclusivamente neste envelope padronizado (`utils.
 Rotas que criam ou alteram dados com unicidade funcional usam uma guarda transacional no PostgreSQL antes de uploads, validações caras e gravação de eventos. Quando outra requisição equivalente ainda está em andamento, a API retorna `409 Conflict` com mensagem de operação pendente/em criação, mesmo antes de a projeção ficar consultável.
 
 A proteção cobre explicitamente `POST /estudante/solicitacoes-edicao/nome`, `POST /estudante/solicitacoes-edicao/bilhete-identidade`, `POST /estudante/solicitacoes-edicao/bilhete-identidade-encarregado` e `POST /estudante/solicitacoes-edicao/data-nascimento` pela chave canônica `codigo_estudante + campo`; cobre solicitações de status acadêmico pendentes por `codigo_estudante + codigo_academia + tipo`; e cobre a criação efetiva de estudante por BI principal normalizado nos fluxos de cadastro direto e aprovação de matrícula. Reservas são liberadas em falhas antes da persistência e finalizadas/liberadas quando o fato único deixa de estar pendente.
+
+---
+
+### 1.2 Versionamento da API
+
+A linha `Versão atual` no topo deste documento segue o **Versionamento Semântico** (`MAJOR.MINOR.PATCH`) e é atualizada **na mesma tarefa** que altera a API:
+
+- **MAJOR** — mudança incompatível para quem já consome a API: rota removida ou renomeada, campo JSON removido ou com outro significado, campo novo **obrigatório** num pedido, regra de acesso que passa a negar o que antes era permitido.
+- **MINOR** — acrescenta algo compatível: rota nova, campo novo opcional, permissão nova, código de erro novo em fluxo novo.
+- **PATCH** — corrige o comportamento ou a documentação sem alterar o contrato.
+
+| Versão | Tarefa | Resumo |
+| --- | --- | --- |
+| **4.0.0** | 130 e 131 | **Incompatível.** Três novos tipos de login (`secretario`, `professor`, `encarregado`). O cadastro de estudante do nível escolar passa a exigir o encarregado (bloco `encarregado`, ou os campos `encarregado_*`). `PUT /estudante/encarregado/telefone` removida. O telefone das credenciais de estudante do nível escolar é sempre o do encarregado (sem queda para o do estudante). Reenvio de credenciais pelo admin (`adm` ou `fpp`) só para estudante sem nenhuma academia. |
+| 3.1.0 | 129 | Acrescenta as configurações do sistema editáveis por administradores (seção 16.7). A versão não tinha sido atualizada na entrega da Tarefa 129 e foi corrigida na entrega seguinte. |
+| 3.0.1 | — | Estado anterior à correção acima. |
 
 ---
 
@@ -580,8 +606,8 @@ Quando a requisição envia `Authorization: Bearer <jwt_token>` válido, a API p
 ### 3.2 Senhas
 
 - Algoritmo: bcrypt com custo padrão
-- Toda conta criada por terceiros (estudante, academia, administrador) nasce com uma **senha temporária** de 8 caracteres alfanuméricos sorteados com `crypto/rand` (sem os ambíguos `I l O o 0 1`), de **troca obrigatória** no primeiro acesso. Não existe senha padrão derivada do código nem senha fixa por perfil.
-- A senha temporária chega ao titular por **SMS** (estudante e academia, pelo envio padronizado de comunicação) ou por **e-mail** via Brevo (administrador). Só o hash é gravado no ledger; a senha em claro **nunca** aparece em resposta HTTP nem em log. O SMS só é enviado com `ENV=production`; fora disso nada é enviado nem registado (ver `CREDENCIAIS_LOG_DEV` em `.env.example`).
+- Toda conta criada por terceiros (estudante, academia, administrador, secretário, professor, encarregado) nasce com uma **senha temporária** de 8 caracteres alfanuméricos sorteados com `crypto/rand` (sem os ambíguos `I l O o 0 1`), de **troca obrigatória** no primeiro acesso. Não existe senha padrão derivada do código nem senha fixa por perfil.
+- A senha temporária chega ao titular por **SMS** (estudante, academia, secretário, professor e encarregado, pelo envio padronizado de comunicação) ou por **e-mail** via Brevo (administrador). Só o hash é gravado no ledger; a senha em claro **nunca** aparece em resposta HTTP nem em log. O SMS só é enviado com `ENV=production`; fora disso nada é enviado nem registado (ver `CREDENCIAIS_LOG_DEV` em `.env.example`).
 - Enquanto a conta usa a senha temporária (`deve_alterar_senha = true`), o servidor responde `403` com `"code": "SENHA_TEMPORARIA"` em **todas** as rotas autenticadas, exceto `GET /meu-perfil`, `PUT /alterar-senha` e `POST /logout`. A flag é consequência do ledger (`SenhaTemporariaDefinida` liga; o evento de troca de senha desliga conforme o motivo) e é reconstruída em qualquer rebuild.
 - Motivos do evento de troca de senha: `alteracao_usuario` (o titular trocou; também é o valor assumido em eventos antigos sem motivo), `reset_senha` (recuperação por link; desliga a flag e invalida as sessões anteriores) `troca_senha_temporaria` (o titular trocou a senha ainda temporária; desliga a flag e invalida as sessões anteriores) e `credenciais_reenviadas` (reenvio; liga a flag e invalida as sessões anteriores).
 - `sessoes_validas_desde`: tokens emitidos antes deste instante (comparação em segundos) passam a receber `401 "sessão encerrada: faça login novamente"`. É atualizada por `reset_senha`, `credenciais_reenviadas` e `troca_senha_temporaria`; a troca normal (`alteracao_usuario`) não a altera.
@@ -608,6 +634,49 @@ Apenas eventos previamente autorizados podem ser gravados no ledger (`safe_queri
 - Nomes de tabelas interpolados dinamicamente só ocorrem em um switch fechado com valores constantes (sem input do usuário)
 - Inputs validados e sanitizados antes de qualquer operação
 
+### 3.6 Perfis de acesso: secretário, professor e encarregado
+
+`POST /login` aceita três tipos novos além de `admin`, `academia` e `estudante`. O JWT traz o tipo **real** de quem entrou (`user_type`: `secretario`, `professor` ou `encarregado`). Código de login: duas letras + seis dígitos (`SC123456`, `PF123456`, `EN123456`), ou o e-mail depois de verificado. O e-mail é único entre **todos** os tipos de conta.
+
+**Identidade efetiva.** Para trabalhar "em nome de" outra conta sem duplicar rotas, o servidor, depois de validar a conta real (estado, sessão, senha temporária), age assim:
+
+| Quem chama | A requisição passa a valer como | Condição |
+| --- | --- | --- |
+| Secretário | a **academia** dele | a rota está liberada para o secretário e ele tem a permissão exigida (seção 26) |
+| Encarregado | o **educando** indicado no cabeçalho `X-Educando` (código do estudante) | educando com vínculo ativo; fase de ação ou de leitura (seção 28) |
+| Professor | ele mesmo | só rotas `/professor/*` (seção 27) |
+
+As rotas **de conta** agem sempre sobre a conta real, nunca sobre a efetiva: `POST /logout`, `PUT /alterar-senha`, `GET /meu-perfil`, `PUT /me/email`, `PUT /me/telefone`, `GET /dois-fatores`, `POST /dois-fatores/{ativacao,desativacao}/{solicitar,confirmar}` e `POST /email/verificar-email/solicitar`. Em todas as demais, **rota não classificada é negada** para secretário, professor e encarregado.
+
+**Auditoria.** Todo evento gravado em nome de outra conta leva no `metadata` do ledger `ator_id` e `ator_tipo` (quem agiu de fato), além de `user_id`/`user_type` (a conta em nome de quem se agiu). A resposta HTTP não muda.
+
+**Erros da porta de identidade** (`403`; o campo `code` vai na raiz do envelope de erro, como `SENHA_TEMPORARIA`):
+
+| `code` | Quando |
+| --- | --- |
+| `SECRETARIO_SEM_PERMISSAO` | secretário sem a permissão da rota (o envelope traz também `permissao_necessaria`) |
+| `ACAO_RESERVADA_A_ACADEMIA` | gerir secretários, dados/NIF/nível/alvará da academia, credenciais do provedor de pagamento |
+| `ACAO_NAO_PERMITIDA_AO_SECRETARIO` | lançar/corrigir notas e faltas (professores) e pagar cobranças (estudante/encarregado) |
+| `ROTA_FORA_DO_PERFIL` | rota que o perfil nunca alcança |
+| `ACADEMIA_INATIVA` | a academia do secretário ou do professor não está ativa |
+| `EDUCANDO_OBRIGATORIO` | encarregado sem o cabeçalho `X-Educando` numa rota do estudante |
+| `EDUCANDO_NAO_VINCULADO` | o estudante não é (mais) educando deste encarregado |
+| `ENCARREGADO_SOMENTE_LEITURA` | o educando concluiu o nível escolar: só leitura de notas e faltas |
+
+**Matriz de permissões** (✔ pode · ✘ não pode):
+
+| Ação | Admin | Academia | Secretário | Professor | Encarregado | Estudante |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: |
+| Cadastrar e matricular estudante | ✘ | ✔ | ✔ (`estudantes.cadastrar`) | ✘ | ✘ | ✘ |
+| Reenviar credenciais de estudante | ✔ (`adm`/`fpp`, só sem academia) | ✔ (os seus) | ✔ (`estudantes.credenciais`) | ✘ | ✘ | ✘ |
+| Gerir turmas, cursos, matérias, sumários | ✘ | ✔ | ✔ (permissão de cada módulo) | ✘ | ✘ | ✘ |
+| **Lançar e corrigir notas e faltas** | ✘ | ✔ (até a Parte 11) | ✘ | ✔ (só as suas turmas e matérias; Parte 11) | ✘ | ✘ |
+| Consultar notas e faltas | ✘ | ✔ | ✔ (`notas.ver`, `faltas.ver`) | ✔ (só as suas turmas) | ✔ (educandos) | ✔ (as próprias) |
+| Pagar cobranças do estudante | ✘ | ✘ | ✘ | ✘ | ✔ (educando em fase de ação) | ✔ |
+| Gerir secretários | ✘ | ✔ | ✘ | ✘ | ✘ | ✘ |
+| Criar professores e atribuir vínculos | ✘ | ✔ | ✔ (`professores.gerir`) | ✘ | ✘ | ✘ |
+| Alterar dados da academia, NIF, alvará, credenciais de pagamento | ✘ | ✔ | ✘ | ✘ | ✘ | ✘ |
+
 ---
 
 
@@ -621,7 +690,7 @@ Login unificado para todos os tipos de usuário. O tipo é inferido automaticame
 
 ```json
 {
-  "usuario": "string",  // email (admin), código ou email (academia/estudante)
+  "usuario": "string",  // email (admin); código ou email (academia, estudante, secretário, professor, encarregado)
   "senha": "string"
 }
 ```
@@ -632,9 +701,9 @@ Login unificado para todos os tipos de usuário. O tipo é inferido automaticame
 {
   "token": "string",    // JWT
   "nome": "string",
-  "type": "academia",   // 'admin' | 'academia' | 'estudante'
+  "type": "academia",   // 'admin' | 'academia' | 'estudante' | 'secretario' | 'professor' | 'encarregado'
   "deve_alterar_senha": false, // true enquanto a conta usa a senha temporária: ir direto para a troca obrigatória
-  "codigo": "LDA20261", // apenas para academia/estudante
+  "codigo": "LDA20261", // academia, estudante, secretário, professor e encarregado
   "email": "x@y.com",  // apenas para admin
   "role": "fpp"         // apenas para admin
 }
@@ -1080,7 +1149,13 @@ Quando a conta ainda usava a **senha temporária** (`deve_alterar_senha = true`)
 
 Redefine e reenvia as credenciais de um estudante: gera uma **nova senha temporária**, grava o evento de senha com motivo `credenciais_reenviadas` (liga `deve_alterar_senha` e invalida as sessões anteriores) e envia o SMS (texto "novas credenciais"). A senha em claro nunca volta na resposta.
 
-**Proteção**: autenticado + a **academia dona** do estudante ou admin `fpp`. Outra academia ou o próprio estudante recebem `403`.
+**Proteção**: autenticado + uma destas três:
+
+- a **academia dona** do estudante;
+- o **secretário** dessa academia com a permissão `estudantes.credenciais` (age como a academia; a auditoria grava o secretário);
+- um **admin `adm` ou `fpp`**, **somente** para estudante **sem nenhuma academia** (sem `codigo_academia` e sem vínculo ativo). Estudante que pertence a uma academia só é resetado por ela (ou pelo seu secretário): o admin recebe `403`.
+
+Outra academia, um admin `gerente`, o próprio estudante ou o encarregado recebem `403`.
 
 **Request:** sem payload
 
@@ -1096,7 +1171,7 @@ Redefine e reenvia as credenciais de um estudante: gera uma **nova senha tempor�
 **Regras:**
 
 - Intervalo mínimo de **10 minutos por conta**, medido por `sessoes_validas_desde` (sem tabela nova). Antes disso: `429` com `retry_after_segundos`.
-- O telefone de destino segue a regra do cadastro (superior: estudante; escolar: encarregado) e é validado antes de alterar a senha (`422` se inválido).
+- O telefone de destino vem da **regra única de contato** (seção 28.7): nível escolar → telefone do **encarregado**; superior → o do próprio estudante. **Nunca** cai no telefone do estudante quando ele é do nível escolar: sem encarregado ativo ou com telefone inválido, a resposta é `400`/`422` e **nenhum SMS sai** nem a senha é alterada.
 - A ação é auditada com o executor real. Fora de `ENV=production` o SMS não é enviado (`credenciais.motivo = "ambiente_nao_producao"`), mas a senha é redefinida.
 
 **Erros:** `403`, `404` (estudante inexistente), `422`, `429`.
@@ -1961,9 +2036,9 @@ A obrigatoriedade dos documentos e as validações cadastrais comuns são aplica
 
 **Telefone por nível de ensino:**
 
-- No nível escolar/fundamental/médio, `telefone_encarregado` é obrigatório; `telefone` do estudante é opcional e não substitui o telefone do encarregado.
-- No ensino superior, `telefone` do estudante é obrigatório; `telefone_encarregado` é opcional.
-- Quando `telefone` e `telefone_encarregado` forem enviados, ambos devem ter formato válido de 9 dígitos locais e não podem ser iguais.
+- No nível escolar/fundamental/médio o contato é o do **encarregado**: o pedido traz o bloco `encarregado` (ver seção 28.2); `telefone` do estudante é opcional e **nunca** recebe as credenciais.
+- No ensino superior, `telefone` do estudante é obrigatório e o encarregado não existe.
+- Quando `telefone` e o telefone do encarregado forem enviados, ambos devem ter formato válido de 9 dígitos locais e não podem ser iguais.
 
 **Ordem operacional e atomicidade documental:**
 
@@ -3237,7 +3312,9 @@ Cadastra um novo estudante vinculado à academia autenticada. O cadastro direto 
 | `data_nascimento` | sim | Data simples `YYYY-MM-DD`, anterior à data atual. |
 | `email` | não | Validado quando informado. |
 | `telefone` | condicional | Obrigatório no ensino superior. Opcional para escolar/fundamental/médio. Quando enviado, deve ter 9 dígitos locais e não pode ser igual a `telefone_encarregado`. |
-| `telefone_encarregado` | condicional | Obrigatório para escolar/fundamental/médio. Opcional no ensino superior. Quando enviado, deve ter 9 dígitos locais e não pode ser igual a `telefone`. |
+| `telefone_encarregado` | condicional | **Alias de `encarregado_telefone`** (continua aceito). Obrigatório para escolar/fundamental/médio (um dos dois). Opcional no ensino superior. Quando enviado, deve ter 9 dígitos locais e não pode ser igual a `telefone`. |
+| `encarregado_nome`, `encarregado_genero`, `encarregado_data_nascimento`, `encarregado_telefone` | condicional | **Bloco do encarregado** (seção 28.2). Obrigatórios para escolar/fundamental/médio quando o encarregado ainda não tem conta; com um encarregado já existente (mesmo telefone ou e-mail) basta o telefone. |
+| `encarregado_email`, `encarregado_relacao`, `encarregado_relacao_outro` | não | E-mail do encarregado; relação (`pai`, `mae`, `irmao`, `irma`, `outro`); descrição quando a relação é `outro`. |
 | `bilhete_identidade` | condicional | Obrigatório no ensino superior; para escolar/fundamental/médio é obrigatório quando o estudante usa BI próprio em vez de cédula. Deve ser único entre estudantes. |
 | `bilhete_identidade_encarregado` | condicional | Obrigatório para estudante escolar/fundamental/médio; opcional no ensino superior. Não pode ser igual ao BI do estudante após normalização nem coincidir com o BI principal de outro estudante escolar/fundamental/médio. |
 | `ano_escolar_fundamental` | condicional | Ano fundamental canônico, quando aplicável. |
@@ -3352,6 +3429,8 @@ curl -X POST https://api.exemplo.ao/academia/estudante/register \
   }
 }
 ```
+
+Para o nível escolar a resposta traz também `data.encarregado`: `{ id, codigo, conta_nova, credenciais? }`. Quando `conta_nova` é `true`, as credenciais do encarregado **e** as do estudante vão por SMS, as duas para o telefone do encarregado (primeiro as dele); quando o encarregado já existia, só é vinculado e recebe apenas as credenciais do estudante novo.
 
 `data.credenciais` informa o envio do SMS com as credenciais temporárias, feito depois do commit: `{ canal: "sms", enviada: boolean, motivo?: "ambiente_nao_producao" | "provedor_nao_configurado" | "falha_envio" }`. Falha de envio nunca desfaz o cadastro; a conta fica elegível a [`POST /estudantes/:codigo/credenciais/reenviar`](#post-estudantescodigocredenciaisreenviar). No cadastro em lote assíncrono (`/register/async`) cada item envia o seu SMS dentro do worker.
 
@@ -3576,39 +3655,9 @@ Eventos gravados no ledger seguro para este fluxo:
 
 ---
 
-#### PUT /estudante/encarregado/telefone
+#### PUT /estudante/encarregado/telefone — removida
 
-Atualiza exclusivamente o telefone do encarregado do estudante autenticado.
-
-**Proteção**: autenticado + estudante
-
-**Request:**
-
-```json
-{
-  "telefone_encarregado": "923456789"
-}
-```
-
-**Regras de negócio:**
-
-- O estudante é identificado exclusivamente pelo token; o payload não aceita `codigo_estudante`, `academia_id`, `codigo_academia` nem seletores de alvo.
-- `telefone_encarregado` é obrigatório e deve conter exatamente 9 dígitos nacionais, sem DDI, espaços, hífens, parênteses ou letras.
-- A rota altera apenas `telefone_encarregado`. Quando o valor muda de fato, `telefone_encarregado_verificado` volta para `false`.
-- Qualquer campo extra no JSON retorna `400` e nenhuma mutação é gravada.
-
-**Response 200:**
-
-```json
-{
-  "message": "telefone do encarregado atualizado com sucesso"
-}
-```
-
-**Erros:**
-
-- `400` — telefone vazio/inválido ou campo extra no payload
-- `401/403` — token ausente, inválido ou usuário não estudante
+Removida na versão 4.0.0. O telefone do encarregado pertence à **conta do encarregado**: ele o altera em `PUT /me/telefone`, ou a academia (ou o secretário com `estudantes.dados`) troca o encarregado do estudante em [`PUT /academia/estudante/:codigo/encarregado`](#283-put-academiaestudantecodigoencarregado).
 
 ---
 
@@ -9502,3 +9551,171 @@ O sistema tenta primeiro o provedor padrão; se esse provedor não tiver remeten
 `GET /comunicacao/mensagens` (administrador ou academia autenticada). Aceita paginação (`?limit=&offset=`, limite padrão e máximo iguais aos demais endpoints de listagem do sistema). Uma academia só vê as mensagens que ela própria enviou; um administrador vê todas, com filtro opcional `?codigo_academia=`.
 
 **Protecção:** `/comunicacao/mensagens` (enviar e listar) exige autenticação de administrador (qualquer role) ou academia. `/comunicacao/remetentes` exige autenticação de administrador — cadastrar exige especificamente role FPP. `/admin/comunicacao/provedor-padrao` exige role FPP tanto para consultar quanto para definir.
+
+---
+
+## 26. Secretários
+
+Contas que trabalham **em nome da academia**, só com as permissões que a academia escolheu ao criá-los. O secretário tem as mesmas funções da academia, **exceto**: (1) lançar e corrigir notas e faltas; (2) o que é da própria conta da academia ou "retroativo" em relação a ele. **Todas as rotas desta seção são reservadas à academia** — o secretário recebe `403 ACAO_RESERVADA_A_ACADEMIA`, inclusive para editar as próprias permissões.
+
+**Sempre fora do alcance do secretário** (nenhuma permissão as concede): gerir secretários; `PUT /academia/dados`, `PUT /academia/nivel-escolar`, solicitações de NIF e documentos da academia (alvará); credenciais e escolha do provedor de pagamento (`PUT /financeiro/provedor`, `/financeiro/credenciais*`); lançar/corrigir notas e faltas; pagar cobranças.
+
+### 26.1 `GET /academia/permissoes`
+
+Catálogo das permissões que a academia pode conceder.
+
+**Proteção**: autenticado + academia.
+
+**Response 200:** `{ "data": [ { "chave": "sumarios.gerir", "rotulo": "Gerir sumários", "descricao": "...", "grupo": "Sumários", "implica": ["sumarios.ver"] } ] }`
+
+| Grupo | Permissões |
+| --- | --- |
+| Estudantes | `estudantes.ver`, `estudantes.cadastrar`, `estudantes.situacao` (interrupção, desvinculação, revinculação), `estudantes.dados` (edição de dados e troca de encarregado), `estudantes.excluir`, `estudantes.credenciais` |
+| Turmas | `turmas.ver`, `turmas.gerir` |
+| Cursos | `cursos.gerir` |
+| Matérias | `materias.ver`, `materias.gerir` |
+| **Sumários** | `sumarios.ver`, `sumarios.gerir` |
+| Notas e faltas | `notas.ver`, `faltas.ver`, `faltas.configurar` (só consulta; lançar é dos professores) |
+| Avaliações | `avaliacoes.ver`, `avaliacoes.configurar` |
+| Serviços extras | `servicos_extras.ver`, `servicos_extras.gerir`, `servicos_extras.solicitacoes` |
+| Financeiro | `financeiro.ver`, `financeiro.gerir` (sem credenciais do provedor) |
+| Comunicação | `comunicacao.ver`, `comunicacao.enviar` |
+| Ano letivo | `ano_letivo.gerir` |
+| Professores | `professores.ver`, `professores.gerir` |
+
+Permissões que **implicam** outras (`gerir` → `ver`, etc.) são completadas pelo servidor: o conjunto gravado é sempre o normalizado. Consultas básicas (ano letivo, anos académicos, categorias de nota, estado dos jobs) não exigem permissão.
+
+### 26.2 `POST /academia/secretarios`
+
+Cria um secretário. Gera código `SCnnnnnn` e **senha temporária** enviada por SMS ao telefone dele (troca obrigatória no primeiro acesso).
+
+**Request:**
+
+```json
+{
+  "nome": "Maria da Silva",
+  "genero": "feminino",
+  "data_nascimento": "1990-05-10",
+  "telefone": "923456789",
+  "email": "maria@exemplo.ao",
+  "permissoes": ["turmas.gerir", "sumarios.gerir"],
+  "todas_permissoes": false
+}
+```
+
+`email` é opcional. `permissoes` é obrigatória (≥ 1) a não ser que `todas_permissoes` seja `true`. Pelo menos 18 anos; telefone móvel nacional de 9 dígitos.
+
+**Response 201:** `{ "message": "secretário criado com sucesso", "data": { "id", "codigo", "nome", "status", "permissoes": [...], "credenciais": { "canal": "sms", "enviada": true } } }`
+
+**Erros:** `400/422` (campo inválido; permissão fora do catálogo, como `notas.lancar`; conjunto vazio), `403` (não é a academia), `409` (e-mail já usado por outra conta).
+
+### 26.3 `GET /academia/secretarios` · `GET /academia/secretarios/:id`
+
+Lista/consulta os secretários **da academia** (não eliminados). Secretário de outra academia: `404`. **Response 200:** `{ "data": [ ContaPessoa ], "total": n }`, em que cada item traz `id`, `codigo`, `nome`, `genero`, `data_nascimento`, `email`, `email_verificado`, `telefone`, `status`, `permissoes`, `created_at`.
+
+### 26.4 `PUT /academia/secretarios/:id`
+
+Altera dados e/ou permissões. Todos os campos são opcionais: `nome`, `genero`, `data_nascimento`, `telefone`, `email`, `permissoes`. Trocar o `email` zera a verificação e o 2FA.
+
+**Response 200:** `{ "message": "secretário atualizado com sucesso", "data": {...} }`. **Erros:** `400/422`, `404`, `409`.
+
+### 26.5 `PUT /academia/secretarios/:id/ativar` · `/desativar` · `DELETE /academia/secretarios/:id`
+
+Ativar, desativar (bloqueia o acesso na hora, sem apagar) e eliminar (lógico; o ledger mantém o histórico). Corpo opcional `{ "motivo": "..." }`. **Response 200:** `{ "message": "...", "data": { "id", "status" } }`. **Erros:** `404`, `422` (estado inválido, como ativar quem já está ativo).
+
+---
+
+## 27. Professores
+
+Pertencem a uma academia e estão **vinculados a pares turma + matéria**. Um par tem no máximo **um professor ativo**. Lançar e corrigir notas e faltas pelo professor é a Parte 11; hoje o professor **consulta**.
+
+### 27.1 Gestão pela academia (ou secretário com `professores.gerir`)
+
+| Rota | Permissão do secretário | Descrição |
+| --- | --- | --- |
+| `POST /academia/professores` | `professores.gerir` | Cria o professor (mesmos campos do secretário, sem `permissoes`) e, opcionalmente, `vinculos: [{ "codigo_turma": "1A", "materia_id": "uuid" }]`. Gera `PFnnnnnn` e senha temporária por SMS. |
+| `GET /academia/professores` | `professores.ver` | Lista professores com os vínculos ativos. |
+| `GET /academia/professores/:id` | `professores.ver` | Um professor e os vínculos. |
+| `PUT /academia/professores/:id` | `professores.gerir` | Dados pessoais. |
+| `PUT /academia/professores/:id/ativar` · `/desativar` · `DELETE /academia/professores/:id` | `professores.gerir` | Ciclo de vida. Eliminar encerra os vínculos. |
+| `POST /academia/professores/:id/vinculos` | `professores.gerir` | `{ "codigo_turma", "materia_id" }`. `201` com o `id` do vínculo. |
+| `DELETE /academia/professores/:id/vinculos/:vinculo_id` | `professores.gerir` | Remove o vínculo. |
+| `PUT /academia/vinculos-professor/:vinculo_id/reatribuir` | `professores.gerir` | `{ "professor_id": "uuid" }`: passa o par para outro professor ativo. |
+
+**Validação do vínculo:** a turma existe na academia e está ativa; a matéria existe na academia e está ativa; turma e matéria são do mesmo nível e, quando ambas têm curso, do mesmo curso. Erros: `400/422` (validação), `409` (par já atribuído a um professor: use a reatribuição), `404`.
+
+### 27.2 Área do professor
+
+Rotas `/professor/*`, só para o professor autenticado. Cada consulta já nasce filtrada pelos **vínculos ativos**: turma sem vínculo responde `404` (não revela que existe) e `materia_id` que ele não leciona na turma, `403`.
+
+| Rota | Resposta |
+| --- | --- |
+| `GET /professor/vinculos` | `{ "data": [ { id, codigo_turma, materia_id, materia_nome, nivel, turno, status_turma } ], "total" }` |
+| `GET /professor/turmas` | turmas dos vínculos, com `total_estudantes` |
+| `GET /professor/turmas/:codigo/estudantes` | `{ codigo_estudante, nome, status }` dos estudantes da turma |
+| `GET /professor/turmas/:codigo/notas?materia_id=&ano_lectivo=` | notas dos estudantes da turma nas matérias vinculadas (máx. 2000) |
+| `GET /professor/turmas/:codigo/faltas?materia_id=&ano_lectivo=` | faltas dos estudantes da turma nas matérias vinculadas (máx. 2000) |
+
+Qualquer outra rota responde `403 ROTA_FORA_DO_PERFIL`.
+
+---
+
+## 28. Encarregados
+
+O encarregado é uma **conta de login** (`EN123456`) que responde pelos estudantes do **nível escolar** (educandos). Um encarregado pode ter vários educandos, inclusive de academias diferentes; um estudante tem **um** encarregado ativo. Não existe encarregado para estudantes só do ensino superior.
+
+### 28.1 Como a conta nasce
+
+Só no cadastro do estudante do nível escolar pela academia ou pelo secretário (`POST /academia/estudante/register`, em lote ou individual) ou na troca de encarregado (28.3). Não há cadastro avulso.
+
+### 28.2 Bloco do encarregado no cadastro
+
+JSON (itens do lote): `"encarregado": { nome, genero, data_nascimento, telefone, email?, relacao?, relacao_outro? }` (também aceita a forma plana `encarregado_nome`, …). Multipart: campos `encarregado_*` (ver seção 8).
+
+| Campo | Regras |
+| --- | --- |
+| `telefone` | Obrigatório. Móvel nacional de 9 dígitos. **É o identificador do encarregado** e o destino das credenciais. |
+| `nome`, `genero`, `data_nascimento` | Obrigatórios quando o encarregado ainda **não** tem conta. Pelo menos 18 anos. |
+| `email` | Opcional; único entre todas as contas. |
+| `relacao` | Opcional: `pai`, `mae`, `irmao`, `irma`, `outro`. Se `outro`, `relacao_outro` (até 60 caracteres) é obrigatório. |
+
+**Encarregado já existente:** se o `telefone` (ou o `email`) pertence a um encarregado ativo, ele é **reutilizado**: vinculado sem novas credenciais e sem criar conta. Telefone e e-mail de encarregados diferentes → `409`.
+
+**Atomicidade:** estudante e encarregado novo são gravados **na mesma transação**: ou nascem os dois, ou nenhum. Erros do bloco vêm prefixados (`"encarregado: ..."`).
+
+### 28.3 `PUT /academia/estudante/:codigo/encarregado`
+
+Troca o encarregado de um estudante do nível escolar (vínculo antigo encerrado e novo criado, na mesma transação). Corpo: `{ "encarregado": { ...bloco 28.2 } }`. Só enquanto o estudante **não** concluiu o nível escolar.
+
+**Proteção**: academia, ou secretário com `estudantes.dados`. **Response 200:** `{ "message", "data": { encarregado_id, codigo, conta_nova, credenciais? } }`. **Erros:** `400/422`, `404`, `409` (mesmo encarregado; estudante sem nível escolar ou que já o concluiu).
+
+### 28.4 `GET /academia/encarregados/buscar?telefone=&email=`
+
+Confirma se o encarregado já existe antes do cadastro. **Proteção**: academia, ou secretário com `estudantes.cadastrar`. **Response 200:** `{ "data": { "encontrado": false } }` ou `{ "data": { "encontrado": true, "encarregado": { id, nome, telefone_mascarado, total_educandos, status } } }`.
+
+### 28.5 Rotas do próprio encarregado
+
+| Rota | Descrição |
+| --- | --- |
+| `GET /encarregado/educandos` | Educandos ativos: `codigo_estudante`, `nome`, `status`, `codigo_academia`, `nome_academia`, `relacao`, `relacao_outro` e `fase` (`acao` ou `leitura`). |
+| `PUT /encarregado/educandos/:codigo/relacao` | `{ "relacao"?, "relacao_outro"? }` altera a relação com o educando. |
+| `GET /meu-perfil` | Perfil do encarregado com a lista de `educandos`. |
+
+### 28.6 Agir em nome do educando
+
+Em qualquer rota do estudante (`/estudante/*`, notas, faltas, financeiro…), o encarregado envia o cabeçalho **`X-Educando: <codigo_estudante>`** e a requisição vale como a do educando.
+
+| Fase do educando | O encarregado pode |
+| --- | --- |
+| **`acao`** — ainda no nível escolar | tudo o que o estudante faz, **exceto** o que é só do estudante: `DELETE /estudante/conta` e `DELETE /estudante/encarregado` (`403 ROTA_FORA_DO_PERFIL`). Educando desvinculado da academia segue as mesmas restrições de escrita do estudante inativo. |
+| **`leitura`** — concluiu o nível escolar (`status_escolar_medio = finalizado`, ou matriculado no superior) | apenas `GET /notas-estudante/:codigo` e `GET /faltas-estudante/:codigo`, **restritos ao período escolar** (o servidor força `ano_academico` aos anos fundamentais e médios). Qualquer outra rota: `403 ENCARREGADO_SOMENTE_LEITURA`. |
+
+Sem o cabeçalho: `403 EDUCANDO_OBRIGATORIO`. Educando que não é dele (ou já desvinculado): `403 EDUCANDO_NAO_VINCULADO`.
+
+### 28.7 Regra única de contato
+
+Dado um estudante, o telefone e o e-mail certos são: **nível escolar → os do encarregado; superior → os do próprio estudante**. É a única regra usada pelas credenciais e pelas notificações. Para o nível escolar **nunca** cai no telefone do estudante: sem encarregado ativo, ou com telefone inválido, devolve erro. Exceção declarada: o estudante que já **concluiu o nível escolar e se desvinculou** do encarregado passa a responder por si.
+
+### 28.8 `DELETE /estudante/encarregado`
+
+O **estudante** desvincula-se do encarregado, e só **depois de concluir o nível escolar**. **Proteção**: estudante. **Response 200:** `{ "message": "encarregado desvinculado com sucesso" }`. **Erros:** `404` (sem encarregado), `409` (nível escolar ainda não concluído). Depois disso o encarregado perde até a leitura (`EDUCANDO_NAO_VINCULADO`). A exclusão da conta do estudante também encerra o vínculo.

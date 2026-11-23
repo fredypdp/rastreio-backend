@@ -75,25 +75,30 @@ func novaSenhaTemporariaComHash() (senha, hash string, err error) {
 }
 
 // ReenviarCredenciaisEstudante — POST /estudantes/:codigo/credenciais/reenviar
-// Quem pode: a academia dona do estudante ou admin 'fpp'.
+// Quem pode (Plano, Parte 5):
+//   - a academia dona do estudante e o SECRETÁRIO dela (com estudantes.credenciais);
+//     o secretário chega aqui com a identidade efetiva da academia;
+//   - admin 'adm' ou 'fpp', mas SÓ para estudante sem nenhuma academia.
+//
+// O telefone de destino vem da regra única de contato (services.ResolverContatoDoEstudante):
+// nível escolar → encarregado; superior → o próprio estudante. Nunca cai no
+// telefone do estudante quando ele é do nível escolar.
 func ReenviarCredenciaisEstudante(c *gin.Context) {
 	codigo := strings.TrimSpace(c.Param("codigo"))
 	userID, _ := middleware.GetUserID(c)
 	userType, _ := middleware.GetUserType(c)
 
 	var (
-		idStr                                     string
-		nome, codigoAcademia                      string
-		telEst, telEnc, anoFund, anoMedio, anoSup sql.NullString
-		desde                                     sql.NullTime
-		pendente                                  bool
+		idStr                string
+		nome, codigoAcademia string
+		desde                sql.NullTime
+		pendente             bool
 	)
 	err := apoio.GetDbClient(c).DB().QueryRow(`
-		SELECT id::text, nome, COALESCE(codigo_academia,''), telefone, telefone_encarregado,
-		       ano_escolar_fundamental, ano_escolar_medio, ano_superior, sessoes_validas_desde,
+		SELECT id::text, nome, COALESCE(codigo_academia,''), sessoes_validas_desde,
 		       COALESCE(deve_alterar_senha, FALSE)
-		  FROM projection_estudantes WHERE codigo_estudante = $1`, codigo,
-	).Scan(&idStr, &nome, &codigoAcademia, &telEst, &telEnc, &anoFund, &anoMedio, &anoSup, &desde, &pendente)
+		  FROM projection_estudantes WHERE codigo_estudante = $1 AND status <> 'deletado'`, codigo,
+	).Scan(&idStr, &nome, &codigoAcademia, &desde, &pendente)
 	if err == sql.ErrNoRows {
 		utils.RespondWithNotFoundError(c, "estudante")
 		return
@@ -103,7 +108,7 @@ func ReenviarCredenciaisEstudante(c *gin.Context) {
 		return
 	}
 
-	// Permissão: academia dona do estudante, ou admin fpp.
+	// Permissão: academia (ou secretário) dona do estudante; admin adm/fpp só sem academia.
 	var ator apoio.AtorComunicacao
 	switch userType {
 	case "academia":
@@ -115,8 +120,17 @@ func ReenviarCredenciaisEstudante(c *gin.Context) {
 		}
 		ator = apoio.AtorComunicacao{ID: userID, Tipo: "academia", CodigoAcademia: codAtor}
 	case "admin":
-		if err := apoio.VerificarPermissaoAdmin(c, "fpp"); err != nil {
-			utils.RespondWithForbiddenError(c, "apenas admin com role 'fpp' pode reenviar credenciais")
+		if err := apoio.VerificarPermissaoAdmin(c, "adm"); err != nil {
+			utils.RespondWithForbiddenError(c, "apenas admin com role 'adm' ou 'fpp' pode reenviar credenciais")
+			return
+		}
+		semAcademia, errSem := estudanteSemNenhumaAcademia(c, idStr, codigoAcademia)
+		if errSem != nil {
+			utils.RespondWithInternalError(c, errSem)
+			return
+		}
+		if !semAcademia {
+			utils.RespondWithForbiddenError(c, "este estudante pertence a uma academia: apenas a academia (ou o seu secretário) pode reenviar as credenciais")
 			return
 		}
 		ator = apoio.AtorComunicacao{ID: userID, Tipo: "admin"}
@@ -130,24 +144,19 @@ func ReenviarCredenciaisEstudante(c *gin.Context) {
 		return
 	}
 
-	ptr := func(n sql.NullString) *string {
-		if n.Valid {
-			v := n.String
-			return &v
-		}
-		return nil
-	}
-	telefone, err := apoio.TelefoneDestinoCredenciaisEstudante(ptr(anoFund), ptr(anoMedio), ptr(anoSup), ptr(telEst), ptr(telEnc))
-	if err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	uid, err := uuid.Parse(idStr)
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
 		return
 	}
+	// Regra única de contato (Parte 5). Sem queda para o telefone do estudante no nível escolar.
+	contato, err := services.ResolverContatoDoEstudante(apoio.GetDbClient(c).DB(), uid)
+	if err != nil {
+		utils.RespondWithValidationError(c, err)
+		return
+	}
+	telefone := contato.Telefone
+
 	senha, hash, err := novaSenhaTemporariaComHash()
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
@@ -338,4 +347,18 @@ func ReenviarCredenciaisAdmin(c *gin.Context) {
 		credenciais = apoio.ResultadoCredenciais{Canal: "email", Motivo: apoio.MotivoFalhaEnvio}
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "credenciais redefinidas", "credenciais": credenciais})
+}
+
+// estudanteSemNenhumaAcademia diz se o estudante não tem academia: nem a coluna
+// principal nem qualquer vínculo ativo. É o único caso em que o admin pode
+// resetar as credenciais de um estudante.
+func estudanteSemNenhumaAcademia(c *gin.Context, estudanteID, codigoAcademia string) (bool, error) {
+	if strings.TrimSpace(codigoAcademia) != "" {
+		return false, nil
+	}
+	var existe bool
+	err := apoio.GetDbClient(c).DB().QueryRow(`
+		SELECT EXISTS (SELECT 1 FROM projection_estudante_vinculos
+		                WHERE estudante_id = $1::uuid AND desvinculado_em IS NULL AND deleted_at IS NULL)`, estudanteID).Scan(&existe)
+	return !existe, err
 }
