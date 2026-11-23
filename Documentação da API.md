@@ -2,7 +2,7 @@
 modificado: 21-11-2026 09:15
 criado: 05-04-2026 13:01
 ---
-Versão atual: 3.0.2
+Versão atual: 4.0.0
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
