@@ -7,6 +7,7 @@
 > **Atualização de 2026-11-21 (módulos, serviços, facturação, passaporte, sumários):** só plano, sem código. `rastreio-backend`, `main` @ `ffc13e2` (o mesmo commit da verificação anterior): conferidos por leitura a estrutura de `internal/`, quem importa `internal/finance`, os status por nível do estudante, os campos de BI, o agregado `Sumario` e o agregado `ServicoExtra`. Nada foi executado. O front-end não foi reanalisado.
 > **Verificação de 2026-11-23:** `rastreio-backend`, `main` @ `7f9b70e`: lidos o commit das Tarefas 130 e 131, os documentos dessas tarefas, o plano que o commit alterou, `internal/permissoes` e o reenvio de credenciais. O front-end é privado e não foi lido; o que consta dele vem do plano e dos documentos de tarefa.
 > **Partes 4 e 5** estão implementadas (back-end `7f9b70e`, Tarefas 130 e 131; front-end, Tarefas 40 e 41), e os detalhes da implementação estão integrados nesta versão.
+> **Atualização de 2026-11-23 (Parte 2B):** só plano, sem código. `rastreio-backend`, `main` @ `86ef281`: contados em `internal/db/safe_queries.go` 22 tipos de agregado e 165 tipos de evento. Entram a **Parte 2B** (modelo híbrido) e a regra 17; a planilha de custo operacional foi analisada. Nada foi executado; o front-end não foi lido.
 
 ## O que mudou nesta versão
 
@@ -20,6 +21,7 @@
 8. **Atualização de 2026-11-21:** (a) Parte 8 ganha a **Garantia 4** (valor monetário com tipo e validação certos); (b) Parte 13 registra que **zerar por faltas já é só leitura em memória** (com teste que prova isso), que o recálculo **nunca grava nota**, e que o **código morto da avaliação final manual é eliminado**, sem suporte a legado; (c) a regra 3 passa a conter a **convenção de dinheiro**; (d) pontos 29 e 30 em "Interpretações adotadas".
 9. **Atualização de 2026-11-21 (módulos, serviços, facturação, passaporte, sumários):** (a) **módulos, recursos e planos passam a ser definidos no código, e os preços são editáveis pelo FPP** (Gestão Académica, Finanças, Facturação, Comunicação e Serviços); administradores deixam de criar planos (Parte 9); o bloqueio por módulo é feito em **middleware no back-end** e a **consulta continua**; (b) **novo modelo de cobrança por número de estudantes**: a academia define o **limite** ao contratar e paga **excedente** por módulo para ultrapassá-lo; **demonstração gratuita** de 15 dias (Partes 9 e 10); preços editáveis pelo FPP, valendo só para quem não tem o módulo contratado, e Finanças e Serviços a 15 Kz por estudante; (c) **toda cobrança pode ser marcada como paga manualmente**, com a mesma sequência de efeitos de um pagamento por provedor (Parte 11, nova); (d) **Serviços** vira catálogo nosso, com Transporte e Atividade extracurricular (Parte 7 reescrita, Parte 8 ajustada); (e) **Facturação** sobe para a Parte 12, logo depois das Partes 8 a 11, ganha cópia de segurança no Mega e envio do recibo por e-mail; (f) novas Partes **19** (sumários sequenciais) e **20** (passaporte no cadastro); (g) o pacote `finance` vai para `internal/handlers/finance` (Parte 2); (h) a Parte 23 passa a tratar os pacotes de SMS como **cota de envio**, complemento das Partes 26 e 27; (i) **renumeração** das partes depois da 10; (j) revisões do mesmo dia: o front permite navegar e bloqueia a ação com aviso (CTA) para a página de assinatura do módulo; a Comunidade e seus recursos vão para o `Plano de Atualizações 2.md`; o reset de credenciais de encarregado, professor e secretário vira a Parte 28; o evento 34 foi retirado.
 10. **Atualização de 2026-11-23 (versão final):** as Partes 4 e 5 foram implementadas (Tarefas 130 e 131 no back-end; 40 e 41 no front-end), com os detalhes integrados ao plano; entram o passo 9 (versão da API em SemVer) e as interpretações 56 a 64; a seção de renumeração foi removida.
+11. **Atualização de 2026-11-23 (Parte 2B):** nova **Parte 2B — Modelo híbrido: event sourcing só no que é sensível**, logo depois da Parte 2, com as listas aprovadas por você (o que fica em event sourcing e o que vai para CRUD), a **regra 17** e a nova redação da regra 6 (auditoria do CRUD). As Partes 16 e 19 passam a depender da 2B-1 e a Parte 28, da 2B-2; as Partes 7, 9, 12, 21 e 23 ganham uma nota de persistência; a Parte 19 deixa de depender do ledger e do `rebuild`. Interpretações 65 a 69.
 
 ---
 
@@ -58,6 +60,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | **Fase 1 — Fundações** | | | | |
 | 1 ✅ | Remover a matrícula pública | — | Implementado | 128 (back) · 38 (front) |
 | 2 | Back-end em pacotes (refatoração) | 1 | Parcial (falta o pacote `finance`) | 129 (back) |
+| 2B | Modelo híbrido: event sourcing só no que é sensível (2B-1 e 2B-2; 2B-3 condicional) | 2 (2B-3: 8) | Pendente | |
 | 3 ✅ | Configurações do sistema (variáveis de ambiente → banco) | 2 | Implementado | 129 (back) · 39 (front) |
 | 4 ✅ | Usuários e permissões (encarregado, secretário, professor) | 2, 3 | Implementado | 130 (back) · 40 (front) |
 | **Fase 2 — Credenciais** | | | | |
@@ -76,10 +79,10 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | 13 | Notas e faltas só por professores + recálculo da avaliação final | 4 | Pendente | |
 | 14 | Avaliação final do ensino superior fixa no código | 2, 13 | Pendente | |
 | 15 | Horários das turmas | 4 | Pendente | |
-| 16 | Grupos do 4º ano de cursos técnicos | 4 | Parcial | |
+| 16 | Grupos do 4º ano de cursos técnicos | 4, 2B | Parcial | |
 | 17 | Material de apoio | 4, 9 | Pendente | |
 | 18 | Refazer matrícula | 8, 13 | Pendente | |
-| 19 | Sumários sequenciais | 4 | Pendente | |
+| 19 | Sumários sequenciais | 4, 2B | Pendente | |
 | 20 | Documento de identificação alternativo (passaporte) | 4, 5 | Pendente | |
 | **Fase 7 — Comunicação e notificações** | | | | |
 | 21 | Núcleo de notificações (e-mail e SMS) | 3, 5 | Parcial | |
@@ -90,15 +93,16 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | 26 | SMS manual da academia (individual, coletivo, citação) | 9, 21, 23 | Parcial | |
 | 27 | SMS agendado e automático (academia e Spuri) | 26 | Pendente | |
 | **Fase 8 — Credenciais complementares** | | | | |
-| 28 | Reset de credenciais de encarregado, professor e secretário | 4, 5 | Pendente | |
+| 28 | Reset de credenciais de encarregado, professor e secretário | 4, 5, 2B | Pendente | |
 
 ### Ordem de execução
 
 **1. Sequência obrigatória.** Cada passo só começa quando o anterior fecha. As partes entre colchetes precisam estar prontas juntas, e `+` marca uma segunda parte de que o passo também depende:
 
-`2 → [6 e 7] → 8 → (+ 9) 10 → 11 → (+ 21) 23 → 26 → 27`
+`2 → 2B-1 e 2B-2 → [6 e 7] → 8 → (+ 9) 10 → 11 → (+ 21) 23 → 26 → 27`
 
 - A **2** (pacote `finance`) vem antes de **6** e **7**, porque as duas mexem nesse pacote. A **8** precisa das duas.
+- A **2B-1** e a **2B-2** vêm depois da **2** (mexem nos mesmos arquivos de `handlers`, `safe_queries.go` e `main.go`) e antes das Partes **6** e **7**. A **2B-3** é condicional: só vem depois da **8** e só se a medição pedir. As Partes **16** e **19** esperam a **2B-1**; a **28** espera a **2B-2**.
 - A **10** precisa da **8** e da **9**. A **11** precisa da **10**.
 - A **23** precisa da **11** e da **21**. A **26** precisa da **23**, e a **27**, da **26**.
 - Dependem das partes da sequência, mas ficam fora dela: **12** (depois da 11), **14** (depois da 13), **18** (depois da 8 e da 13), **22** (depois da 21), **24** (depois da 13, 21 e 23) e **25** (depois da 7, 8, 21 e 23).
@@ -109,9 +113,10 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | Etapa | Obrigatória | Em paralelo | Observação |
 |---|---|---|---|
 | 0 | 1, 3, 4, 5 (feitas) | — | Já aplicadas (commit `7f9b70e`; Tarefas 130, 131, 40 e 41) |
-| 1 | 2 (pacote `finance`) | 13, 15, 16, 19, 20, 21, 28 | Nenhuma dessas mexe em `finance` |
+| 1 | 2 (pacote `finance`) | 13, 15, 20, 21 | Nenhuma dessas mexe em `finance`, em Turma, em Sumário nem na autenticação |
+| 1B | 2B-1 e 2B-2 | 16 e 19 (depois da 2B-1); 28 (depois da 2B-2) | Aplicar uma de cada vez: a 2B mexe em `safe_queries.go` e `main.go`. A 2B-3 não entra aqui |
 | 2 | 6 e 7 (andam juntas) | 9; 14 (se a 13 já fechou); 22 (se a 21 já fechou) | A 9 está no caminho crítico e só depende da 4 |
-| 3 | 8 | 17 (precisa da 9) | |
+| 3 | 8 | 17 (precisa da 9); 2B-3 (condicional) | |
 | 4 | 10 | 18 (precisa da 8 e da 13) | |
 | 5 | 11 | O que sobrou das etapas anteriores | |
 | 6 | 12 e 23 | — | As duas só esperam a 11 (a 23 também espera a 21) |
@@ -144,7 +149,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 3. **Dinheiro** em Kwanza (AOA/Kz), calculado no servidor, nunca recebido do cliente. **Convenção de valor monetário** (Tarefa 26): `NUMERIC(14,2)` no banco; `float64` no Go por causa do contrato do provedor (a AppyPay define `amount` como `number<double>`), sempre com `roundAmount` (2 casas, arredondando meio para longe do zero), somas arredondadas depois de acumular e **nunca `==` em valores monetários** (usar `amountsEqual`). Todo campo monetário novo passa pelo **validador único** da Parte 8 (finito, maior que zero, no máximo 2 casas, dentro do limite do `NUMERIC(14,2)`); entrada inválida é **rejeitada**, nunca arredondada em silêncio. Não se migra o tipo no Go (ver "Fora do escopo").
 4. **Datas** no fuso de Luanda (UTC+1). Plano: 1 mês = 30 dias, calendário civil.
 5. **Segredos** criptografados, nunca devolvidos em texto claro, nunca em log.
-6. **Auditoria** em ação sensível: quem, quando, o quê (o ledger e `SaveWithAudit` já fazem isso).
+6. **Auditoria** em ação sensível: quem, quando, o quê. No que está em event sourcing, o ledger e `SaveWithAudit` já fazem isso; no que está em CRUD, a tabela de auditoria da Parte 2B (regra 17).
 7. **Nada de histórico apagado:** pagamentos, notas, documentos fiscais e matrículas são arquivados ou anulados.
 8. **Sem duplicidade:** repetir uma operação não gera cobrança, SMS, e-mail ou recibo em dobro.
 9. **Menor de idade:** contato de estudante do nível escolar é sempre o do encarregado (regra única, Parte 5).
@@ -155,6 +160,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 14. **Cada parte atualiza este plano** (ver "Como acompanhar o andamento").
 15. **Módulos que cobram por número de estudantes cobram pelo limite contratado**: o número que a academia define ao contratar, que é o **máximo de estudantes ativos** que ela pode cadastrar durante o período do plano. Passar dele exige pagar o **excedente**, por módulo (Parte 9). A contagem de estudantes ativos serve só para conferir o limite.
 16. **Toda cobrança pode ser marcada como paga manualmente** (estudante → academia e academia → Spuri), com a mesma sequência de efeitos de um pagamento por provedor (Parte 11).
+17. **Event sourcing só no que é sensível** (Parte 2B). Só entra em event sourcing o que (a) pode ser disputado ou exigido como prova (dinheiro, nota, falta, identidade, permissões) e (b) precisa responder "qual era o estado em tal data e quem mudou". O resto é CRUD, com a auditoria da Parte 2B. Nenhum agregado nem evento novo entra em event sourcing fora da lista aprovada (teste-guarda), e um evento que depende de dado em CRUD grava o valor do momento (snapshot). Vale para todas as partes.
 
 ---
 
@@ -208,6 +214,60 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 - `apoio` guarda o que mais de um módulo usa (helpers HTTP, o motor da avaliação final, a infraestrutura de lotes, o cadastro de estudante reaproveitado pelo cadastro em lote). Cada módulo ficou com os seus próprios wrappers de lote e itens de job (`CriarCursoBatch`, `AtivarAcademiaJobItem`...); só a infraestrutura genérica é compartilhada.
 - A regra "módulos não se importam" tem teste: `TestPacotesDeModuloNaoSeImportam` (pacote `apoio`).
 - Para efeito da regra 4 de "Como acompanhar", as Partes 3 e 4 estão liberadas. O que falta da Parte 2 (pacote `finance`) não bloqueia as Partes 3 a 5, mas **bloqueia as Partes 6 e 7**.
+
+---
+
+### Parte 2B — Modelo híbrido: event sourcing só no que é sensível
+
+**Estado:** Pendente · **Depende de:** 2 (entregas 2B-1 e 2B-2); 8 (entrega 2B-3, condicional)
+
+**Por quê (2026-11-23):** a whitelist do ledger tem hoje 22 tipos de agregado e 165 tipos de evento (`internal/db/safe_queries.go`, `main` @ `86ef281`), e cada funcionalidade exige evento, agregado, whitelist e projeção. O custo aparece no código: três vezes o evento faltou na whitelist e a rota devolveu 500 sempre (`NotaCorrigida`/`FaltaCorrigida`, alteração de NIF e Sumário). Os eventos de senha de estudante, admin, academia e contas de pessoa gravam o hash bcrypt num ledger imutável. A confiabilidade do que fica já existe: cadeia de hash (`verify_hash_chain`) e proteção contra truncate (migration 029). Pela planilha de custo operacional, o banco custa 4,0% (cenário 1) e 0,5% (cenário 5) da receita na modalidade Preço fixo; o argumento é **manutenção, segurança e a janela sem academias** (depois da primeira academia real, os tipos de evento ficam para sempre), não a fatura. O que mais pesa na planilha é e-mail e SMS (83% do custo no cenário 5), definido pelas Partes 21 a 27.
+
+**Critério:** só entra em event sourcing o que (a) pode ser disputado ou exigido como prova (dinheiro, nota, falta, identidade, permissões) e (b) precisa responder "qual era o estado em tal data e quem mudou". O resto é CRUD, com auditoria.
+
+**Fica em event sourcing** (lista aprovada por você em 2026-11-23)
+- **Dinheiro:** cobranças e pagamentos (solicitada, criada, falhou, cancelada, conflito pós-cancelamento, pagamento externo e manual registrado, `MensalidadePaga`, `MensalidadesCobrancaConfirmada`, `ServicoExtraLancamentoPago`); obrigações de mensalidade e de serviço extra anuladas e reativadas; configuração de mensalidade e mês de início de cobrança; solicitações de serviço extra (criada, aprovada, vinculada, reprovada, cancelada); períodos de assinatura de módulo e cobranças do Spuri (Partes 9 a 11).
+- **Notas, faltas e resultados:** notas registradas e corrigidas; faltas registradas, corrigidas e eliminadas; avaliação final (escolar e superior), aprovação e reprovação e o recálculo da Parte 13.
+- **Estudante, identidade e trajetória:** criação com vínculo, desvinculação, reintegração, interrupção, abandono e retoma (fundamental, médio e superior), equivalências, ingresso no superior, alteração de curso, eliminação e refazer matrícula (Parte 18); dados críticos (nome, BI do estudante e do encarregado, data de nascimento, passaporte da Parte 20) e as solicitações de edição (criada, aprovada, reprovada).
+- **Academia e permissões:** academia criada, ativada, desativada (com motivo) e eliminada; NIF e solicitações de alteração de NIF; ano letivo definido e finalizado; admin criado, ativado, desativado, eliminado e mudança de role; `AcaoAdminRegistrada`; contas de secretário, professor e encarregado (criada, ativada, desativada, eliminada); permissões do secretário; vínculo e desvínculo encarregado↔educando.
+
+**Vai para CRUD** (lista aprovada por você em 2026-11-23)
+- **Catálogos e estrutura:** cursos, matérias (período e pendência), turmas (incluindo adicionar e remover estudante e encerrar), grupos do 4º ano (mentor, descrição, estado), serviços extra e categorias de serviço, documentos extra, Transporte e atividades (rotas, veículos, horários), horários das turmas e material de apoio.
+- **Configurações:** configuração de faltas, configuração do sistema, categorias de nota, lista de anos letivos, documentos obrigatórios da academia, "aceitar passaporte", remetente de comunicação e provedor de pagamento escolhido.
+- **Dados cadastrais não críticos:** dados gerais de academia e admin, dados das contas de secretário, professor e encarregado, dados pessoais do estudante fora os críticos, relação do encarregado, vínculo professor↔turma+disciplina (com início e fim) e metadados de documentos.
+- **Conteúdo e comunicação:** sumários de aula (com número de ordem e histórico), eventos da Comunidade, mensagens de comunicação, histórico de notificações, agendamentos e regras automáticas.
+- **Preços e cotas:** preços de módulos e pacotes (com versões) e cota de SMS (decremento atômico).
+- **Documentos fiscais emitidos:** tabela imutável depois da emissão.
+- **Autenticação e segurança (entrega 2B-2):** senha (alterada e temporária; estudante, admin, academia e contas de pessoa), 2FA e verificação de e-mail.
+- **Pagamentos, operacional (entrega 2B-3, condicional):** webhooks brutos, QR code, cobrança consultada e credenciais do provedor (configurar, remover, rotacionar segredo, arquivar e purgar).
+
+**Auditoria do que fica em CRUD:** uma tabela de auditoria só de inserção (ator, tipo do ator, IP, ação, entidade, antes e depois, motivo), gravada **na mesma transação** da alteração. O papel da aplicação não tem UPDATE nem DELETE nela e o hash é encadeado como o do ledger (sugestão). Onde se precisa do estado numa data (preços, vínculo professor↔turma+disciplina), a tabela guarda versões, ou início e fim, sem apagar as anteriores. A ação administrativa continua usando `AcaoAdminRegistrada`.
+
+**Regras**
+- **Snapshot:** todo evento que fica em event sourcing e depende de dado em CRUD grava o valor do momento: preço do serviço, rótulo da categoria de nota, limite de faltas aplicado, nome do curso. Sem isso, editar o CRUD reescreve a explicação do passado.
+- **Senhas:** o hash bcrypt fica só na tabela da conta. A auditoria diz quem alterou e quando, **sem o hash**, e o código de verificação nunca vai para a auditoria.
+- **Eventos antigos:** como não há academias, a tarefa confere se o ledger só tem dados de teste e **remove** os tipos de evento da whitelist e do replay (como a Parte 1). Se houver dado real, os tipos ficam aceitos e congelados, nunca apagados.
+- **Teste-guarda (negar por padrão):** a lista aprovada de agregados e eventos fica em código, e um teste percorre a whitelist e os agregados e falha se surgir um fora dela (mesmo padrão de `internal/permissoes` e de `TestPacotesDeModuloNaoSeImportam`). A tarefa prova o teste desfazendo a regra.
+- **Conversão por agregado:** uma entrega interna por agregado ou grupo. O handler grava direto na tabela, em transação, com a auditoria; a projeção atual vira a tabela de registro (nada se migra, pois não há academias); saem o agregado, os eventos e o handler de projeção. Mesmas rotas, respostas, regras e permissões.
+- **Fora da 2B-1:** `ServicoExtra` e `CategoriaServico` não são convertidos antes; a Parte 7 os substitui já em CRUD. `Turma` e `Sumario` são convertidos na 2B-1, porque as Partes 16 e 19 se apoiam neles.
+- **Endpoints de auditoria atuais:** `/eventos-estudante/:codigo` e `/eventos/:event_id` mostram eventos do ledger. A tarefa decide e documenta como a auditoria do que foi para CRUD aparece neles (sugestão: alimentar a partir da tabela de auditoria) ou se ganha rota própria.
+- **2B-3 (condicional):** só entra depois da Parte 8 (os testes das quatro garantias são a rede de segurança) e se a medição no Neon (tamanho do `spuri_ledger` e das projeções, horas ativas do mês) mostrar ganho. Antes de mover os webhooks, a tarefa confere se a idempotência deles depende do ledger.
+
+**Como as outras partes se adaptam**
+- As Partes **7, 9, 12, 16, 19, 21 e 23** têm uma nota de persistência no próprio texto. As Partes **15, 17, 26 e 27** e a Parte 1 do `Plano de Atualizações 2.md` (Eventos da Comunidade) nascem em CRUD, com tabelas e a auditoria da 2B, sem tarefa de conversão.
+- As Partes **11** (pagamento manual), **13** (notas, faltas e recálculo), **18** (refazer matrícula) e **20** (passaporte, dados críticos) seguem em event sourcing.
+- As Partes **16** e **19** dependem da **2B-1** (`Turma` e `Sumario` viram CRUD antes). A Parte **28** depende da **2B-2** (o hash da senha nova já nasce fora do ledger).
+
+**Entregas**
+- [ ] **2B-1:** regra 17 e lista aprovada em código, com teste-guarda
+- [ ] **2B-1:** tabela de auditoria e auxiliar transacional para o CRUD, com teste de que a alteração e a auditoria entram ou saem juntas
+- [ ] **2B-1:** conversão para CRUD, sem dinheiro e sem autenticação: cursos, matérias, turmas, sumários, documentos extra, categorias de nota, configurações (faltas, sistema, anos letivos), comunicação (remetente e mensagens), dados cadastrais não críticos e dados das contas de pessoa
+- [ ] **2B-2:** senhas de todas as contas, 2FA, verificação de e-mail e senha temporária em tabelas, com o hash fora do ledger e a auditoria sem hash
+- [ ] **2B-2:** tipos de evento antigos removidos da whitelist e do replay (ou congelados, se houver dado real)
+- [ ] **2B-3 (condicional):** financeiro operacional (webhooks brutos, QR code, cobrança consultada, credenciais e provedor escolhido) em tabelas, depois da Parte 8 e da medição
+- [ ] Suíte completa idêntica antes e depois e, por agregado convertido, um teste que prova que ele não grava evento no ledger (com revert, falha e reaplicação)
+- [ ] Plano e Documentação da API atualizados (mesmas rotas e respostas; a versão só muda se algo do contrato mudar, pelo passo 9)
+- [ ] Front-end: sem mudança prevista
 
 ---
 
@@ -395,6 +455,7 @@ _Nota (2026-11-21): a última linha mudou porque os planos agora são fixos no c
 - **Alterar preço ou meses** só afeta o que ainda não foi gerado: cobranças **não pagas** de meses removidos são canceladas; as **pagas** nunca são tocadas.
 - **Validação de valor:** os campos de preço já nascem rejeitando mais de 2 casas e valor acima do teto do `NUMERIC(14,2)`, mesmo antes do validador único da Parte 8, que depois só consolida.
 - Cada recurso declara o módulo `servicos` (Parte 9). Sem academias, não há migração.
+- **Persistência (Parte 2B, regra 17):** o catálogo e a configuração de Serviços (Transporte, rotas, veículos, atividades, horários e preços) nascem em tabelas, em CRUD, com a auditoria da Parte 2B. `ServicoExtra` e `CategoriaServico` não são convertidos antes: esta Parte os substitui já em CRUD. A solicitação, a aprovação e o vínculo de serviço seguem em event sourcing, como hoje.
 
 **Transporte**
 - **Preço geral** (pode ser gratuito) e **prazo geral** (meses; pode ser definido como gratuito, e então nenhum mês é cobrado, em todas as rotas): opcionais. Se definidos, valem para **todas** as rotas e **nenhuma rota pode definir** o campo (a API recusa).
@@ -490,7 +551,7 @@ O módulo **Comunidade** e seus recursos ficam no `Plano de Atualizações 2.md`
 - **A alteração vale só para academia que não tem o módulo contratado.** Quem já contratou e pagou não é afetado: cada período guarda os **preços vigentes na contratação** (valor fixo e preço unitário). O **excedente** daquele período usa esses preços congelados, **nunca o preço novo**. Quando o período acaba e a academia contrata de novo, vale o preço então vigente.
 - Cobrança já criada e ainda não paga mantém o preço da criação; se expirar, a nova nasce com o preço vigente (sugestão).
 - **Renovação antecipada** (novo período comprado antes de o atual acabar): o período atual mantém o seu preço e o novo usa o preço vigente (confirmado por você; ponto 54).
-- **Registro:** cada alteração cria uma **versão** do preço (valor anterior, valor novo, quem, quando e motivo), sem apagar as anteriores. Só o `fpp` altera, com o validador monetário da Parte 8 (2 casas e teto) e **confirmação por código por e-mail**, como na Parte 11 (mantida por você). A demonstração não tem preço.
+- **Registro:** cada alteração cria uma **versão** do preço (valor anterior, valor novo, quem, quando e motivo), sem apagar as anteriores, em tabelas (CRUD, Parte 2B, regra 17; os períodos de assinatura e as cobranças do Spuri seguem em event sourcing). Só o `fpp` altera, com o validador monetário da Parte 8 (2 casas e teto) e **confirmação por código por e-mail**, como na Parte 11 (mantida por você). A demonstração não tem preço.
 - **Avisos de alteração de preço** (confirmado por você), enviados só depois que a alteração é confirmada pelo código e salva, um por alteração e por destinatário:
   - Os **outros administradores FPP** (todos, menos o que alterou) recebem um aviso informando que o administrador **[nome]** alterou o preço do plano de um módulo (módulo, plano, valor anterior e novo, data). Evento 42 do Anexo A.
   - As **academias que têm o módulo contratado** (período em curso) recebem um aviso sobre a atualização dos preços, **sem dizer quem alterou**; o texto deixa claro que o período em curso não muda e que o novo preço vale na próxima contratação (sugestão). Evento 43 do Anexo A. Academia sem o módulo contratado não recebe aviso (sugestão).
@@ -671,7 +732,7 @@ Nos exemplos, os meses que faltam (6 e 11) são os dados de cada cenário; no si
 - **Cópia de segurança no Mega:** o Ulemo já permite baixar os documentos emitidos; por segurança, **em segundo plano**, cada documento emitido (PDF) também é guardado no **Mega**, pela camada `internal/storage` e com as credenciais `MEGA_*` da Parte 3. Caminho montado só por identificadores internos: `/Facturacao/{identificador do emissor}/{ano}/{tipo do documento}/{identificador do documento}.pdf` (sugestão). Tarefa em segundo plano com nova tentativa, **uma cópia por documento** (idempotente), com hash e estado (pendente, guardado, falhou). **Nunca atrasa nem derruba a emissão.** Sem credenciais do Mega, a cópia fica "pendente" e os administradores são alertados (sugestão). Acesso só pela API autenticada, sem link público.
 - **Factura:** emitida pelo emissor a partir de uma cobrança, por ação dele (sugestão).
 - **Nota de crédito:** só sobre documento emitido, referencia o original, exige motivo, e a soma das notas nunca passa do valor original.
-- Documento emitido **nunca é editado nem apagado**; correção = nota de crédito + novo documento.
+- Documento emitido **nunca é editado nem apagado**; correção = nota de crédito + novo documento. Os documentos ficam numa tabela imutável depois da emissão (CRUD, Parte 2B, regra 17); o pagamento que os origina segue em event sourcing.
 - Cliente sem NIF → "consumidor final" (sugestão). Estudante do nível escolar: documento **em nome do encarregado**, com o estudante na descrição (a confirmar).
 - Com o módulo Facturação inativo a academia não emite (consultar e baixar o que já foi emitido continua); pagamentos seguem registrados e **não** se emitem recibos retroativos ao reativar (a confirmar). A emissão do Spuri não depende de módulo.
 
@@ -776,9 +837,9 @@ Nos exemplos, os meses que faltam (6 e 11) são os dados de cada cenário; no si
 
 ### Parte 16 — Grupos do 4º ano de cursos técnicos
 
-**Estado:** Parcial · **Depende de:** 4
+**Estado:** Parcial · **Depende de:** 4, 2B (2B-1)
 
-**Já existe (Tarefa 116):** no `4_ano_medio` não há turmas, há **grupos**. O agregado `Turma` continua sendo a fonte (`tipo_agrupamento` derivado do nível) e já tem **`tema_trabalho`** (opcional, até 200 caracteres). Vínculo de estudantes, histórico por ano letivo, faltas e notas já dependem de `Turma`; **não criar agregado paralelo**.
+**Já existe (Tarefa 116):** no `4_ano_medio` não há turmas, há **grupos**. O agregado `Turma` continua sendo a fonte (`tipo_agrupamento` derivado do nível) e já tem **`tema_trabalho`** (opcional, até 200 caracteres). Vínculo de estudantes, histórico por ano letivo, faltas e notas já dependem de `Turma`; **não criar agregado paralelo** (depois da Parte 2B-1, `Turma` é CRUD; a regra de não criar estrutura paralela continua valendo para a tabela).
 
 **O que falta**
 - Dados: **mentor** (professor ativo da mesma academia), descrição, estado (em formação, em andamento, concluído) e data de defesa (sugestão). Um mentor pode orientar vários grupos (limite a definir na tarefa).
@@ -847,7 +908,7 @@ Nos exemplos, os meses que faltam (6 e 11) são os dados de cada cenário; no si
 
 ### Parte 19 — Sumários sequenciais
 
-**Estado:** Pendente · **Depende de:** 4
+**Estado:** Pendente · **Depende de:** 4, 2B (2B-1)
 
 **Já existe (Tarefa 75; `internal/handlers/sumarios`, agregado `Sumario`):** o sumário pertence a uma academia e tem título, descrição, período, ano acadêmico, nível, curso (opcional) e **matéria**. **Não tem número de ordem**; os eventos são criado, dados atualizados e deletado. A tarefa confere como a listagem ordena hoje.
 
@@ -858,14 +919,14 @@ Nos exemplos, os meses que faltam (6 e 11) são os dados de cada cenário; no si
 - Numeração **sem lacunas e sem repetição**. O sumário novo nasce no fim (próximo número) ou numa posição escolhida, empurrando os seguintes.
 - **Reordenar** = mover um sumário para outra posição, renumerando os afetados **numa só operação**. Duas pessoas ao mesmo tempo nunca geram número repetido (guarda de versão).
 - Remover um sumário faz os seguintes subirem uma posição (a confirmar). O removido continua no histórico (regra 7).
-- O ledger é imutável: cada criação com posição, reordenação e remoção grava um evento com a ordem anterior, a nova e o autor. O número de ordem é **projeção**: o `rebuild` reproduz o mesmo resultado.
+- **Persistência (Parte 2B, regra 17):** o sumário passa a CRUD. O número de ordem é uma coluna da tabela do sumário, e cada criação com posição, reordenação e remoção grava um registro de histórico (ordem anterior, nova e autor) na mesma transação.
 - Estudantes, encarregados e professores veem os sumários **na ordem**. Módulo Gestão Académica (`gestao_academica`).
 
 **Entregas**
-- [ ] Número de ordem no agregado e na projeção, com unicidade por escopo (migration que roda do zero)
-- [ ] Criar com posição, reordenar e remover renumerando, com evento de histórico
+- [ ] Número de ordem na tabela do sumário, com unicidade por escopo (migration que roda do zero)
+- [ ] Criar com posição, reordenar e remover renumerando, com registro de histórico
 - [ ] Listagens ordenadas pela sequência
-- [ ] Testes: sem lacuna e sem repetição, concorrência, `rebuild`
+- [ ] Testes: sem lacuna e sem repetição, concorrência e histórico
 - [ ] Front-end: ordenar (arrastar) e exibir a sequência
 - [ ] Documentação da API atualizada
 
@@ -928,7 +989,7 @@ O catálogo completo de eventos está no **Anexo A**.
 - **Sem cota de SMS**, o sistema usa o e-mail como alternativa e avisa a academia por e-mail (evento 14, Parte 23).
 - **Resumos** (diário/semanal) exigem um **executor de tarefas agendadas** que nunca roda a mesma tarefa duas vezes (mesmo com mais de uma instância ou reinício). Esse executor é reaproveitado na Parte 27.
 - **Limitadores de requisição:** os "no-op" antigos já foram removidos (Tarefa 123), mas **login e e-mail seguem sem limite** (risco D1 declarado). **Antes de ligar qualquer SMS por rota pública** (recuperação de senha, verificação de telefone, reenvio de 2FA), implementar limitadores reais por rota e por destinatário.
-- **Histórico** de toda notificação: quem/o quê, canal, destinatário, estado, segmentos, custo. A academia vê só as suas.
+- **Histórico** de toda notificação: quem/o quê, canal, destinatário, estado, segmentos, custo. A academia vê só as suas. Histórico, agendamentos e regras automáticas ficam em tabelas (CRUD, Parte 2B, regra 17).
 
 **Entregas**
 - [x] Envio de SMS com GoSMS/Ziett e fallback; histórico básico (Tarefa 93)
@@ -990,7 +1051,7 @@ Eventos **1 a 14** do Anexo A. Rodam por e-mail; o SMS é pago pelo Spuri **só*
 **Regras**
 - **Pacotes** no catálogo do código (Parte 9): SMS Básico (1.000), SMS Start (10.000), SMS Pro (30.000), SMS Pro Max (50.000) e SMS Ultra (500.000). Preço do pacote = quantidade × preço por SMS (Parte 9).
 - A academia tem uma **cota de SMS**: quantas mensagens ainda pode enviar. **Pagar um pacote soma a quantidade do pacote à cota**, depois de o pagamento ser confirmado pelo provedor (Parte 10) ou marcado como pago manualmente (Parte 11), de forma idempotente.
-- **Cada SMS enviado pela academia consome 1 da cota**: SMS manual (Parte 26), agendado e automático (Parte 27) e o SMS Academia das notificações (Parte 21). SMS que falha no envio não consome (sugestão). Dois envios simultâneos não gastam a mesma cota (decremento atômico).
+- **Cada SMS enviado pela academia consome 1 da cota**: SMS manual (Parte 26), agendado e automático (Parte 27) e o SMS Academia das notificações (Parte 21). SMS que falha no envio não consome (sugestão). Dois envios simultâneos não gastam a mesma cota (decremento atômico). A cota é uma tabela (CRUD, Parte 2B, regra 17), nunca event sourcing: seria um evento por SMS.
 - **Cota esgotada:** nenhuma mensagem é enviada pela academia e o módulo Comunicação fica **desativado** (a consulta do histórico continua, Parte 9). Ao pagar um novo pacote, a cota é atualizada e o módulo volta a ficar ativo.
 - Mensagem agendada ou automática que chega sem cota não é enviada e fica "não enviada" (Parte 27).
 - **Evento 14, cota baixa ou esgotada:** só e-mail, um aviso ao cruzar o limite (para não gastar SMS avisando que acabou o SMS). **Cota baixa = restam 10% do que foi pago** (10% da quantidade do pacote pago; com várias compras, 10% do total creditado desde a última vez que a cota zerou, sugestão).
@@ -1116,7 +1177,7 @@ Usa o executor de tarefas agendadas da Parte 21. **Nunca envia duas vezes.**
 
 ### Parte 28 — Reset de credenciais de encarregado, professor e secretário
 
-**Estado:** Pendente · **Depende de:** 4, 5
+**Estado:** Pendente · **Depende de:** 4, 5, 2B (2B-2)
 
 Vem depois da Parte 5 (implementada), que trata só do reset do **estudante**. Esta parte estende o mesmo mecanismo aos outros três perfis.
 
@@ -1256,9 +1317,15 @@ Onde a lista original ou o arquivo de notificações deixava dúvida, usei o pad
 | 62 | Telefone do encarregado | É o identificador do encarregado (único entre encarregados). O estudante guarda um retrato dele no cadastro (exigido por uma restrição da tabela), mas a fonte do contacto é a conta do encarregado | 5 |
 | 63 | Estudante que concluiu o escolar e se desvinculou do encarregado | Passa a responder por si na regra única de contato (adulto) | 5 |
 | 64 | Credenciais de secretário, professor e encarregado | A Tarefa 131 não fez reenvio para esses tipos: se o SMS falhar, a academia elimina a conta e a recria. O reenvio entra na Parte 28 | 4, 5, 28 |
+| 65 | Numeração da Parte 2B | Proposta minha: "2B", logo depois da Parte 2, para não renumerar as outras partes nem as referências cruzadas. Se preferir número próprio, é só dizer | 2B |
+| 66 | O que fica em event sourcing | Só o sensível (dinheiro, nota, falta, identidade, permissões, trajetória), na lista da Parte 2B; o resto é CRUD com auditoria. **Listas aprovadas por você em 2026-11-23** | 2B |
+| 67 | Eventos antigos dos agregados convertidos | Como não há academias, a tarefa confere o ledger e **remove** os tipos de evento (como na Parte 1); se houver dado real, congela e nunca apaga | 2B |
+| 68 | 2B-3 (financeiro operacional) | Condicional: só depois da Parte 8 e se a medição do Neon (tamanho das tabelas e horas ativas) mostrar ganho. Pela planilha, o banco custa 4,0% (cenário 1) e 0,5% (cenário 5) da receita | 2B |
+| 69 | `ServicoExtra`, `CategoriaServico`, `Turma` e `Sumario` | `ServicoExtra` e `CategoriaServico` não são convertidos na 2B-1: a Parte 7 os substitui já em CRUD. `Turma` e `Sumario` são convertidos na 2B-1 porque as Partes 16 e 19 se apoiam neles | 2B, 7, 16, 19 |
 
 ## O que ainda preciso receber
 
+- **Parte 2B:** a medição no Neon (tamanho do `spuri_ledger` e das projeções, horas ativas do mês) decide a 2B-3; sem ela, a 2B-3 fica de fora. Confirmar também a numeração "2B" (ponto 65).
 - **Partes 4 e 5:** confirmar ou corrigir os pontos 56 a 64 da tabela acima. O que mais pesa: o ponto 56 (que ações são reservadas à academia) e o ponto 64 (reenvio de credenciais dos novos tipos, tratado agora na Parte 28).
 - **Parte 12:** as regras fiscais (NIF, séries, IVA ou isenção por tipo de serviço) que o Ulemo não resolver sozinho. A tarefa lê a documentação dele e lista só o que faltar.
 - **Parte 14:** as regras de avaliação de cada instituição de ensino superior, **sempre que uma for integrada** (você as entrega no momento; nada pendente agora).
@@ -1274,6 +1341,7 @@ Onde a lista original ou o arquivo de notificações deixava dúvida, usei o pad
 - Criação de módulos e planos por administradores (o catálogo é código).
 - Módulo concedido sem cobrança (cortesia), que o pedido não descreve.
 - Pagamento manual parcial e "desfazer" pagamento manual.
+- Converter para CRUD o financeiro principal (cobranças e pagamentos), notas, faltas, trajetória e identidade do estudante e permissões: ficam em event sourcing (Parte 2B).
 
 ---
 
@@ -1293,4 +1361,5 @@ Preencher a cada entrega (ver "Como acompanhar o andamento").
 | 2026-11-23 | Parte 4 (todos os itens) | 130 (back) · 40 (front) | `7f9b70e` (back) | Migration 140. API 4.0.0. Back-end validado com PostgreSQL real; front-end com `tsc`, `eslint` e `next build` (sem teste em navegador) |
 | 2026-11-23 | Parte 5 (todos os itens) | 131 (back) · 41 (front) | `7f9b70e` (back) | Migration 141. Mudança incompatível: cadastro escolar exige o encarregado e `PUT /estudante/encarregado/telefone` saiu. Versão da API da Tarefa 129 corrigida para 3.1.0 |
 | 2026-11-23 | Plano final: detalhes das Partes 4 e 5 integrados (Como ficou, matriz, passo 9, interpretações 56 a 64); seção de renumeração removida | — | — | Só análise e planejamento. Lido o repositório em `main` @ `7f9b70e`. Achado: no repositório, a linha `Versão atual` do topo da `Documentação da API.md` diz 3.0.2, mas a tabela de versões e as Tarefas 130 e 131 dizem 4.0.0; corrigir na próxima entrega que mexer na API |
+| 2026-11-23 | Parte 2B adicionada (modelo híbrido: event sourcing só no que é sensível), regra 17 e ajustes nas Partes 7, 9, 12, 16, 19, 21, 23 e 28 | — | — | Só análise e planejamento, nada implementado. Lido o repositório em `main` @ `86ef281` (22 tipos de agregado e 165 tipos de evento na whitelist); planilha de custo operacional analisada; listas aprovadas por você. Suíte não executada; front-end não lido |
 | | | | | |

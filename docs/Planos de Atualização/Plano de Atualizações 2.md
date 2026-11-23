@@ -1,6 +1,6 @@
 # Plano de Atualizações 2 — Módulo Comunidade
 
-Atualizado em 2026-11-22. Este plano reúne **tudo sobre o módulo Comunidade e seus recursos**. O resto das atualizações está em `Plano_de_Atualizacoes.md` (o "plano principal"). Aqui as partes têm numeração própria; as partes do plano principal são sempre citadas como "Parte N do plano principal".
+Atualizado em 2026-11-23. Este plano reúne **tudo sobre o módulo Comunidade e seus recursos**. O resto das atualizações está em `Plano_de_Atualizacoes.md` (o "plano principal"). Aqui as partes têm numeração própria; as partes do plano principal são sempre citadas como "Parte N do plano principal".
 
 Só análise e planejamento: nada foi implementado.
 
@@ -8,7 +8,7 @@ Só análise e planejamento: nada foi implementado.
 
 ## Como usar este plano
 
-- Valem as **regras 1 a 16 do plano principal** ("Regras que valem para todas as partes"), em especial: o back-end decide (regra 1), todo recurso declara o módulo que o protege (regra 11) e o preço por número de estudantes conta só estudantes ativos vinculados à academia (regra 15).
+- Valem as **regras 1 a 17 do plano principal** ("Regras que valem para todas as partes"), em especial: o back-end decide (regra 1), todo recurso declara o módulo que o protege (regra 11), o preço por número de estudantes conta só estudantes ativos vinculados à academia (regra 15) e a persistência segue a regra 17 (os eventos da Comunidade ficam em CRUD, não em event sourcing).
 - Tarefas, enumeração, documentos de tarefa, ordem de deploy e atualização deste arquivo seguem o mesmo método do plano principal ("Como acompanhar o andamento").
 - **(sugestão)** = regra acrescentada por mim para fechar lacuna; pode ser cortada. **(a confirmar)** = decisão pendente.
 
