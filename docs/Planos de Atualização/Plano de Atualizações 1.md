@@ -46,7 +46,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
    Atualize junto: `modificado:` no cabeçalho e a tabela **Versionamento da API** (seção 1.2 da documentação), com a versão, a(s) tarefa(s) e um resumo de uma linha. O documento da tarefa informa a versão anterior e a nova. Uma entrega que altera a API sem atualizar a versão está incompleta.
 
 **Outras orientações**
-- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a próxima tarefa livre é a **132** (a 130 fechou a Parte 4 e a 131, a Parte 5). Front-end (numeração própria): a próxima é a **42** (a 40 fechou a Parte 4 e a 41, a Parte 5).
+- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a próxima tarefa livre é a **133** (a 130 fechou a Parte 4, a 131, a Parte 5 e a 132 abriu a Parte 2B). Front-end (numeração própria): a próxima é a **42** (a 40 fechou a Parte 4 e a 41, a Parte 5).
 - **(sugestão)** = regra acrescentada por mim para fechar lacuna; pode ser cortada. **(a confirmar)** = decisão pendente, com padrão na seção final.
 - Ordem de deploy padrão: back-end primeiro, depois front-end. Exceção: partes que removem funcionalidade (1 e 14, e a remoção da criação genérica de serviços na Parte 7): front-end primeiro.
 - As partes estão na ordem de execução; as que não dependem uma da outra podem andar em paralelo (ver "Ordem de execução").
@@ -60,7 +60,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | **Fase 1 — Fundações** | | | | |
 | 1 ✅ | Remover a matrícula pública | — | Implementado | 128 (back) · 38 (front) |
 | 2 | Back-end em pacotes (refatoração) | 1 | Parcial (falta o pacote `finance`) | 129 (back) |
-| 2B | Modelo híbrido: event sourcing só no que é sensível (2B-1 e 2B-2; 2B-3 condicional) | 2 (2B-3: 8) | Pendente | |
+| 2B | Modelo híbrido: event sourcing só no que é sensível (2B-1 e 2B-2; 2B-3 condicional) | 2 (2B-3: 8) | Parcial (falta converter) | 132 (back: regra 17 e auditoria) |
 | 3 ✅ | Configurações do sistema (variáveis de ambiente → banco) | 2 | Implementado | 129 (back) · 39 (front) |
 | 4 ✅ | Usuários e permissões (encarregado, secretário, professor) | 2, 3 | Implementado | 130 (back) · 40 (front) |
 | **Fase 2 — Credenciais** | | | | |
@@ -219,7 +219,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 
 ### Parte 2B — Modelo híbrido: event sourcing só no que é sensível
 
-**Estado:** Pendente · **Depende de:** 2 (entregas 2B-1 e 2B-2); 8 (entrega 2B-3, condicional)
+**Estado:** Parcial (2B-1: regra 17 e auditoria prontas, Tarefa 132; conversões pendentes) · **Depende de:** 2 (entregas 2B-1 e 2B-2); 8 (entrega 2B-3, condicional)
 
 **Por quê (2026-11-23):** a whitelist do ledger tem hoje 22 tipos de agregado e 165 tipos de evento (`internal/db/safe_queries.go`, `main` @ `86ef281`), e cada funcionalidade exige evento, agregado, whitelist e projeção. O custo aparece no código: três vezes o evento faltou na whitelist e a rota devolveu 500 sempre (`NotaCorrigida`/`FaltaCorrigida`, alteração de NIF e Sumário). Os eventos de senha de estudante, admin, academia e contas de pessoa gravam o hash bcrypt num ledger imutável. A confiabilidade do que fica já existe: cadeia de hash (`verify_hash_chain`) e proteção contra truncate (migration 029). Pela planilha de custo operacional, o banco custa 4,0% (cenário 1) e 0,5% (cenário 5) da receita na modalidade Preço fixo; o argumento é **manutenção, segurança e a janela sem academias** (depois da primeira academia real, os tipos de evento ficam para sempre), não a fatura. O que mais pesa na planilha é e-mail e SMS (83% do custo no cenário 5), definido pelas Partes 21 a 27.
 
@@ -241,13 +241,13 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 - **Autenticação e segurança (entrega 2B-2):** senha (alterada e temporária; estudante, admin, academia e contas de pessoa), 2FA e verificação de e-mail.
 - **Pagamentos, operacional (entrega 2B-3, condicional):** webhooks brutos, QR code, cobrança consultada e credenciais do provedor (configurar, remover, rotacionar segredo, arquivar e purgar).
 
-**Auditoria do que fica em CRUD:** uma tabela de auditoria só de inserção (ator, tipo do ator, IP, ação, entidade, antes e depois, motivo), gravada **na mesma transação** da alteração. O papel da aplicação não tem UPDATE nem DELETE nela e o hash é encadeado como o do ledger (sugestão). Onde se precisa do estado numa data (preços, vínculo professor↔turma+disciplina), a tabela guarda versões, ou início e fim, sem apagar as anteriores. A ação administrativa continua usando `AcaoAdminRegistrada`.
+**Auditoria do que fica em CRUD:** uma tabela de auditoria só de inserção (ator, tipo do ator, IP, ação, entidade, antes e depois, motivo), gravada **na mesma transação** da alteração. A tabela é `auditoria_crud` (migration 142): UPDATE, DELETE e TRUNCATE são bloqueados por trigger, como no ledger (a aplicação e as migrations usam a mesma role, então revogar permissão não bastaria), e o hash é encadeado por entidade como o do ledger. Onde se precisa do estado numa data (preços, vínculo professor↔turma+disciplina), a tabela guarda versões, ou início e fim, sem apagar as anteriores. A ação administrativa continua usando `AcaoAdminRegistrada`.
 
 **Regras**
 - **Snapshot:** todo evento que fica em event sourcing e depende de dado em CRUD grava o valor do momento: preço do serviço, rótulo da categoria de nota, limite de faltas aplicado, nome do curso. Sem isso, editar o CRUD reescreve a explicação do passado.
 - **Senhas:** o hash bcrypt fica só na tabela da conta. A auditoria diz quem alterou e quando, **sem o hash**, e o código de verificação nunca vai para a auditoria.
 - **Eventos antigos:** como não há academias, a tarefa confere se o ledger só tem dados de teste e **remove** os tipos de evento da whitelist e do replay (como a Parte 1). Se houver dado real, os tipos ficam aceitos e congelados, nunca apagados.
-- **Teste-guarda (negar por padrão):** a lista aprovada de agregados e eventos fica em código, e um teste percorre a whitelist e os agregados e falha se surgir um fora dela (mesmo padrão de `internal/permissoes` e de `TestPacotesDeModuloNaoSeImportam`). A tarefa prova o teste desfazendo a regra.
+- **Teste-guarda (negar por padrão):** a lista aprovada de agregados e eventos fica em código, e um teste percorre a whitelist e os agregados e falha se surgir um fora dela (mesmo padrão de `internal/permissoes` e de `TestPacotesDeModuloNaoSeImportam`). A tarefa prova o teste desfazendo a regra. **Feito na Tarefa 132** (`politica_eventsourcing.go` e `politica_eventsourcing_test.go`): todo tipo da whitelist e do código tem de estar aprovado, pendente de conversão (com a entrega 2B-1, 2B-2, 2B-3 ou Parte 7) ou convertido histórico (congelado); fora disso o teste falha. Conversão concluída = o tipo sai da lista de pendentes (e da whitelist, ou vai para convertidos se ficar congelado).
 - **Conversão por agregado:** uma entrega interna por agregado ou grupo. O handler grava direto na tabela, em transação, com a auditoria; a projeção atual vira a tabela de registro (nada se migra, pois não há academias); saem o agregado, os eventos e o handler de projeção. Mesmas rotas, respostas, regras e permissões.
 - **Fora da 2B-1:** `ServicoExtra` e `CategoriaServico` não são convertidos antes; a Parte 7 os substitui já em CRUD. `Turma` e `Sumario` são convertidos na 2B-1, porque as Partes 16 e 19 se apoiam neles.
 - **Endpoints de auditoria atuais:** `/eventos-estudante/:codigo` e `/eventos/:event_id` mostram eventos do ledger. A tarefa decide e documenta como a auditoria do que foi para CRUD aparece neles (sugestão: alimentar a partir da tabela de auditoria) ou se ganha rota própria.
@@ -259,8 +259,8 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 - As Partes **16** e **19** dependem da **2B-1** (`Turma` e `Sumario` viram CRUD antes). A Parte **28** depende da **2B-2** (o hash da senha nova já nasce fora do ledger).
 
 **Entregas**
-- [ ] **2B-1:** regra 17 e lista aprovada em código, com teste-guarda
-- [ ] **2B-1:** tabela de auditoria e auxiliar transacional para o CRUD, com teste de que a alteração e a auditoria entram ou saem juntas
+- [x] **2B-1:** regra 17 e lista aprovada em código, com teste-guarda (Tarefa 132: `internal/db/politica_eventsourcing.go`; os tipos ainda no ledger constam como pendentes de conversão, por entrega, e cada tarefa de conversão os remove da lista)
+- [x] **2B-1:** tabela de auditoria e auxiliar transacional para o CRUD, com teste de que a alteração e a auditoria entram ou saem juntas (Tarefa 132: migration 142, `internal/db/auditoria_crud.go`)
 - [ ] **2B-1:** conversão para CRUD, sem dinheiro e sem autenticação: cursos, matérias, turmas, sumários, documentos extra, categorias de nota, configurações (faltas, sistema, anos letivos), comunicação (remetente e mensagens), dados cadastrais não críticos e dados das contas de pessoa
 - [ ] **2B-2:** senhas de todas as contas, 2FA, verificação de e-mail e senha temporária em tabelas, com o hash fora do ledger e a auditoria sem hash
 - [ ] **2B-2:** tipos de evento antigos removidos da whitelist e do replay (ou congelados, se houver dado real)
@@ -1362,4 +1362,5 @@ Preencher a cada entrega (ver "Como acompanhar o andamento").
 | 2026-11-23 | Parte 5 (todos os itens) | 131 (back) · 41 (front) | `7f9b70e` (back) | Migration 141. Mudança incompatível: cadastro escolar exige o encarregado e `PUT /estudante/encarregado/telefone` saiu. Versão da API da Tarefa 129 corrigida para 3.1.0 |
 | 2026-11-23 | Plano final: detalhes das Partes 4 e 5 integrados (Como ficou, matriz, passo 9, interpretações 56 a 64); seção de renumeração removida | — | — | Só análise e planejamento. Lido o repositório em `main` @ `7f9b70e`. Achado: no repositório, a linha `Versão atual` do topo da `Documentação da API.md` diz 3.0.2, mas a tabela de versões e as Tarefas 130 e 131 dizem 4.0.0; corrigir na próxima entrega que mexer na API |
 | 2026-11-23 | Parte 2B adicionada (modelo híbrido: event sourcing só no que é sensível), regra 17 e ajustes nas Partes 7, 9, 12, 16, 19, 21, 23 e 28 | — | — | Só análise e planejamento, nada implementado. Lido o repositório em `main` @ `86ef281` (22 tipos de agregado e 165 tipos de evento na whitelist); planilha de custo operacional analisada; listas aprovadas por você. Suíte não executada; front-end não lido |
+| 2026-11-23 | Parte 2B, entrega 2B-1, itens 1 e 2 (regra 17 com teste-guarda; tabela de auditoria e auxiliar transacional) | 132 (back) | ver o texto do commit da Tarefa 132 | Migration 142. Nenhuma rota, handler ou agregado mudou (API sem alteração, sem nova versão). Regra mudada: a proteção da `auditoria_crud` é por trigger (mesma role da aplicação e das migrations), não por permissão. A conversão dos agregados (item 3 da 2B-1), a 2B-2 e a 2B-3 seguem pendentes; a Parte 2 ainda não está Implementada (falta o pacote `finance`), mas a Tarefa 132 não toca `handlers`, `safe_queries.go` nem `main.go`, os arquivos em conflito |
 | | | | | |
