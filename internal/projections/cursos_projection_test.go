@@ -51,12 +51,3 @@ func TestCursoDTOMarshalModeloExclusivoCursoMedio(t *testing.T) {
 		t.Fatalf("curso superior não deve expor modelo: %s", superiorJSON)
 	}
 }
-
-func TestModeloCursoParaProjecaoBackfillEventoLegadoMedio(t *testing.T) {
-	if got := modeloCursoParaProjecao("medio", ""); got != "liceu" {
-		t.Fatalf("modelo legado médio = %q, want liceu", got)
-	}
-	if got := modeloCursoParaProjecao("superior", ""); got != "" {
-		t.Fatalf("modelo legado superior = %q, want vazio", got)
-	}
-}

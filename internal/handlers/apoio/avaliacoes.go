@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/projections"
@@ -1584,7 +1585,7 @@ func RegraAvaliacaoFinalEscolarFixa(codigoAcademia, tipoEnsino, anoAcademico, ty
 			return nil
 		}
 	case "4_ano_medio":
-		if tipoEnsino != "medio" || typ != "normal" || strings.TrimSpace(modeloCursoMedio) != aggregates.ModeloCursoMedioTecnico {
+		if tipoEnsino != "medio" || typ != "normal" || strings.TrimSpace(modeloCursoMedio) != cadastros.ModeloCursoMedioTecnico {
 			return nil
 		}
 		base.Nome = "Prova de Aptidão Profissional"
@@ -1623,7 +1624,7 @@ func IsAnoMedio(ano string) bool { return strings.HasSuffix(strings.TrimSpace(an
 
 func categoriasEscolaresFixasParaAno(anoAcademico string, modeloCursoMedio string) []categoriaNotaEscolarFixa {
 	ano := strings.TrimSpace(anoAcademico)
-	if ano == "4_ano_medio" && strings.TrimSpace(modeloCursoMedio) == aggregates.ModeloCursoMedioTecnico {
+	if ano == "4_ano_medio" && strings.TrimSpace(modeloCursoMedio) == cadastros.ModeloCursoMedioTecnico {
 		return categoriasEscolaresPAP
 	}
 	switch ano {

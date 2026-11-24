@@ -55,8 +55,6 @@ var AgregadosEventSourcingAprovados = setDe(
 
 // ConversaoPendenteAgregados são os aggregate types inteiros que vão para CRUD.
 var ConversaoPendenteAgregados = map[string]string{
-	"Curso":                EntregaConversao2B1,
-	"MateriaDisciplinar":   EntregaConversao2B1,
 	"Turma":                EntregaConversao2B1,
 	"Sumario":              EntregaConversao2B1,
 	"DocumentoExtra":       EntregaConversao2B1,
@@ -164,17 +162,6 @@ var ConversaoPendenteEventos = map[string]string{
 	"TurmaEncerrada":                            EntregaConversao2B1,
 	"EstudanteAdicionadoATurma":                 EntregaConversao2B1,
 	"EstudanteRemovidoDaTurma":                  EntregaConversao2B1,
-	"CursoCriado":                               EntregaConversao2B1,
-	"CursoAtivado":                              EntregaConversao2B1,
-	"CursoDesativado":                           EntregaConversao2B1,
-	"CursoDadosAtualizados":                     EntregaConversao2B1,
-	"CursoDeletado":                             EntregaConversao2B1,
-	"MateriaCriada":                             EntregaConversao2B1,
-	"MateriaAtivada":                            EntregaConversao2B1,
-	"MateriaDesativada":                         EntregaConversao2B1,
-	"MateriaDadosAtualizados":                   EntregaConversao2B1,
-	"MateriaPeriodoDefinido":                    EntregaConversao2B1,
-	"MateriaDeletada":                           EntregaConversao2B1,
 	"SumarioCriado":                             EntregaConversao2B1,
 	"SumarioDadosAtualizados":                   EntregaConversao2B1,
 	"SumarioDeletado":                           EntregaConversao2B1,
@@ -241,6 +228,16 @@ var ConversaoPendenteEventos = map[string]string{
 var (
 	EventosConvertidosHistoricos   = map[string]bool{}
 	AgregadosConvertidosHistoricos = map[string]bool{}
+)
+
+// Tabelas que já são CRUD (registro oficial, não reconstruídas a partir do
+// ledger). Toda tarefa de conversão acrescenta as suas aqui; o teste
+// TestTabelasCRUDNaoDependemDeProjecoesReconstruiveis (internal/cadastros)
+// garante que nenhuma delas tem chave estrangeira para uma projeção que o
+// ledger reconstrói.
+const (
+	TabelaCursos   = "projection_cursos"
+	TabelaMaterias = "projection_materias"
 )
 
 // ClassificacaoES diz em que situação um event type ou aggregate type está.

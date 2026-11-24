@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -15,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/middleware"
@@ -71,8 +73,6 @@ func setupRegistrosCorrecaoIntegration(t *testing.T) *registrosCorrecaoFixture {
 	projManager = projections.NewManager(client)
 	projManager.RegisterProjection("notas", projections.NewNotasProjection(client))
 	projManager.RegisterProjection("faltas", projections.NewFaltasProjection(client))
-	projManager.RegisterProjection("cursos", projections.NewCursosProjection(client))
-	projManager.RegisterProjection("materias", projections.NewMateriasProjection(client))
 	t.Cleanup(func() {
 		dbClient, repository, projManager = oldDBClient, oldRepository, oldProjManager
 	})
@@ -100,47 +100,41 @@ func setupRegistrosCorrecaoIntegration(t *testing.T) *registrosCorrecaoFixture {
 	ano := "1_ano_fundamental"
 	anoSuperior := "1_ano_superior"
 
-	cursoSuperior := aggregates.NewCurso()
-	if err := cursoSuperior.Criar("Curso Superior integração", "superior", "", []string{"1_ano_superior"}, []string{"1_semestre", "2_semestre"}, academia.CodigoAcademia); err != nil {
+	// Cursos e matérias são CRUD: gravados direto na tabela de registro, sem
+	// ledger e sem reconstrução de projeção.
+	auditAcademia := db.AuditContext{UserID: academia.ID.String(), UserType: "academia", IP: "127.0.0.1"}
+	cursosRepo := cadastros.NovoCursosRepo(client)
+	materiasRepo := cadastros.NovoMateriasRepo(client)
+
+	cursoSuperior, err := cadastros.NovoCurso("Curso Superior integração", "superior", "", []string{"1_ano_superior"}, []string{"1_semestre", "2_semestre"}, academia.CodigoAcademia)
+	if err != nil {
 		t.Fatalf("criar curso superior: %v", err)
 	}
-	if err := repository.SaveWithAudit(cursoSuperior, db.AuditContext{UserID: academia.ID.String(), UserType: "academia", IP: "127.0.0.1"}); err != nil {
+	if err := cursosRepo.Criar(context.Background(), auditAcademia, cursoSuperior); err != nil {
 		t.Fatalf("salvar curso superior: %v", err)
 	}
 	cursoSuperiorID := cursoSuperior.ID
-	materiaSuperior := aggregates.NewMateriaDisciplinar()
-	if err := materiaSuperior.Criar("Cálculo I integração", "superior", []string{"1_ano_superior"}, academia.CodigoAcademia, &cursoSuperiorID, nil, nil, academia.ID); err != nil {
+
+	materiaSuperior, err := cadastros.NovaMateria("Cálculo I integração", "superior", []string{"1_ano_superior"}, academia.CodigoAcademia, &cursoSuperiorID, nil, nil)
+	if err != nil {
 		t.Fatalf("criar materia superior: %v", err)
 	}
-	if err := materiaSuperior.DefinirPeriodo("1_semestre", academia.ID); err != nil {
+	if err := materiaSuperior.DefinirPeriodo("1_semestre"); err != nil {
 		t.Fatalf("definir periodo materia superior: %v", err)
 	}
-	if err := repository.SaveWithAudit(materiaSuperior, db.AuditContext{UserID: academia.ID.String(), UserType: "academia", IP: "127.0.0.1"}); err != nil {
+	if err := materiasRepo.Criar(context.Background(), auditAcademia, materiaSuperior); err != nil {
 		t.Fatalf("salvar materia superior: %v", err)
 	}
 	materiaSuperiorID := materiaSuperior.ID
 
-	materia := aggregates.NewMateriaDisciplinar()
-	if err := materia.Criar("Matemática integração", "fundamental", []string{"1_ano_fundamental"}, academia.CodigoAcademia, nil, nil, nil, academia.ID); err != nil {
+	materia, err := cadastros.NovaMateria("Matemática integração", "fundamental", []string{"1_ano_fundamental"}, academia.CodigoAcademia, nil, nil, nil)
+	if err != nil {
 		t.Fatalf("criar materia: %v", err)
 	}
-	if err := repository.SaveWithAudit(materia, db.AuditContext{UserID: academia.ID.String(), UserType: "academia", IP: "127.0.0.1"}); err != nil {
+	if err := materiasRepo.Criar(context.Background(), auditAcademia, materia); err != nil {
 		t.Fatalf("salvar materia: %v", err)
 	}
 	materiaID := materia.ID
-
-	// IMPORTANTE: cursos e materias devem ser reconstruídos ANTES de
-	// estudantes, replicando defaultRebuildOrder em manager.go. Ambas as
-	// projeções fazem TRUNCATE ... CASCADE nas suas tabelas, o que arrasta
-	// projection_estudantes (FK curso_medio_id/curso_superior_id) — se
-	// chamadas depois do rebuild de estudantes, apagam silenciosamente os
-	// estudantes já projetados.
-	if err := projections.NewCursosProjection(client).Rebuild(); err != nil {
-		t.Fatalf("rebuild cursos: %v", err)
-	}
-	if err := projections.NewMateriasProjection(client).Rebuild(); err != nil {
-		t.Fatalf("rebuild materias: %v", err)
-	}
 
 	codigoAluno := fmt.Sprintf("%07d", sequence%10_000_000)
 	telefoneEncarregado := fmt.Sprintf("9%08d", sequence%100_000_000)

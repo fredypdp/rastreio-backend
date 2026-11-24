@@ -97,11 +97,6 @@ var validEventTypes = map[string]bool{
 	"EstudanteAdicionadoATurma": true,
 	"EstudanteRemovidoDaTurma":  true,
 	// ── Curso ─────────────────────────────────────────────────────────────────
-	"CursoCriado":                true,
-	"CursoAtivado":               true,
-	"CursoDesativado":            true,
-	"CursoDadosAtualizados":      true,
-	"CursoDeletado":              true,
 	"CategoriaServicoCriada":     true,
 	"CategoriaServicoRenomeada":  true,
 	"CategoriaServicoDesativada": true,
@@ -113,12 +108,6 @@ var validEventTypes = map[string]bool{
 	"ServicoExtraReativado":      true,
 	"ServicoExtraDeletado":       true, // Tarefa 107
 	// ── MateriaDisciplinar ────────────────────────────────────────────────────
-	"MateriaCriada":           true,
-	"MateriaAtivada":          true,
-	"MateriaDesativada":       true,
-	"MateriaDadosAtualizados": true,
-	"MateriaPeriodoDefinido":  true,
-	"MateriaDeletada":         true,
 	// ── Solicitações de edição de dados e afins ────────────────────────────────
 	"SolicitacaoEdicaoDadoEstudanteCriada":               true,
 	"SolicitacaoEdicaoDadoEstudanteAprovada":             true,
@@ -236,10 +225,8 @@ var validAggregateTypes = map[string]bool{
 	"Secretario":                     true,
 	"Professor":                      true,
 	"Encarregado":                    true,
-	"Curso":                          true,
 	"ServicoExtra":                   true,
 	"CategoriaServico":               true,
-	"MateriaDisciplinar":             true,
 	"Turma":                          true,
 	"SolicitacaoEdicaoDadoEstudante": true,
 	"System":                         true,

@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
-	"spuri/internal/domain/aggregates"
 	"spuri/internal/middleware"
 	"spuri/internal/projections"
 )
@@ -369,14 +370,14 @@ func primeiroVinculo(t *testing.T, fx *turmaVinculoFixture, professorID string) 
 
 func criarMateriaTeste(t *testing.T, fx *turmaVinculoFixture, nome string) string {
 	t.Helper()
-	m := aggregates.NewMateriaDisciplinar()
-	if err := m.Criar(nome, "fundamental", []string{"1_ano_fundamental"}, fx.academia.CodigoAcademia, nil, nil, nil, fx.academia.ID); err != nil {
+	m, err := cadastros.NovaMateria(nome, "fundamental", []string{"1_ano_fundamental"}, fx.academia.CodigoAcademia, nil, nil, nil)
+	if err != nil {
 		t.Fatalf("criar matéria: %v", err)
 	}
-	if err := fx.repository.SaveWithAudit(m, db.AuditContext{UserID: fx.academia.ID.String(), UserType: "academia", IP: "127.0.0.1"}); err != nil {
+	audit := db.AuditContext{UserID: fx.academia.ID.String(), UserType: "academia", IP: "127.0.0.1"}
+	if err := cadastros.NovoMateriasRepo(fx.client).Criar(context.Background(), audit, m); err != nil {
 		t.Fatalf("salvar matéria: %v", err)
 	}
-	aplicarEventos(t, fx, m.ID.String(), 0, projections.NewMateriasProjection(fx.client).Handle)
 	return m.ID.String()
 }
 

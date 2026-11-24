@@ -349,8 +349,6 @@ var defaultRebuildOrder = []string{
 	"admins",
 	"academias",
 	"contas",
-	"cursos",
-	"materias",
 	"categorias_nota",
 	"estudantes",
 	"estudante_vinculos",

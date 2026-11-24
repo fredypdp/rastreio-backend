@@ -43,8 +43,6 @@ func TestDefaultRebuildOrderCoversAllRegisteredProjections(t *testing.T) {
 	registeredInServer := []string{
 		"admins",
 		"academias",
-		"cursos",
-		"materias",
 		"categorias_nota",
 		"estudantes",
 		"turmas",
@@ -65,6 +63,16 @@ func TestDefaultRebuildOrderCoversAllRegisteredProjections(t *testing.T) {
 	for _, name := range registeredInServer {
 		if !seen[name] {
 			t.Fatalf("registered projection %q is missing from defaultRebuildOrder", name)
+		}
+	}
+}
+
+// Cursos e matérias são CRUD desde a Tarefa 133 (Parte 2B): suas tabelas são o
+// registro oficial e não podem ser reconstruídas a partir do ledger.
+func TestCursosEMateriasNaoSaoReconstruiveis(t *testing.T) {
+	for _, name := range defaultRebuildOrder {
+		if name == "cursos" || name == "materias" {
+			t.Fatalf("%q está em defaultRebuildOrder, mas é CRUD e não pode ser reconstruído do ledger", name)
 		}
 	}
 }

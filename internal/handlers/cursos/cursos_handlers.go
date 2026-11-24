@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/handlers/apoio"
@@ -103,7 +104,7 @@ func prepararDadosCursoPorTipo(tipoCurso string, req cursoPayload, criacao bool)
 	if !req.ModeloInformado || strings.TrimSpace(req.Modelo) == "" {
 		return nil, nil, fmt.Errorf("modelo é obrigatório para cursos médios e deve ser 'liceu' ou 'tecnico'")
 	}
-	if req.Modelo != aggregates.ModeloCursoMedioLiceu && req.Modelo != aggregates.ModeloCursoMedioTecnico {
+	if req.Modelo != cadastros.ModeloCursoMedioLiceu && req.Modelo != cadastros.ModeloCursoMedioTecnico {
 		return nil, nil, fmt.Errorf("modelo inválido para curso médio: %q. Valores permitidos: 'liceu' ou 'tecnico'", req.Modelo)
 	}
 	if req.PeriodosInformado {
@@ -112,7 +113,7 @@ func prepararDadosCursoPorTipo(tipoCurso string, req cursoPayload, criacao bool)
 	if req.AnosInformado {
 		return nil, nil, fmt.Errorf("anos_academicos não é aceito para cursos médios; os anos são fixos e derivados de modelo")
 	}
-	anos, err := aggregates.DerivarAnosAcademicosCursoMedio(req.Modelo)
+	anos, err := cadastros.DerivarAnosAcademicosCursoMedio(req.Modelo)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -218,15 +219,13 @@ func CriarCurso(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	curso := aggregates.NewCurso()
-
-	anosParaAggregate := anosAcademicos
+	anosParaCriar := anosAcademicos
 	if tipoCurso == "medio" {
-		anosParaAggregate = nil
+		anosParaCriar = nil
 	}
-	if err := curso.Criar(req.Nome, tipoCurso, req.Modelo, anosParaAggregate, periodos, academiaDTO.CodigoAcademia); err != nil {
-		utils.RespondWithValidationError(c, err)
+	curso, err := cadastros.NovoCurso(req.Nome, tipoCurso, req.Modelo, anosParaCriar, periodos, academiaDTO.CodigoAcademia)
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "curso")
 		return
 	}
 
@@ -235,8 +234,8 @@ func CriarCurso(c *gin.Context) {
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
-	if err := repository.SaveWithAudit(curso, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	if err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).Criar(c.Request.Context(), audit, curso); err != nil {
+		apoio.RespondErroCadastro(c, err, "curso")
 		return
 	}
 
@@ -356,19 +355,6 @@ func AtualizarDadosCurso(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	cursoAgg, err := repository.Load(cursoID, "Curso")
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "curso")
-		return
-	}
-
-	curso, ok := cursoAgg.(*aggregates.Curso)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
-		return
-	}
-
 	novosAnos, novosPeriodos, err := prepararAtualizacaoCursoPorTipo(cursoDTO.Type, req)
 	if err != nil {
 		utils.RespondWithValidationError(c, err)
@@ -384,18 +370,18 @@ func AtualizarDadosCurso(c *gin.Context) {
 	if req.ModeloInformado {
 		modeloAtualizacao = &req.Modelo
 	}
-	if err := curso.AtualizarDados(nomeAtualizacao(req), novosAnos, novosPeriodos, modeloAtualizacao, userID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
-	if err := repository.SaveWithAudit(curso, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	curso, err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).Atualizar(
+		c.Request.Context(), audit, cursoID, "CursoDadosAtualizados", "",
+		func(cur *cadastros.Curso) error {
+			return cur.AtualizarDados(nomeAtualizacao(req), novosAnos, novosPeriodos, modeloAtualizacao)
+		})
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "curso")
 		return
 	}
 
@@ -501,31 +487,18 @@ func AtivarCurso(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	cursoAgg, err := repository.Load(cursoID, "Curso")
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "curso")
-		return
-	}
-
-	curso := cursoAgg.(*aggregates.Curso)
-
-	if err := curso.Ativar(userID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
-	if err := repository.SaveWithAudit(curso, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	curso, err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).Atualizar(
+		c.Request.Context(), audit, cursoID, "CursoAtivado", "",
+		func(cur *cadastros.Curso) error { return cur.Ativar() })
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "curso")
 		return
 	}
-
-	log.Printf("Curso ativado: %s", curso.Nome)
 	c.JSON(http.StatusOK, gin.H{"message": "curso ativado com sucesso", "nome": curso.Nome})
 }
 
@@ -556,35 +529,18 @@ func DesativarCurso(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	cursoAgg, err := repository.Load(cursoID, "Curso")
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "curso")
-		return
-	}
-
-	curso, ok := cursoAgg.(*aggregates.Curso)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
-		return
-	}
-
-	if err := curso.Desativar(userID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
-	if err := repository.SaveWithAudit(curso, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	curso, err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).Atualizar(
+		c.Request.Context(), audit, cursoID, "CursoDesativado", "",
+		func(cur *cadastros.Curso) error { return cur.Desativar() })
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "curso")
 		return
 	}
-
-	log.Printf("Curso desativado: %s", curso.Nome)
 	c.JSON(http.StatusOK, gin.H{"message": "curso desativado com sucesso", "nome": curso.Nome})
 }
 
@@ -597,9 +553,9 @@ func DesativarCurso(c *gin.Context) {
 //  4. Não pode haver matérias ativas vinculadas ao curso
 //
 // Para cursos superiores, matérias inativas vinculadas são deletadas
-// em cascata (cada uma emite seu próprio MateriaDeletada no ledger).
+// em cascata, na mesma transação do curso (cada uma com a sua auditoria).
 //
-// Evento CursoDeletado gravado no ledger (auditável).
+// Auditoria CursoDeletado gravada em auditoria_crud, na mesma transação.
 func DeletarCurso(c *gin.Context) {
 	academiaID, _ := middleware.GetUserID(c)
 
@@ -674,55 +630,22 @@ func DeletarCurso(c *gin.Context) {
 		}
 	}
 
-	repository := apoio.GetRepository(c)
-
+	repository := apoio.GetRepository(c) // só para as turmas, que ainda são event sourcing (Parte 2B, tarefa própria)
 	audit := db.AuditContext{
 		UserID:   academiaID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
 
-	// ── 5. Deletar matérias inativas em cascata (cada uma emite evento) ───
-	// Apenas cursos superiores tendem a ter matérias; médio normalmente não.
-	var materiasDeletedNomes []string
-	for _, m := range materiasDoCurso {
-		if m.Status == "deletado" {
-			continue // já deletada anteriormente — skip seguro
-		}
-
-		materiaAgg, err := repository.Load(m.ID, "MateriaDisciplinar")
-		if err != nil {
-			// FIX BUG #3: era `log + continue` — agora retorna erro ao cliente.
-			// O continue permitia que o curso fosse deletado com matérias ainda
-			// "vivas" no ledger, gerando estado parcialmente inconsistente.
-			utils.RespondWithInternalError(c, fmt.Errorf("erro ao carregar matéria '%s': %w", m.Nome, err))
-			return
-		}
-
-		materia := materiaAgg.(*aggregates.MateriaDisciplinar)
-		// FIX: Deletar agora requer (deletadoPor uuid.UUID, motivo string).
-		if err := materia.Deletar(academiaID, fmt.Sprintf("cascata: curso %s deletado", cursoDTO.Nome)); err != nil {
-			utils.RespondWithInternalError(c, fmt.Errorf("erro ao deletar matéria '%s': %w", m.Nome, err))
-			return
-		}
-
-		if err := repository.SaveWithAudit(materia, audit); err != nil {
-			utils.RespondWithInternalError(c, fmt.Errorf("erro ao salvar deleção da matéria '%s': %w", m.Nome, err))
-			return
-		}
-		materiasDeletedNomes = append(materiasDeletedNomes, m.Nome)
-	}
-
-	// ── 6. Deletar turmas vinculadas ao curso (inativas, sem estudantes) ──
+	// ── 5. Validar as turmas vinculadas ANTES de gravar qualquer coisa ────
 	turmasProj := apoio.GetTurmasProjection(c)
 	turmasDoCurso, err := turmasProj.ListByCurso(cursoID)
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
 		return
 	}
-
-	var turmasDeletedCodigos []string
-	for _, t := range turmasDoCurso {
+	var turmasParaDeletar []int
+	for i, t := range turmasDoCurso {
 		if t.Status == "deletado" {
 			continue // já deletada — skip seguro
 		}
@@ -739,6 +662,15 @@ func DeletarCurso(c *gin.Context) {
 			))
 			return
 		}
+		turmasParaDeletar = append(turmasParaDeletar, i)
+	}
+
+	// ── 6. Deletar as turmas (event sourcing). Repetível: turma já deletada
+	// é ignorada, então uma nova tentativa depois de falha parcial continua
+	// de onde parou.
+	var turmasDeletedCodigos []string
+	for _, i := range turmasParaDeletar {
+		t := turmasDoCurso[i]
 		turmaAgg, err := repository.Load(t.ID, "Turma")
 		if err != nil {
 			utils.RespondWithInternalError(c, err)
@@ -756,29 +688,18 @@ func DeletarCurso(c *gin.Context) {
 		turmasDeletedCodigos = append(turmasDeletedCodigos, t.CodigoTurma)
 	}
 
-	// ── 7. Deletar o curso em si ──────────────────────────────────────────
-	cursoAgg, err := repository.Load(cursoID, "Curso")
+	// ── 7. Deletar as matérias inativas (cascata) e o curso numa só transação:
+	// ou saem todas e o curso, ou nenhuma. Cada uma gera a sua auditoria.
+	_, materiasDeletedNomes, err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).
+		DeletarComMaterias(c.Request.Context(), audit, cursoID, req.Motivo)
 	if err != nil {
-		utils.RespondWithInternalError(c, err)
+		apoio.RespondErroCadastro(c, err, "curso")
 		return
 	}
 
-	curso := cursoAgg.(*aggregates.Curso)
-	if err := curso.Deletar(academiaID, req.Motivo); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
-	if err := repository.SaveWithAudit(curso, audit); err != nil {
-		log.Printf("❌ [DeletarCurso] Erro ao salvar: %v", err)
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-
-	log.Printf("✅ [DeletarCurso] curso=%s academia=%s materias_deletadas=%v turmas_deletadas=%v",
+	log.Printf("Curso deletado: %s (academia=%s, materias=%v, turmas=%v)",
 		cursoDTO.Nome, academiaDTO.CodigoAcademia, materiasDeletedNomes, turmasDeletedCodigos,
 	)
-
 	c.JSON(http.StatusOK, gin.H{
 		"message":            "curso deletado com sucesso",
 		"curso_id":           cursoID,

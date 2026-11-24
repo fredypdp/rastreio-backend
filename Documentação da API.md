@@ -2,7 +2,7 @@
 modificado: 21-11-2026 09:15
 criado: 05-04-2026 13:01
 ---
-Versão atual: 4.0.0
+Versão atual: 4.0.1
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -113,6 +113,7 @@ A linha `Versão atual` no topo deste documento segue o **Versionamento Semânti
 
 | Versão | Tarefa | Resumo |
 | --- | --- | --- |
+| **4.0.1** | 133 | Correção, sem alterar o contrato. Cursos e matérias passam a ser gravados direto na tabela, com a auditoria na mesma transação (`auditoria_crud`), em vez de passar pelo ledger; rotas, campos, permissões e respostas são os mesmos. Efeitos visíveis: a leitura logo depois de gravar já devolve o dado novo (sem esperar projeção); `DELETE /academia/curso/:id` valida as turmas antes de gravar qualquer coisa e deleta o curso e as matérias dele numa só transação; `PUT /academia/materia/:id/dados` passa a recusar de fato um `curso_id` de outra academia, como a documentação já dizia. |
 | **4.0.0** | 130 e 131 | **Incompatível.** Três novos tipos de login (`secretario`, `professor`, `encarregado`). O cadastro de estudante do nível escolar passa a exigir o encarregado (bloco `encarregado`, ou os campos `encarregado_*`). `PUT /estudante/encarregado/telefone` removida. O telefone das credenciais de estudante do nível escolar é sempre o do encarregado (sem queda para o do estudante). Reenvio de credenciais pelo admin (`adm` ou `fpp`) só para estudante sem nenhuma academia. |
 | 3.1.0 | 129 | Acrescenta as configurações do sistema editáveis por administradores (seção 16.7). A versão não tinha sido atualizada na entrega da Tarefa 129 e foi corrigida na entrega seguinte. |
 | 3.0.1 | — | Estado anterior à correção acima. |
@@ -4334,7 +4335,7 @@ Content-Type: application/json
 - Curso médio exige `modelo` (`liceu` ou `tecnico`), rejeita `anos_academicos` e deriva anos fixos do modelo.
 - Curso superior exige quantidade/períodos válidos, rejeita `modelo` e deriva `anos_academicos` a partir dos semestres/períodos.
 - A academia deve estar `ativo`.
-- Grava evento `CursoCriado` com auditoria da academia.
+- Grava o curso na tabela de cursos e a auditoria da academia (`CursoCriado`) na mesma transação; não passa pelo ledger.
 
 **Response 201:**
 
@@ -4490,7 +4491,7 @@ Content-Type: application/json
 - Não pode haver matérias ativas vinculadas ao curso.
 - Matérias inativas/deletáveis e turmas inativas, sem estudantes, podem ser deletadas em cascata antes da deleção do curso.
 - Turma ativa ou turma ainda com estudantes bloqueia a operação.
-- Grava `CursoDeletado` e eventos de cascata de matérias/turmas quando aplicável.
+- As turmas inativas e sem estudantes são validadas antes de qualquer gravação; depois, o curso e as matérias inativas dele são deletados **numa só transação**, cada um com a sua auditoria (`CursoDeletado`, `MateriaDeletada`). Se algo falhar, curso e matérias ficam como estavam; as turmas já deletadas continuam deletadas e uma nova tentativa segue de onde parou.
 
 **Response 200:**
 
@@ -4805,7 +4806,8 @@ Atualiza dados editáveis da matéria.
 - `curso_id` deve apontar para curso compatível com a academia e o tipo da matéria.
 - Matérias do médio continuam podendo ter múltiplos anos acadêmicos, mas atualizações com `4_ano_medio` são rejeitadas.
 - Pendência continua exclusiva de matérias superiores.
-- A atualização preserva o mesmo ID e grava evento de alteração no ledger.
+- A atualização preserva o mesmo ID e grava a alteração e a auditoria (`MateriaDadosAtualizados`, com antes e depois) na mesma transação, sem passar pelo ledger.
+- Trocar o `curso_id` exige um curso existente e da mesma academia da matéria (`422` caso contrário).
 
 **Response 200:**
 
@@ -4835,7 +4837,7 @@ Remove logicamente uma matéria da própria academia.
 }
 ```
 
-A operação preserva o ledger e registros acadêmicos associados.
+A operação é exclusão lógica (status `deletado`); os registros acadêmicos associados (notas, faltas) são preservados, e a auditoria (`MateriaDeletada`) fica em `auditoria_crud`.
 
 ### `POST /academia/materia/async`
 

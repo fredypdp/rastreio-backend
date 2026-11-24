@@ -3,14 +3,13 @@ package materias
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
-	"spuri/internal/domain/aggregates"
 	"spuri/internal/handlers/apoio"
 	"spuri/internal/middleware"
 	"spuri/internal/utils"
@@ -113,11 +112,9 @@ func CriarMateria(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	materia := aggregates.NewMateriaDisciplinar()
-
-	if err := materia.Criar(req.Nome, tipoMateria, req.AnosAcademicos, academiaDTO.CodigoAcademia, req.CursoID, req.PendenciaPermitida, req.PendenciaNivelConclusao, userID); err != nil {
-		utils.RespondWithValidationError(c, err)
+	materia, err := cadastros.NovaMateria(req.Nome, tipoMateria, req.AnosAcademicos, academiaDTO.CodigoAcademia, req.CursoID, req.PendenciaPermitida, req.PendenciaNivelConclusao)
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "materia")
 		return
 	}
 	if tipoMateria != "superior" && req.Periodo != nil {
@@ -136,8 +133,8 @@ func CriarMateria(c *gin.Context) {
 			))
 			return
 		}
-		if err := materia.DefinirPeriodo(*req.Periodo, userID); err != nil {
-			utils.RespondWithValidationError(c, err)
+		if err := materia.DefinirPeriodo(*req.Periodo); err != nil {
+			apoio.RespondErroCadastro(c, err, "materia")
 			return
 		}
 	}
@@ -147,12 +144,11 @@ func CriarMateria(c *gin.Context) {
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
-	if err := repository.SaveWithAudit(materia, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	if err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Criar(c.Request.Context(), audit, materia); err != nil {
+		apoio.RespondErroCadastro(c, err, "materia")
 		return
 	}
 
-	log.Printf("Materia criada: %s - %s", req.Nome, materia.ID)
 	data := gin.H{
 		"id":      materia.ID,
 		"nome":    materia.Nome,
@@ -244,34 +240,18 @@ func AtivarMateria(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	materiaAgg, err := repository.Load(materiaID, "MateriaDisciplinar")
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "materia")
-		return
-	}
-
-	materia, ok := materiaAgg.(*aggregates.MateriaDisciplinar)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
-		return
-	}
-	if err := materia.Ativar(userID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
-	if err := repository.SaveWithAudit(materia, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	materia, err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Atualizar(
+		c.Request.Context(), audit, materiaID, "MateriaAtivada", "",
+		func(m *cadastros.Materia) error { return m.Ativar() })
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "materia")
 		return
 	}
-
-	log.Printf("Materia ativada: %s", materia.Nome)
 	c.JSON(http.StatusOK, gin.H{"message": "materia ativada com sucesso", "nome": materia.Nome})
 }
 
@@ -302,35 +282,18 @@ func DesativarMateria(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	materiaAgg, err := repository.Load(materiaID, "MateriaDisciplinar")
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "materia")
-		return
-	}
-
-	materia, ok := materiaAgg.(*aggregates.MateriaDisciplinar)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
-		return
-	}
-
-	if err := materia.Desativar(userID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
-	if err := repository.SaveWithAudit(materia, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	materia, err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Atualizar(
+		c.Request.Context(), audit, materiaID, "MateriaDesativada", "",
+		func(m *cadastros.Materia) error { return m.Desativar() })
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "materia")
 		return
 	}
-
-	log.Printf("Materia desativada: %s", materia.Nome)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "materia desativada com sucesso",
 		"nome":    materia.Nome,
@@ -382,75 +345,63 @@ func AtualizarDadosMateria(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	materiaAgg, err := repository.Load(materiaID, "MateriaDisciplinar")
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "matéria")
-		return
-	}
-
-	materia, ok := materiaAgg.(*aggregates.MateriaDisciplinar)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
-		return
-	}
 	var anos []string
 	if req.AnosAcademicos != nil {
 		anos = *req.AnosAcademicos
 	}
-	anosParaValidacao := materia.AnosAcademicos
+	anosParaValidacao := materiaDTO.AnosAcademicos
 	if req.AnosAcademicos != nil {
 		anosParaValidacao = *req.AnosAcademicos
 	}
 	var periodosCurso []string
 	modeloCursoMedio := ""
-	cursoIDParaValidacao := materia.CursoID
+	cursoIDParaValidacao := materiaDTO.CursoID
 	if req.CursoID != nil {
 		cursoIDParaValidacao = req.CursoID
 	}
-	if (materia.Type == "medio" || materia.Type == "superior") && cursoIDParaValidacao != nil {
+	if (materiaDTO.Type == "medio" || materiaDTO.Type == "superior") && cursoIDParaValidacao != nil {
 		cursosProj := apoio.GetCursosProjection(c)
 		cursoDTO, err := cursosProj.GetByID(*cursoIDParaValidacao)
 		if err == nil && cursoDTO != nil {
 			periodosCurso = cursoDTO.Periodos
-			if materia.Type == "medio" {
+			if materiaDTO.Type == "medio" {
 				modeloCursoMedio = strings.TrimSpace(cursoDTO.Modelo)
 			}
 		}
 	}
-	if materia.Type != "superior" && req.PendenciaPermitida != nil {
+	if materiaDTO.Type != "superior" && req.PendenciaPermitida != nil {
 		utils.RespondWithValidationError(c, fmt.Errorf("pendencia_permitida é exclusiva do ensino superior e não se aplica a matérias escolares"))
 		return
 	}
-	if materia.Type != "superior" && req.PendenciaNivelConclusao != nil {
+	if materiaDTO.Type != "superior" && req.PendenciaNivelConclusao != nil {
 		utils.RespondWithValidationError(c, fmt.Errorf("pendencia_nivel_conclusao é exclusiva do ensino superior e não se aplica a matérias escolares"))
 		return
 	}
-	if err := validarPendenciaNivelConclusao(materia.Type, req.PendenciaNivelConclusao, anosParaValidacao, periodosCurso); err != nil {
+	if err := validarPendenciaNivelConclusao(materiaDTO.Type, req.PendenciaNivelConclusao, anosParaValidacao, periodosCurso); err != nil {
 		utils.RespondWithValidationError(c, err)
 		return
 	}
 	if req.AnosAcademicos != nil {
-		if err := validarAnosAcademicosMateria(materia.Type, *req.AnosAcademicos, modeloCursoMedio); err != nil {
+		if err := validarAnosAcademicosMateria(materiaDTO.Type, *req.AnosAcademicos, modeloCursoMedio); err != nil {
 			utils.RespondWithValidationError(c, err)
 			return
 		}
-	}
-	if err := materia.AtualizarDados(req.Nome, anos, req.CursoID, req.PendenciaPermitida, req.PendenciaNivelConclusao, userID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
 	}
 	audit := db.AuditContext{
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
-	if err := repository.SaveWithAudit(materia, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	materia, err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Atualizar(
+		c.Request.Context(), audit, materiaID, "MateriaDadosAtualizados", "",
+		func(m *cadastros.Materia) error {
+			return m.AtualizarDados(req.Nome, anos, req.CursoID, req.PendenciaPermitida, req.PendenciaNivelConclusao)
+		})
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "materia")
 		return
 	}
 
-	log.Printf("Matéria atualizada: %s", materia.Nome)
 	response := gin.H{
 		"message": "matéria atualizada com sucesso",
 		"nome":    materia.Nome,
@@ -494,7 +445,7 @@ func validarAnosAcademicosMateria(tipoMateria string, anosAcademicos []string, m
 		return fmt.Errorf("anos_academicos é obrigatório para matérias")
 	}
 	if tipoMateria == "medio" && apoio.ContainsString(anosAcademicos, "4_ano_medio") {
-		if strings.TrimSpace(modeloCursoMedio) != aggregates.ModeloCursoMedioTecnico || len(anosAcademicos) != 1 {
+		if strings.TrimSpace(modeloCursoMedio) != cadastros.ModeloCursoMedioTecnico || len(anosAcademicos) != 1 {
 			return fmt.Errorf("4_ano_medio só é permitido para a matéria de PAP de curso médio técnico")
 		}
 	}
@@ -528,9 +479,10 @@ func validarPendenciaNivelConclusao(tipoMateria string, nivel *string, anosAcade
 // DELETE /academia/materias/:id
 // ============================================================================
 
-// DeletarMateria remove a matéria da projeção via evento MateriaDeletada.
+// DeletarMateria faz a exclusão lógica da matéria (status "deletado").
 // A matéria deve estar inativa antes de ser deletada.
-// O histórico permanece intacto no ledger (event sourcing).
+// Notas e faltas associadas são preservadas; a auditoria (MateriaDeletada)
+// fica em auditoria_crud, gravada na mesma transação.
 func DeletarMateria(c *gin.Context) {
 	userID, _ := middleware.GetUserID(c)
 
@@ -554,36 +506,18 @@ func DeletarMateria(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	materiaAgg, err := repository.Load(materiaID, "MateriaDisciplinar")
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "materia")
-		return
-	}
-
-	materia, ok := materiaAgg.(*aggregates.MateriaDisciplinar)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
-		return
-	}
-
-	// FIX: Deletar agora requer (deletadoPor uuid.UUID, motivo string).
-	if err := materia.Deletar(userID, ""); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
 	}
-	if err := repository.SaveWithAudit(materia, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	materia, err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Atualizar(
+		c.Request.Context(), audit, materiaID, "MateriaDeletada", "",
+		func(m *cadastros.Materia) error { return m.Deletar() })
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "materia")
 		return
 	}
-
-	log.Printf("Materia deletada: %s (%s)", materia.Nome, materia.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "materia deletada com sucesso",
 		"nome":    materia.Nome,

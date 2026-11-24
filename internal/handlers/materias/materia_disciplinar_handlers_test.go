@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"spuri/internal/domain/aggregates"
+	"spuri/internal/cadastros"
 	"spuri/internal/handlers/apoio"
 )
 
@@ -95,13 +95,13 @@ func TestValidarAnosAcademicosMateriaMedioBloqueiaQuartoAno(t *testing.T) {
 }
 
 func TestValidarAnosAcademicosMateriaPermitePAPSomenteTecnico(t *testing.T) {
-	if err := validarAnosAcademicosMateria("medio", []string{"4_ano_medio"}, aggregates.ModeloCursoMedioTecnico); err != nil {
+	if err := validarAnosAcademicosMateria("medio", []string{"4_ano_medio"}, cadastros.ModeloCursoMedioTecnico); err != nil {
 		t.Fatalf("4_ano_medio técnico deve ser permitido para PAP: %v", err)
 	}
-	if err := validarAnosAcademicosMateria("medio", []string{"4_ano_medio"}, aggregates.ModeloCursoMedioLiceu); err == nil {
+	if err := validarAnosAcademicosMateria("medio", []string{"4_ano_medio"}, cadastros.ModeloCursoMedioLiceu); err == nil {
 		t.Fatal("4_ano_medio liceu não deve ser permitido")
 	}
-	if err := validarAnosAcademicosMateria("medio", []string{"3_ano_medio", "4_ano_medio"}, aggregates.ModeloCursoMedioTecnico); err == nil {
+	if err := validarAnosAcademicosMateria("medio", []string{"3_ano_medio", "4_ano_medio"}, cadastros.ModeloCursoMedioTecnico); err == nil {
 		t.Fatal("4_ano_medio misturado com outros anos não deve ser permitido")
 	}
 }

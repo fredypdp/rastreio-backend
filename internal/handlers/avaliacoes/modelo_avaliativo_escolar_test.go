@@ -3,7 +3,7 @@ package avaliacoes
 import (
 	"testing"
 
-	"spuri/internal/domain/aggregates"
+	"spuri/internal/cadastros"
 	"spuri/internal/handlers/apoio"
 	"spuri/internal/projections"
 )
@@ -19,7 +19,7 @@ func TestCategoriasEscolaresFixasPorAno(t *testing.T) {
 		{"fundamental com exames", "6_ano_fundamental", "", []string{"nota_professor", "prova_trimestral", "exame_final", "exame_recurso"}},
 		{"medio regular", "2_ano_medio", "", []string{"nota_professor", "prova_trimestral"}},
 		{"medio com exames", "3_ano_medio", "", []string{"nota_professor", "prova_trimestral", "exame_final", "exame_recurso"}},
-		{"pap tecnico", "4_ano_medio", aggregates.ModeloCursoMedioTecnico, []string{"nota_pap"}},
+		{"pap tecnico", "4_ano_medio", cadastros.ModeloCursoMedioTecnico, []string{"nota_pap"}},
 		{"4 medio nao tecnico", "4_ano_medio", "geral", []string{"nota_professor", "prova_trimestral"}},
 	}
 
@@ -56,7 +56,7 @@ func TestRegraAvaliacaoFinalEscolarFixaPorAno(t *testing.T) {
 		t.Fatalf("regra de recurso inesperada: %#v", recurso)
 	}
 
-	pap := apoio.RegraAvaliacaoFinalEscolarFixa("ACA", "medio", "4_ano_medio", "normal", nil, aggregates.ModeloCursoMedioTecnico)
+	pap := apoio.RegraAvaliacaoFinalEscolarFixa("ACA", "medio", "4_ano_medio", "normal", nil, cadastros.ModeloCursoMedioTecnico)
 	if pap == nil || pap.Nome != "Prova de Aptidão Profissional" || pap.NotaDespertadora == nil || *pap.NotaDespertadora != "nota_pap" {
 		t.Fatalf("regra pap inesperada: %#v", pap)
 	}
