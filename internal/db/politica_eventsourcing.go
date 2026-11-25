@@ -1,6 +1,11 @@
 package db
 
-import "sort"
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // ============================================================================
 // Política de event sourcing (regra 17 do Plano de Atualizações 1 — Parte 2B)
@@ -55,10 +60,7 @@ var AgregadosEventSourcingAprovados = setDe(
 
 // ConversaoPendenteAgregados são os aggregate types inteiros que vão para CRUD.
 var ConversaoPendenteAgregados = map[string]string{
-	"Turma":                EntregaConversao2B1,
-	"Sumario":              EntregaConversao2B1,
 	"DocumentoExtra":       EntregaConversao2B1,
-	"ConfiguracaoFaltas":   EntregaConversao2B1,
 	"ConfiguracaoSistema":  EntregaConversao2B1,
 	"RemetenteComunicacao": EntregaConversao2B1,
 	"MensagemComunicacao":  EntregaConversao2B1,
@@ -154,22 +156,10 @@ var ConversaoPendenteEventos = map[string]string{
 	"EncarregadoRelacaoAtualizada":              EntregaConversao2B1,
 	"ProfessorVinculoAtribuido":                 EntregaConversao2B1,
 	"ProfessorVinculoRemovido":                  EntregaConversao2B1,
-	"TurmaCriada":                               EntregaConversao2B1,
-	"TurmaAtivada":                              EntregaConversao2B1,
-	"TurmaDesativada":                           EntregaConversao2B1,
-	"TurmaDadosAtualizados":                     EntregaConversao2B1,
-	"TurmaDeletada":                             EntregaConversao2B1,
-	"TurmaEncerrada":                            EntregaConversao2B1,
-	"EstudanteAdicionadoATurma":                 EntregaConversao2B1,
-	"EstudanteRemovidoDaTurma":                  EntregaConversao2B1,
-	"SumarioCriado":                             EntregaConversao2B1,
-	"SumarioDadosAtualizados":                   EntregaConversao2B1,
-	"SumarioDeletado":                           EntregaConversao2B1,
 	"DocumentoExtraCriado":                      EntregaConversao2B1,
 	"DocumentoExtraAtualizado":                  EntregaConversao2B1,
 	"DocumentoExtraDesativado":                  EntregaConversao2B1,
 	"DocumentoExtraReativado":                   EntregaConversao2B1,
-	"ConfiguracaoFaltasDefinida":                EntregaConversao2B1,
 	"ConfiguracaoSistemaDefinida":               EntregaConversao2B1,
 	"ConfiguracaoSistemaRemovida":               EntregaConversao2B1,
 	"RemetenteComunicacaoConfigurado":           EntregaConversao2B1,
@@ -230,15 +220,89 @@ var (
 	AgregadosConvertidosHistoricos = map[string]bool{}
 )
 
-// Tabelas que já são CRUD (registro oficial, não reconstruídas a partir do
-// ledger). Toda tarefa de conversão acrescenta as suas aqui; o teste
-// TestTabelasCRUDNaoDependemDeProjecoesReconstruiveis (internal/cadastros)
-// garante que nenhuma delas tem chave estrangeira para uma projeção que o
-// ledger reconstrói.
+// TabelasCRUD são as tabelas que já são CRUD (registro oficial, não
+// reconstruídas a partir do ledger). Toda tarefa de conversão acrescenta as
+// suas aqui. Duas defesas usam esta lista:
+//
+//   - o teste TestTabelasCRUDNaoDependemDeProjecoesReconstruiveis (internal/
+//     cadastros), que falha se uma migration der a uma tabela CRUD uma chave
+//     estrangeira para uma projeção que o ledger reconstrói;
+//   - a guarda em tempo de execução do gestor de projeções
+//     (VerificarTabelasCRUDProtegidas), que recusa qualquer reconstrução
+//     enquanto essa chave existir, para que um TRUNCATE ... CASCADE nunca
+//     apague dados que não têm como voltar.
+//
+// Apontar para outra tabela CRUD é permitido.
+var TabelasCRUD = []string{
+	TabelaCursos,
+	TabelaMaterias,
+	TabelaTurmas,
+	TabelaSumarios,
+	TabelaFaltasConfiguracao,
+}
+
 const (
-	TabelaCursos   = "projection_cursos"
-	TabelaMaterias = "projection_materias"
+	TabelaCursos             = "projection_cursos"
+	TabelaMaterias           = "projection_materias"
+	TabelaTurmas             = "projection_turmas"
+	TabelaSumarios           = "projection_sumarios"
+	TabelaFaltasConfiguracao = "projection_faltas_configuracao"
 )
+
+// FKCRUDPerigosa é uma chave estrangeira de uma tabela CRUD para uma tabela
+// que não é CRUD (e que, portanto, o ledger pode reconstruir).
+type FKCRUDPerigosa struct{ Origem, Destino, Nome string }
+
+func (f FKCRUDPerigosa) String() string {
+	return fmt.Sprintf("tabela CRUD %s tem a chave estrangeira %s para %s, que o ledger reconstrói: "+
+		"um TRUNCATE ... CASCADE na reconstrução apagaria dados que não têm como voltar",
+		f.Origem, f.Nome, f.Destino)
+}
+
+// FKsCRUDPerigosas procura, no banco, chaves estrangeiras de tabelas CRUD para
+// tabelas que não são CRUD. Cobre também cadeias: se A (reconstruída) <- B
+// (reconstruída) <- C (CRUD), a chave de C para B é achada aqui.
+func (c *Client) FKsCRUDPerigosas(ctx context.Context) ([]FKCRUDPerigosa, error) {
+	crud := make(map[string]bool, len(TabelasCRUD))
+	for _, t := range TabelasCRUD {
+		crud[t] = true
+	}
+	var linhas []struct {
+		Origem  string `db:"origem"`
+		Destino string `db:"destino"`
+		Nome    string `db:"nome"`
+	}
+	if err := c.db.SelectContext(ctx, &linhas, `
+		SELECT conrelid::regclass::text AS origem, confrelid::regclass::text AS destino, conname AS nome
+		FROM pg_constraint WHERE contype = 'f'`); err != nil {
+		return nil, fmt.Errorf("listar chaves estrangeiras: %w", err)
+	}
+	var achadas []FKCRUDPerigosa
+	for _, l := range linhas {
+		if crud[l.Origem] && !crud[l.Destino] {
+			achadas = append(achadas, FKCRUDPerigosa{Origem: l.Origem, Destino: l.Destino, Nome: l.Nome})
+		}
+	}
+	return achadas, nil
+}
+
+// VerificarTabelasCRUDProtegidas devolve erro se alguma tabela CRUD tiver
+// chave estrangeira para uma tabela reconstruível. O gestor de projeções chama
+// isto antes de QUALQUER reconstrução.
+func (c *Client) VerificarTabelasCRUDProtegidas(ctx context.Context) error {
+	achadas, err := c.FKsCRUDPerigosas(ctx)
+	if err != nil {
+		return err
+	}
+	if len(achadas) == 0 {
+		return nil
+	}
+	msgs := make([]string, len(achadas))
+	for i, f := range achadas {
+		msgs[i] = f.String()
+	}
+	return fmt.Errorf("reconstrução recusada: %s", strings.Join(msgs, "; "))
+}
 
 // ClassificacaoES diz em que situação um event type ou aggregate type está.
 type ClassificacaoES int

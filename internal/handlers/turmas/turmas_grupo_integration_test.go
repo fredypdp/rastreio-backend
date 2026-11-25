@@ -2,66 +2,50 @@ package turmas
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
-	"spuri/internal/domain/aggregates"
 	"spuri/internal/handlers/testsupport"
 	"spuri/internal/projections"
 )
 
-// aplicarEventosDaTurmaNaProjecao leva os eventos ainda não persistidos do agregado
-// até a projeção, na mesma ordem. Escritas reais no ledger só chegam à projeção
-// pelo Projection Manager assíncrono, que não sobe em testes isolados do pacote.
-func aplicarEventosDaTurmaNaProjecao(t *testing.T, proj *projections.TurmasProjection, turma *aggregates.Turma, versaoInicial int) int {
+// criarTurmaCRUD cria uma turma pelo repositório CRUD (como o handler faz).
+func criarTurmaCRUD(t *testing.T, client *db.Client, codigo, codigoAcademia, nivel, turno string, tema *string) *cadastros.Turma {
 	t.Helper()
-	versao := versaoInicial
-	for _, ev := range turma.GetUncommittedEvents() {
-		versao++
-		payload, err := json.Marshal(ev.GetPayload())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := proj.Handle(db.Event{
-			EventID:       uuid.New(),
-			AggregateID:   turma.ID,
-			AggregateType: "Turma",
-			EventType:     ev.GetEventType(),
-			EventVersion:  versao,
-			Payload:       payload,
-			OccurredAt:    time.Now(),
-		}); err != nil {
-			t.Fatalf("projeção falhou em %s: %v", ev.GetEventType(), err)
-		}
+	turma, err := cadastros.NovaTurma(codigo, codigoAcademia, nivel, nil, turno, tema)
+	if err != nil {
+		t.Fatal(err)
 	}
-	turma.ClearUncommittedEvents()
-	return versao
+	audit := db.AuditContext{UserID: uuid.New().String(), UserType: "academia"}
+	if err := cadastros.NovoTurmasRepo(client).Criar(context.Background(), audit, turma); err != nil {
+		t.Fatal(err)
+	}
+	return turma
 }
 
-func TestIntegrationProjecaoDeGrupoDoQuartoAnoMedio(t *testing.T) {
+func TestIntegrationRegistroDeGrupoDoQuartoAnoMedio(t *testing.T) {
 	client := testsupport.IntegrationFinanceClient(t)
 	codigoAcademia := "GRP" + uuid.NewString()[:6]
 	testsupport.SeedAcademiaParaCategoriaServico(t, client, codigoAcademia)
 	proj := projections.NewTurmasProjection(client)
+	repo := cadastros.NovoTurmasRepo(client)
+	audit := db.AuditContext{UserID: uuid.New().String(), UserType: "academia"}
 
-	// 4º ano médio: grupo com tema.
+	// 4º ano médio: grupo com tema. A leitura é imediata (não há mais projeção).
 	tema := "Sistema de gestão escolar"
-	grupo := aggregates.NewTurma()
-	if err := grupo.Criar("GRUPO_1", codigoAcademia, "4_ano_medio", nil, "manha", &tema, uuid.New()); err != nil {
-		t.Fatal(err)
-	}
-	versao := aplicarEventosDaTurmaNaProjecao(t, proj, grupo, 0)
+	grupo := criarTurmaCRUD(t, client, "GRUPO_1", codigoAcademia, "4_ano_medio", "manha", &tema)
 
 	dto, err := proj.GetByCodigoTurma("GRUPO_1", codigoAcademia)
 	if err != nil || dto == nil {
-		t.Fatalf("grupo não encontrado na projeção: %v", err)
+		t.Fatalf("grupo não encontrado: %v", err)
 	}
 	if dto.TipoAgrupamento != "grupo" {
 		t.Fatalf("tipo_agrupamento = %q, esperado grupo", dto.TipoAgrupamento)
@@ -72,10 +56,10 @@ func TestIntegrationProjecaoDeGrupoDoQuartoAnoMedio(t *testing.T) {
 
 	// Atualização do tema.
 	novo := "Tema revisto"
-	if err := grupo.AtualizarDados(nil, nil, nil, &novo, uuid.New()); err != nil {
+	if _, err := repo.Atualizar(context.Background(), audit, grupo.ID, "TurmaDadosAtualizados", "",
+		func(tm *cadastros.Turma) error { return tm.AtualizarDados(nil, nil, nil, &novo) }); err != nil {
 		t.Fatal(err)
 	}
-	versao = aplicarEventosDaTurmaNaProjecao(t, proj, grupo, versao)
 	dto, _ = proj.GetByID(grupo.ID)
 	if dto == nil || dto.TemaTrabalho == nil || *dto.TemaTrabalho != novo {
 		t.Fatalf("tema deveria ser atualizado para %q, obteve %+v", novo, dto)
@@ -83,10 +67,10 @@ func TestIntegrationProjecaoDeGrupoDoQuartoAnoMedio(t *testing.T) {
 
 	// Remoção do tema (string vazia).
 	vazio := ""
-	if err := grupo.AtualizarDados(nil, nil, nil, &vazio, uuid.New()); err != nil {
+	if _, err := repo.Atualizar(context.Background(), audit, grupo.ID, "TurmaDadosAtualizados", "",
+		func(tm *cadastros.Turma) error { return tm.AtualizarDados(nil, nil, nil, &vazio) }); err != nil {
 		t.Fatal(err)
 	}
-	aplicarEventosDaTurmaNaProjecao(t, proj, grupo, versao)
 	dto, _ = proj.GetByID(grupo.ID)
 	if dto == nil || dto.TemaTrabalho != nil {
 		t.Fatalf("tema deveria ter sido removido, obteve %+v", dto)
@@ -99,17 +83,13 @@ func TestIntegrationProjecaoDeGrupoDoQuartoAnoMedio(t *testing.T) {
 	}
 }
 
-func TestIntegrationProjecaoDeTurmaNormalNaoTemTema(t *testing.T) {
+func TestIntegrationRegistroDeTurmaNormalNaoTemTema(t *testing.T) {
 	client := testsupport.IntegrationFinanceClient(t)
 	codigoAcademia := "TUR" + uuid.NewString()[:6]
 	testsupport.SeedAcademiaParaCategoriaServico(t, client, codigoAcademia)
 	proj := projections.NewTurmasProjection(client)
 
-	turma := aggregates.NewTurma()
-	if err := turma.Criar("TURMA_1", codigoAcademia, "3_ano_medio", nil, "tarde", nil, uuid.New()); err != nil {
-		t.Fatal(err)
-	}
-	aplicarEventosDaTurmaNaProjecao(t, proj, turma, 0)
+	criarTurmaCRUD(t, client, "TURMA_1", codigoAcademia, "3_ano_medio", "tarde", nil)
 
 	dto, err := proj.GetByCodigoTurma("TURMA_1", codigoAcademia)
 	if err != nil || dto == nil {
@@ -120,7 +100,7 @@ func TestIntegrationProjecaoDeTurmaNormalNaoTemTema(t *testing.T) {
 	}
 }
 
-// --- fluxo HTTP completo (handlers reais + ledger + projeção) -----------------
+// --- fluxo HTTP completo (handlers reais + banco) ----------------------------
 
 func ctxTurmaHandler(client *db.Client, academiaID uuid.UUID, metodo, rota, codigo string, body any) (*gin.Context, *httptest.ResponseRecorder) {
 	rec := httptest.NewRecorder()
@@ -139,22 +119,6 @@ func ctxTurmaHandler(client *db.Client, academiaID uuid.UUID, metodo, rota, codi
 	ctx.Set("user_id", academiaID)
 	ctx.Set("user_type", "academia")
 	return ctx, rec
-}
-
-// projetarNovosEventosDaTurma leva para a projeção os eventos do ledger que ainda
-// não foram aplicados (o Projection Manager assíncrono não sobe em testes de handler).
-func projetarNovosEventosDaTurma(t *testing.T, client *db.Client, proj *projections.TurmasProjection, turmaID uuid.UUID, jaAplicados int) int {
-	t.Helper()
-	eventos, err := db.NewAggregateRepository(client).GetEventHistory(turmaID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ev := range eventos[jaAplicados:] {
-		if err := proj.Handle(ev); err != nil {
-			t.Fatalf("projeção falhou em %s: %v", ev.EventType, err)
-		}
-	}
-	return len(eventos)
 }
 
 func TestIntegrationHandlersDeGrupoDoQuartoAnoMedioComTema(t *testing.T) {
@@ -183,28 +147,25 @@ func TestIntegrationHandlersDeGrupoDoQuartoAnoMedioComTema(t *testing.T) {
 		t.Fatalf("resposta de criação inesperada: %+v", criada)
 	}
 
-	// O tema (já sem espaços) tem de estar no evento gravado no ledger.
-	eventos, err := db.NewAggregateRepository(client).GetEventHistory(criada.ID)
-	if err != nil || len(eventos) != 1 {
-		t.Fatalf("esperado 1 evento no ledger: %d %v", len(eventos), err)
+	// O tema (já sem espaços) está no registro e a criação ficou auditada.
+	dto, _ := proj.GetByID(criada.ID)
+	if dto == nil || dto.TemaTrabalho == nil || *dto.TemaTrabalho != "Sistema de gestão escolar" {
+		t.Fatalf("tema no registro = %+v", dto)
 	}
-	var payload struct{ TemaTrabalho *string }
-	_ = json.Unmarshal(eventos[0].Payload, &payload)
-	if payload.TemaTrabalho == nil || *payload.TemaTrabalho != "Sistema de gestão escolar" {
-		t.Fatalf("tema no evento TurmaCriada = %v", payload.TemaTrabalho)
+	linhas, err := client.ListarAuditoria(context.Background(), cadastros.EntidadeTurma, criada.ID.String(), 10, 0)
+	if err != nil || len(linhas) != 1 || linhas[0].Acao != "TurmaCriada" {
+		t.Fatalf("esperada 1 linha de auditoria TurmaCriada: %+v %v", linhas, err)
 	}
-	aplicados := projetarNovosEventosDaTurma(t, client, proj, criada.ID, 0)
 
-	// 2) PUT /academia/turma/:codigo/dados — rota real de atualização (AtualizarDadosTurma).
+	// 2) PUT /academia/turma/:codigo/dados — rota real de atualização.
 	ctx, rec = ctxTurmaHandler(client, academiaID, http.MethodPut, "/academia/turma/"+criada.CodigoTurma+"/dados", criada.CodigoTurma, map[string]any{"tema_trabalho": "Tema revisto"})
 	AtualizarDadosTurma(ctx)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "grupo atualizado com sucesso") {
 		t.Fatalf("atualizar tema: %d %s", rec.Code, rec.Body.String())
 	}
-	aplicados = projetarNovosEventosDaTurma(t, client, proj, criada.ID, aplicados)
-	dto, _ := proj.GetByID(criada.ID)
+	dto, _ = proj.GetByID(criada.ID)
 	if dto == nil || dto.TemaTrabalho == nil || *dto.TemaTrabalho != "Tema revisto" || dto.TipoAgrupamento != "grupo" {
-		t.Fatalf("projeção após atualizar tema: %+v", dto)
+		t.Fatalf("registro após atualizar tema: %+v", dto)
 	}
 
 	// 3) Atualizar só o turno (tema omitido) não pode apagar o tema.
@@ -213,7 +174,6 @@ func TestIntegrationHandlersDeGrupoDoQuartoAnoMedioComTema(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("atualizar turno: %d %s", rec.Code, rec.Body.String())
 	}
-	aplicados = projetarNovosEventosDaTurma(t, client, proj, criada.ID, aplicados)
 	dto, _ = proj.GetByID(criada.ID)
 	if dto == nil || dto.TemaTrabalho == nil || *dto.TemaTrabalho != "Tema revisto" || dto.Turno != "tarde" {
 		t.Fatalf("omitir tema_trabalho não pode removê-lo: %+v", dto)
@@ -225,7 +185,6 @@ func TestIntegrationHandlersDeGrupoDoQuartoAnoMedioComTema(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("remover tema: %d %s", rec.Code, rec.Body.String())
 	}
-	projetarNovosEventosDaTurma(t, client, proj, criada.ID, aplicados)
 	dto, _ = proj.GetByID(criada.ID)
 	if dto == nil || dto.TemaTrabalho != nil {
 		t.Fatalf("tema deveria ter sido removido: %+v", dto)
@@ -240,7 +199,7 @@ func TestIntegrationHandlersDeGrupoDoQuartoAnoMedioComTema(t *testing.T) {
 		t.Fatalf("tema numa turma do 3º ano deveria dar 400: %d %s", rec.Code, rec.Body.String())
 	}
 	if existente, _ := proj.GetByCodigoTurma("T3A", codigoAcademia); existente != nil {
-		t.Fatal("a turma rejeitada não pode existir na projeção")
+		t.Fatal("a turma rejeitada não pode existir")
 	}
 
 	// 6) Turma comum continua a dizer "turma".
@@ -255,5 +214,14 @@ func TestIntegrationHandlersDeGrupoDoQuartoAnoMedioComTema(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &comum)
 	if rec.Code != http.StatusCreated || comum.TipoAgrupamento != "turma" || comum.Message != "turma criada com sucesso" {
 		t.Fatalf("turma comum: %d %+v", rec.Code, comum)
+	}
+
+	// 7) Código repetido na mesma academia: 400, e não cria outra.
+	ctx, rec = ctxTurmaHandler(client, academiaID, http.MethodPost, "/academia/turma", "", map[string]any{
+		"codigo_turma": "T3B", "nivel": "3_ano_medio", "turno": "tarde",
+	})
+	CriarTurma(ctx)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "já existe") {
+		t.Fatalf("código repetido deveria dar 400: %d %s", rec.Code, rec.Body.String())
 	}
 }

@@ -212,6 +212,9 @@ func (c *Client) ComAuditoriaComAtor(ctx context.Context, audit AuditContext, at
 }
 
 func (c *Client) comAuditoriaUmaVez(ctx context.Context, audit AuditContext, ator *AtorAuditoria, fn func(tx *sqlx.Tx, aud *Auditor) error) error {
+	if ator == nil {
+		ator = audit.Ator
+	}
 	tx, err := c.BeginTx(ctx)
 	if err != nil {
 		return fmt.Errorf("erro ao iniciar transação: %w", err)

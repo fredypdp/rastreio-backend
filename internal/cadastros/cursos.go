@@ -451,23 +451,63 @@ func (r *CursosRepo) Atualizar(ctx context.Context, audit db.AuditContext, id uu
 	return resultado, nil
 }
 
-// DeletarComMaterias deleta o curso e, na MESMA transação, as matérias dele
-// que ainda não foram deletadas (cascata). Cada matéria e o curso geram a sua
-// linha de auditoria. Se alguma matéria ainda estiver ativa, ou o curso não
-// puder ser deletado, nada é gravado. Devolve os nomes das matérias deletadas.
-func (r *CursosRepo) DeletarComMaterias(ctx context.Context, audit db.AuditContext, id uuid.UUID, motivo string) (*Curso, []string, error) {
+// DeletarComMaterias deleta o curso e, na MESMA transação, as turmas e as
+// matérias dele que ainda não foram deletadas (cascata). Cada turma, cada
+// matéria e o curso geram a sua linha de auditoria. Se alguma turma ainda
+// estiver ativa ou com estudantes, se alguma matéria ainda estiver ativa, ou
+// se o curso não puder ser deletado, nada é gravado. Devolve o curso, os nomes
+// das matérias deletadas e os códigos das turmas deletadas.
+func (r *CursosRepo) DeletarComMaterias(ctx context.Context, audit db.AuditContext, id uuid.UUID, motivo string) (*Curso, []string, []string, error) {
 	var (
 		curso   *Curso
 		nomesMs []string
+		turmas  []string
 	)
 	err := r.client.ComAuditoria(ctx, audit, func(tx *sqlx.Tx, aud *db.Auditor) error {
 		nomesMs = nil
+		turmas = nil
 		c, err := carregarCursoTx(ctx, tx, id)
 		if err != nil {
 			return err
 		}
 		antes := c.snapshot()
 		nomeCurso := c.Nome
+
+		// Turmas primeiro: precisam estar inativas e sem estudantes.
+		turmaIDs, err := idsTurmasDoCursoTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		for _, tid := range turmaIDs {
+			t, err := carregarTurmaTx(ctx, tx, tid)
+			if err != nil {
+				return err
+			}
+			if t.Status == StatusDeletado {
+				continue
+			}
+			if t.Status == StatusAtivo {
+				return regra("desative todas as turmas vinculadas antes de deletar o curso (turma ativa: %s)", t.CodigoTurma)
+			}
+			if len(t.Estudantes) > 0 {
+				return regra("turma %s ainda possui estudantes vinculados", t.CodigoTurma)
+			}
+			tAntes := t.snapshot()
+			if err := t.Deletar(); err != nil {
+				return &ErroRegra{Err: fmt.Errorf("turma '%s': %s", t.CodigoTurma, err.Error())}
+			}
+			if err := gravarTurmaTx(ctx, tx, t); err != nil {
+				return fmt.Errorf("deletar turma '%s': %w", t.CodigoTurma, err)
+			}
+			if err := aud.Registrar(ctx, db.EntradaAuditoria{
+				EntidadeTipo: EntidadeTurma, EntidadeID: t.ID.String(), AcademiaID: academiaDoAtor(audit),
+				Acao: "TurmaDeletada", Antes: tAntes, Depois: t.snapshot(),
+				Motivo: fmt.Sprintf("cascata: curso %s deletado", nomeCurso),
+			}); err != nil {
+				return err
+			}
+			turmas = append(turmas, t.CodigoTurma)
+		}
 
 		ids, err := idsMateriasDoCursoTx(ctx, tx, id)
 		if err != nil {
@@ -511,7 +551,7 @@ func (r *CursosRepo) DeletarComMaterias(ctx context.Context, audit db.AuditConte
 		})
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return curso, nomesMs, nil
+	return curso, nomesMs, turmas, nil
 }

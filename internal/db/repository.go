@@ -48,6 +48,11 @@ type AuditContext struct {
 	UserID   string // UUID do usuário (estudante, academia ou admin)
 	UserType string // "estudante" | "academia" | "admin"
 	IP       string // IP da requisição (opcional)
+	// Ator (opcional) é quem realmente agiu quando a ação é "em nome de" outra
+	// conta (secretário como a academia, encarregado como o educando). Só é lido
+	// pela camada CRUD (ComAuditoria); o repositório de eventos usa o ator do
+	// próprio repositório (ComAtor).
+	Ator *AtorAuditoria
 }
 
 // NewAggregateRepository cria um repositório com context.Background() por padrão.

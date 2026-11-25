@@ -11,6 +11,7 @@
 package cadastros
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 )
@@ -38,3 +39,5 @@ func EhErroRegra(err error) (*ErroRegra, bool) {
 	}
 	return nil, false
 }
+
+func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }

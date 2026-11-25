@@ -60,8 +60,6 @@ func TestPoliticaClassificaTodaWhitelistExatamenteUmaVez(t *testing.T) {
 // Academia são aprovados e têm eventos pendentes.)
 func TestPoliticaAgregadoPendenteNaoTemEventoAprovado(t *testing.T) {
 	prefixos := map[string][]string{
-		"Turma":                {"Turma"},
-		"Sumario":              {"Sumario"},
 		"DocumentoExtra":       {"DocumentoExtra"},
 		"ConfiguracaoFaltas":   {"ConfiguracaoFaltas"},
 		"ConfiguracaoSistema":  {"ConfiguracaoSistema"},
@@ -105,8 +103,15 @@ func TestPoliticaSensivelContinuaAprovado(t *testing.T) {
 }
 
 func TestPoliticaGuardaReprovaTipoNovoForaDaLista(t *testing.T) {
+	// Tipo fictício "pendente de conversão": os testes não dependem de tipos
+	// reais, que saem da lista conforme as conversões da Parte 2B avançam.
+	const pendente = "XptoConvertivel"
+	ConversaoPendenteEventos[pendente] = EntregaConversao2B1
+	t.Cleanup(func() { delete(ConversaoPendenteEventos, pendente) })
 	base := func() (map[string]bool, map[string]bool) {
-		return copiaSet(validEventTypes), copiaSet(validAggregateTypes)
+		ev := copiaSet(validEventTypes)
+		ev[pendente] = true
+		return ev, copiaSet(validAggregateTypes)
 	}
 
 	t.Run("evento novo na whitelist sem classificar", func(t *testing.T) {
@@ -138,28 +143,28 @@ func TestPoliticaGuardaReprovaTipoNovoForaDaLista(t *testing.T) {
 
 	t.Run("tipo em duas listas", func(t *testing.T) {
 		ev, ag := base()
-		// CursoCriado já é pendente; marcá-lo também como histórico duplica.
-		EventosConvertidosHistoricos["TurmaCriada"] = true
-		defer delete(EventosConvertidosHistoricos, "TurmaCriada")
+		// O tipo já é pendente; marcá-lo também como histórico duplica.
+		EventosConvertidosHistoricos[pendente] = true
+		defer delete(EventosConvertidosHistoricos, pendente)
 		v := ViolacoesPoliticaEventSourcing(ev, ag, nil, nil)
-		if len(v) != 1 || !strings.Contains(v[0], "TurmaCriada") || !strings.Contains(v[0], "mais de uma lista") {
+		if len(v) != 1 || !strings.Contains(v[0], pendente) || !strings.Contains(v[0], "mais de uma lista") {
 			t.Fatalf("violações = %v", v)
 		}
 	})
 
 	t.Run("lista com tipo que não existe mais na whitelist", func(t *testing.T) {
 		ev, ag := base()
-		delete(ev, "TurmaCriada")
+		delete(ev, pendente)
 		v := ViolacoesPoliticaEventSourcing(ev, ag, nil, nil)
-		if len(v) != 1 || !strings.Contains(v[0], "TurmaCriada") || !strings.Contains(v[0], "não existe na whitelist") {
+		if len(v) != 1 || !strings.Contains(v[0], pendente) || !strings.Contains(v[0], "não existe na whitelist") {
 			t.Fatalf("violações = %v", v)
 		}
 	})
 
 	t.Run("entrega de conversão inválida", func(t *testing.T) {
 		ev, ag := base()
-		ConversaoPendenteEventos["TurmaCriada"] = "entrega-inventada"
-		defer func() { ConversaoPendenteEventos["TurmaCriada"] = EntregaConversao2B1 }()
+		ConversaoPendenteEventos[pendente] = "entrega-inventada"
+		defer func() { ConversaoPendenteEventos[pendente] = EntregaConversao2B1 }()
 		v := ViolacoesPoliticaEventSourcing(ev, ag, nil, nil)
 		if len(v) != 1 || !strings.Contains(v[0], "entrega de conversão inválida") {
 			t.Fatalf("violações = %v", v)
@@ -168,12 +173,12 @@ func TestPoliticaGuardaReprovaTipoNovoForaDaLista(t *testing.T) {
 
 	t.Run("convertido histórico continua aceito", func(t *testing.T) {
 		ev, ag := base()
-		// Simula a conclusão da conversão de CursoCriado.
-		delete(ConversaoPendenteEventos, "TurmaCriada")
-		EventosConvertidosHistoricos["TurmaCriada"] = true
+		// Simula a conclusão da conversão do tipo pendente.
+		delete(ConversaoPendenteEventos, pendente)
+		EventosConvertidosHistoricos[pendente] = true
 		defer func() {
-			delete(EventosConvertidosHistoricos, "TurmaCriada")
-			ConversaoPendenteEventos["TurmaCriada"] = EntregaConversao2B1
+			delete(EventosConvertidosHistoricos, pendente)
+			ConversaoPendenteEventos[pendente] = EntregaConversao2B1
 		}()
 		if v := ViolacoesPoliticaEventSourcing(ev, ag, nil, nil); len(v) != 0 {
 			t.Fatalf("violações = %v; convertido histórico deveria ser aceito", v)

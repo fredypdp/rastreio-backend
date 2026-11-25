@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/handlers/apoio"
@@ -108,16 +109,15 @@ func CriarSumario(c *gin.Context) {
 		cursoUUID = cursoID
 	}
 
-	sumario := aggregates.NewSumario()
-	if err := sumario.Criar(req.SumarioTitulo, req.Descricao, academiaDTO.CodigoAcademia, tipo, nivel, req.Periodo, req.AnoAcademico, cursoUUID, req.MateriaID, userID); err != nil {
-		utils.RespondWithValidationError(c, err)
+	sumario, err := cadastros.NovoSumario(req.SumarioTitulo, req.Descricao, academiaDTO.CodigoAcademia, tipo, nivel, req.Periodo, req.AnoAcademico, cursoUUID, req.MateriaID, userID)
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "sumario")
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	audit := db.AuditContext{UserID: userID.String(), UserType: "academia", IP: c.ClientIP()}
-	if err := repository.SaveWithAudit(sumario, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	audit := db.AuditContext{UserID: userID.String(), UserType: "academia", IP: c.ClientIP(), Ator: apoio.AtorDaRequisicao(c)}
+	if err := cadastros.NovoSumariosRepo(apoio.GetDbClient(c)).Criar(c.Request.Context(), audit, sumario); err != nil {
+		apoio.RespondErroCadastro(c, err, "sumario")
 		return
 	}
 
@@ -239,26 +239,10 @@ func AtualizarDadosSumario(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	sumarioAgg, err := repository.Load(sumarioUUID, "Sumario")
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "sumario")
-		return
-	}
-	sumario, ok := sumarioAgg.(*aggregates.Sumario)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
-		return
-	}
-
-	if err := sumario.AtualizarDados(req.SumarioTitulo, req.Descricao, userID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
-	audit := db.AuditContext{UserID: userID.String(), UserType: "academia", IP: c.ClientIP()}
-	if err := repository.SaveWithAudit(sumario, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	audit := db.AuditContext{UserID: userID.String(), UserType: "academia", IP: c.ClientIP(), Ator: apoio.AtorDaRequisicao(c)}
+	if _, err := cadastros.NovoSumariosRepo(apoio.GetDbClient(c)).Atualizar(c.Request.Context(), audit, sumarioUUID, "SumarioDadosAtualizados",
+		func(sm *cadastros.Sumario) error { return sm.AtualizarDados(req.SumarioTitulo, req.Descricao) }); err != nil {
+		apoio.RespondErroCadastro(c, err, "sumario")
 		return
 	}
 
@@ -292,30 +276,14 @@ func DeletarSumario(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	sumarioAgg, err := repository.Load(sumarioUUID, "Sumario")
-	if err != nil {
-		utils.RespondWithNotFoundError(c, "sumario")
-		return
-	}
-	sumario, ok := sumarioAgg.(*aggregates.Sumario)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("tipo de aggregate inesperado"))
-		return
-	}
-
 	// Nota de design: deletar NUNCA é bloqueado por já existirem faltas
 	// vinculadas — é o oposto do que MateriaDisciplinar faz (que exige status
 	// "inativo" antes). O soft delete + snapshot de sumario_titulo em
 	// projection_faltas existe exatamente para permitir isso com segurança.
-	if err := sumario.Deletar(userID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
-	audit := db.AuditContext{UserID: userID.String(), UserType: "academia", IP: c.ClientIP()}
-	if err := repository.SaveWithAudit(sumario, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	audit := db.AuditContext{UserID: userID.String(), UserType: "academia", IP: c.ClientIP(), Ator: apoio.AtorDaRequisicao(c)}
+	if _, err := cadastros.NovoSumariosRepo(apoio.GetDbClient(c)).Atualizar(c.Request.Context(), audit, sumarioUUID, "SumarioDeletado",
+		func(sm *cadastros.Sumario) error { return sm.Deletar() }); err != nil {
+		apoio.RespondErroCadastro(c, err, "sumario")
 		return
 	}
 

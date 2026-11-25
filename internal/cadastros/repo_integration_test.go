@@ -336,7 +336,7 @@ func TestDeletarCursoEmCascataEhAtomico(t *testing.T) {
 		if _, err := cursos.Atualizar(ctx, a.Audit, curso.ID, "CursoDesativado", "", func(c *Curso) error { return c.Desativar() }); err != nil {
 			t.Fatal(err)
 		}
-		_, _, err := cursos.DeletarComMaterias(ctx, a.Audit, curso.ID, "teste")
+		_, _, _, err := cursos.DeletarComMaterias(ctx, a.Audit, curso.ID, "teste")
 		if _, ok := EhErroRegra(err); !ok {
 			t.Fatalf("err = %v, want violação de regra", err)
 		}
@@ -367,7 +367,7 @@ func TestDeletarCursoEmCascataEhAtomico(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		deletado, nomes, err := cursos.DeletarComMaterias(ctx, a.Audit, curso.ID, "encerrado")
+		deletado, nomes, _, err := cursos.DeletarComMaterias(ctx, a.Audit, curso.ID, "encerrado")
 		if err != nil {
 			t.Fatalf("DeletarComMaterias: %v", err)
 		}
@@ -428,24 +428,12 @@ func TestReconstruirAcademiasNaoApagaCursosNemMaterias(t *testing.T) {
 // para outra tabela CRUD é permitido.)
 func TestTabelasCRUDNaoDependemDeProjecoesReconstruiveis(t *testing.T) {
 	client := clienteParaTeste(t)
-	crud := map[string]bool{db.TabelaCursos: true, db.TabelaMaterias: true}
-
-	var fks []struct {
-		Origem  string `db:"origem"`
-		Destino string `db:"destino"`
-		Nome    string `db:"nome"`
-	}
-	if err := client.DB().Select(&fks, `
-		SELECT conrelid::regclass::text AS origem, confrelid::regclass::text AS destino, conname AS nome
-		FROM pg_constraint WHERE contype = 'f'`); err != nil {
+	achadas, err := client.FKsCRUDPerigosas(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, fk := range fks {
-		if crud[fk.Origem] && !crud[fk.Destino] {
-			t.Errorf("tabela CRUD %s tem chave estrangeira %s para %s, que o ledger reconstrói: "+
-				"um TRUNCATE ... CASCADE na reconstrução apagaria dados que não têm como voltar",
-				fk.Origem, fk.Nome, fk.Destino)
-		}
+	for _, f := range achadas {
+		t.Error(f.String())
 	}
 }
 

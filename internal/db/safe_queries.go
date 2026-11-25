@@ -87,15 +87,6 @@ var validEventTypes = map[string]bool{
 	"NotasRegistradas":  true,
 	"FaltasRegistradas": true,
 	"FaltaRegistrada":   true,
-	// ── Turma ─────────────────────────────────────────────────────────────────
-	"TurmaCriada":               true,
-	"TurmaAtivada":              true,
-	"TurmaDesativada":           true,
-	"TurmaDadosAtualizados":     true,
-	"TurmaDeletada":             true,
-	"TurmaEncerrada":            true,
-	"EstudanteAdicionadoATurma": true,
-	"EstudanteRemovidoDaTurma":  true,
 	// ── Curso ─────────────────────────────────────────────────────────────────
 	"CategoriaServicoCriada":     true,
 	"CategoriaServicoRenomeada":  true,
@@ -197,15 +188,8 @@ var validEventTypes = map[string]bool{
 	// ── Descobertos por varredura estática (ver internal/db/safe_queries_test.go) ──
 	// Tinham a mesma classe de bug — emitidos pelo domínio, tratados pela
 	// projeção correspondente, mas nunca chegaram a esta whitelist:
-	// SumarioCriado/DadosAtualizados/Deletado são emitidos por aggregates.Sumario
-	// (sumario.go) e servidos por POST/PUT/DELETE /academia/sumario (rotas ativas em
-	// main.go) — toda criação, edição ou remoção de sumário de aula retornava 500.
-	"SumarioCriado":                   true,
-	"SumarioDadosAtualizados":         true,
-	"SumarioDeletado":                 true,
 	"RemetenteComunicacaoConfigurado": true,
 	// Tarefa 117: configuração de limite de faltas e reprovação por faltas.
-	"ConfiguracaoFaltasDefinida":    true,
 	"ConfiguracaoSistemaDefinida":   true,
 	"ConfiguracaoSistemaRemovida":   true,
 	"MensagemComunicacaoRegistrada": true,
@@ -227,22 +211,16 @@ var validAggregateTypes = map[string]bool{
 	"Encarregado":                    true,
 	"ServicoExtra":                   true,
 	"CategoriaServico":               true,
-	"Turma":                          true,
 	"SolicitacaoEdicaoDadoEstudante": true,
 	"System":                         true,
 	"Financeiro":                     true,
 	// SolicitacaoAlteracaoNIFAcademia (Tarefas 81-82): ver comentário
 	// equivalente em validEventTypes acima sobre o mesmo bug de registro.
 	"SolicitacaoAlteracaoNIFAcademia": true,
-	// Sumario: mesmo bug de registro incompleto — aggregates.Sumario.GetType()
-	// retorna "Sumario", mas o tipo nunca constou nesta whitelist (ver comentário
-	// sobre SumarioCriado/DadosAtualizados/Deletado em validEventTypes acima).
-	"Sumario":              true,
-	"RemetenteComunicacao": true,
-	"ConfiguracaoFaltas":   true,
-	"ConfiguracaoSistema":  true,
-	"MensagemComunicacao":  true,
-	"DocumentoExtra":       true,
+	"RemetenteComunicacao":            true,
+	"ConfiguracaoSistema":             true,
+	"MensagemComunicacao":             true,
+	"DocumentoExtra":                  true,
 }
 
 // ValidateEventType verifica se o tipo de evento é permitido.

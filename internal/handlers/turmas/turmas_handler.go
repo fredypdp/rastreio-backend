@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/handlers/apoio"
@@ -70,29 +71,28 @@ func CriarTurma(c *gin.Context) {
 		return
 	}
 
-	turma := aggregates.NewTurma()
-	if err := turma.Criar(
+	turma, err := cadastros.NovaTurma(
 		req.CodigoTurma,
 		academiaDTO.CodigoAcademia,
 		req.Nivel,
 		req.CursoID,
 		req.Turno,
 		req.TemaTrabalho,
-		academiaID,
-	); err != nil {
-		utils.RespondWithValidationError(c, err)
+	)
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "turma")
 		return
 	}
 
-	repository := apoio.GetRepository(c)
 	audit := db.AuditContext{
 		UserID:   academiaID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
-	if err := repository.SaveWithAudit(turma, audit); err != nil {
+	if err := cadastros.NovoTurmasRepo(apoio.GetDbClient(c)).Criar(c.Request.Context(), audit, turma); err != nil {
 		log.Printf("❌ [CriarTurma] Erro ao salvar: %v", err)
-		utils.RespondWithInternalError(c, err)
+		apoio.RespondErroCadastro(c, err, "turma")
 		return
 	}
 
@@ -264,32 +264,16 @@ func AtivarTurma(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	agg, err := repository.Load(turmaDTO.ID, "Turma")
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-
-	turma, ok := agg.(*aggregates.Turma)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("erro ao converter agregado"))
-		return
-	}
-
-	if err := turma.Ativar(academiaID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   academiaID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
-	if err := repository.SaveWithAudit(turma, audit); err != nil {
+	if _, err := cadastros.NovoTurmasRepo(apoio.GetDbClient(c)).Atualizar(c.Request.Context(), audit, turmaDTO.ID, "TurmaAtivada", "",
+		func(t *cadastros.Turma) error { return t.Ativar(academiaID) }); err != nil {
 		log.Printf("❌ [AtivarTurma] Erro ao salvar: %v", err)
-		utils.RespondWithInternalError(c, err)
+		apoio.RespondErroCadastro(c, err, "turma")
 		return
 	}
 
@@ -321,32 +305,16 @@ func DesativarTurma(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	agg, err := repository.Load(turmaDTO.ID, "Turma")
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-
-	turma, ok := agg.(*aggregates.Turma)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("erro ao converter agregado"))
-		return
-	}
-
-	if err := turma.Desativar(academiaID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   academiaID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
-	if err := repository.SaveWithAudit(turma, audit); err != nil {
+	if _, err := cadastros.NovoTurmasRepo(apoio.GetDbClient(c)).Atualizar(c.Request.Context(), audit, turmaDTO.ID, "TurmaDesativada", "",
+		func(t *cadastros.Turma) error { return t.Desativar(academiaID) }); err != nil {
 		log.Printf("❌ [DesativarTurma] Erro ao salvar: %v", err)
-		utils.RespondWithInternalError(c, err)
+		apoio.RespondErroCadastro(c, err, "turma")
 		return
 	}
 
@@ -476,37 +444,22 @@ func RemoverEstudanteDaTurma(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	agg, err := repository.Load(turmaDTO.ID, "Turma")
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-
-	turma, ok := agg.(*aggregates.Turma)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("erro ao converter agregado"))
-		return
-	}
-
 	anoLectivo, err := apoio.ResolverAnoLetivoAcademia(academiaDTO.AnoLetivo, academiaDTO.CodigoAcademia)
 	if err != nil {
 		utils.RespondWithValidationError(c, err)
 		return
 	}
-
-	if err := turma.RemoverEstudanteNoAnoLectivo(codigoEstudante, anoLectivo, academiaID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
+	_ = anoLectivo // o histórico por ano letivo não muda ao remover (ver Turma.RemoverEstudante)
 
 	audit := db.AuditContext{
 		UserID:   academiaID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
-	if err := repository.SaveWithAudit(turma, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	if _, err := cadastros.NovoTurmasRepo(apoio.GetDbClient(c)).Atualizar(c.Request.Context(), audit, turmaDTO.ID, "EstudanteRemovidoDaTurma", "",
+		func(t *cadastros.Turma) error { return t.RemoverEstudante(codigoEstudante) }); err != nil {
+		apoio.RespondErroCadastro(c, err, "turma")
 		return
 	}
 
@@ -599,48 +552,23 @@ func AtualizarTurma(c *gin.Context) {
 		}
 	}
 
-	repository := apoio.GetRepository(c)
-	agg, err := repository.Load(turmaDTO.ID, "Turma")
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-
-	turma, ok := agg.(*aggregates.Turma)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("erro ao converter agregado"))
-		return
-	}
-	// A projecao tambem recebe historico durante a finalizacao do ano letivo,
-	// evento que nao pertence ao stream da Turma. Hidratamos essa informacao
-	// antes do comando para que AtualizarDados preserve a identidade academica
-	// em todos os anos que ja tiveram estudantes.
-	if len(turmaDTO.HistoricoEstudantesAnoLetivo) > 0 {
-		if turma.HistoricoAnosLetivos == nil {
-			turma.HistoricoAnosLetivos = map[string]struct{}{}
-		}
-		for anoLetivo := range turmaDTO.HistoricoEstudantesAnoLetivo {
-			turma.HistoricoAnosLetivos[anoLetivo] = struct{}{}
-		}
-	}
-
-	if err := turma.AtualizarDados(req.Nivel, req.CursoID, req.Turno, req.TemaTrabalho, academiaID); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   academiaID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
-	if err := repository.SaveWithAudit(turma, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	atualizada, err := cadastros.NovoTurmasRepo(apoio.GetDbClient(c)).Atualizar(c.Request.Context(), audit, turmaDTO.ID, "TurmaDadosAtualizados", "",
+		func(t *cadastros.Turma) error {
+			return t.AtualizarDados(req.Nivel, req.CursoID, req.Turno, req.TemaTrabalho)
+		})
+	if err != nil {
+		apoio.RespondErroCadastro(c, err, "turma")
 		return
 	}
 
 	mensagem := "turma atualizada com sucesso"
-	if aggregates.TipoAgrupamentoDoNivel(turma.Nivel) == "grupo" {
+	if aggregates.TipoAgrupamentoDoNivel(atualizada.Nivel) == "grupo" {
 		mensagem = "grupo atualizado com sucesso"
 	}
 	c.JSON(http.StatusOK, gin.H{"message": mensagem})
@@ -671,32 +599,16 @@ func DeletarTurma(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	agg, err := repository.Load(turmaDTO.ID, "Turma")
-	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-
-	turma, ok := agg.(*aggregates.Turma)
-	if !ok {
-		utils.RespondWithInternalError(c, fmt.Errorf("erro ao converter agregado"))
-		return
-	}
-
-	if err := turma.Deletar(academiaID, req.Motivo); err != nil {
-		utils.RespondWithValidationError(c, err)
-		return
-	}
-
 	audit := db.AuditContext{
 		UserID:   academiaID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
-	if err := repository.SaveWithAudit(turma, audit); err != nil {
+	if _, err := cadastros.NovoTurmasRepo(apoio.GetDbClient(c)).Atualizar(c.Request.Context(), audit, turmaDTO.ID, "TurmaDeletada", req.Motivo,
+		func(t *cadastros.Turma) error { return t.Deletar() }); err != nil {
 		log.Printf("❌ [DeletarTurma] Erro ao salvar: %v", err)
-		utils.RespondWithInternalError(c, err)
+		apoio.RespondErroCadastro(c, err, "turma")
 		return
 	}
 

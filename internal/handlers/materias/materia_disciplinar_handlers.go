@@ -143,6 +143,7 @@ func CriarMateria(c *gin.Context) {
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 	if err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Criar(c.Request.Context(), audit, materia); err != nil {
 		apoio.RespondErroCadastro(c, err, "materia")
@@ -244,6 +245,7 @@ func AtivarMateria(c *gin.Context) {
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 	materia, err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Atualizar(
 		c.Request.Context(), audit, materiaID, "MateriaAtivada", "",
@@ -286,6 +288,7 @@ func DesativarMateria(c *gin.Context) {
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 	materia, err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Atualizar(
 		c.Request.Context(), audit, materiaID, "MateriaDesativada", "",
@@ -391,6 +394,7 @@ func AtualizarDadosMateria(c *gin.Context) {
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 	materia, err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Atualizar(
 		c.Request.Context(), audit, materiaID, "MateriaDadosAtualizados", "",
@@ -510,6 +514,7 @@ func DeletarMateria(c *gin.Context) {
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 	materia, err := cadastros.NovoMateriasRepo(apoio.GetDbClient(c)).Atualizar(
 		c.Request.Context(), audit, materiaID, "MateriaDeletada", "",

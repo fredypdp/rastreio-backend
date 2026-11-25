@@ -2,7 +2,7 @@
 modificado: 21-11-2026 09:15
 criado: 05-04-2026 13:01
 ---
-Versão atual: 4.0.1
+Versão atual: 4.0.2
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -113,6 +113,7 @@ A linha `Versão atual` no topo deste documento segue o **Versionamento Semânti
 
 | Versão | Tarefa | Resumo |
 | --- | --- | --- |
+| **4.0.2** | 134 e 135 | Correção, sem alterar o contrato. Turmas, sumários e a configuração de faltas passam a ser gravados direto na tabela, com a auditoria na mesma transação (`auditoria_crud`), em vez de passar pelo ledger; rotas, campos, permissões e respostas são os mesmos. Comportamentos que mudam: a leitura logo depois de gravar já devolve o dado novo; `DELETE /academia/curso/:id` agora apaga turmas inativas e vazias, matérias inativas e o curso numa única transação; a ação de um secretário "em nome da academia" passa a constar na auditoria de cursos, matérias, turmas, sumários e configuração de faltas. |
 | **4.0.1** | 133 | Correção, sem alterar o contrato. Cursos e matérias passam a ser gravados direto na tabela, com a auditoria na mesma transação (`auditoria_crud`), em vez de passar pelo ledger; rotas, campos, permissões e respostas são os mesmos. Efeitos visíveis: a leitura logo depois de gravar já devolve o dado novo (sem esperar projeção); `DELETE /academia/curso/:id` valida as turmas antes de gravar qualquer coisa e deleta o curso e as matérias dele numa só transação; `PUT /academia/materia/:id/dados` passa a recusar de fato um `curso_id` de outra academia, como a documentação já dizia. |
 | **4.0.0** | 130 e 131 | **Incompatível.** Três novos tipos de login (`secretario`, `professor`, `encarregado`). O cadastro de estudante do nível escolar passa a exigir o encarregado (bloco `encarregado`, ou os campos `encarregado_*`). `PUT /estudante/encarregado/telefone` removida. O telefone das credenciais de estudante do nível escolar é sempre o do encarregado (sem queda para o do estudante). Reenvio de credenciais pelo admin (`adm` ou `fpp`) só para estudante sem nenhuma academia. |
 | 3.1.0 | 129 | Acrescenta as configurações do sistema editáveis por administradores (seção 16.7). A versão não tinha sido atualizada na entrega da Tarefa 129 e foi corrigida na entrega seguinte. |
@@ -6193,7 +6194,7 @@ Quando uma funcionalidade de correção/edição de notas for especificada no fu
 | Uma avaliação por type/ano letivo/nível | Idempotência via aggregate e projeção |
 | Ativação de regra dependente | Uma regra dependente inativa só pode ser ativada se o `type` apontado em `aplica_se_reprovado_em_type` estiver ativo |
 | Reativação com `type` conflitante | Regra inativa não pode ser ativada enquanto houver regra ativa com o mesmo `type`, `nivel` e escopo acadêmico sobreposto |
-| Aprovação escolar move para turma do próximo ano; reprovação escolar mantém na turma | Automático na projeção de turmas para fundamental/médio |
+| Aprovação escolar move para turma do próximo ano; reprovação escolar mantém na turma | Automático para fundamental/médio: o evento de avaliação final continua no ledger e seu efeito sobre as turmas (tabela de registro) é aplicado e auditado em `auditoria_crud` na mesma transação |
 | Avaliação superior não altera turmas | Turmas do superior são geridas separadamente |
 
 

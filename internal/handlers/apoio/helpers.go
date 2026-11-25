@@ -33,6 +33,16 @@ func GetRepository(c *gin.Context) *db.AggregateRepository {
 	return r
 }
 
+// AtorDaRequisicao devolve quem realmente agiu quando a requisição é "em nome
+// de" outra conta (secretário como a academia, encarregado como o educando), ou
+// nil. A camada CRUD (internal/cadastros) grava esse ator na auditoria.
+func AtorDaRequisicao(c *gin.Context) *db.AtorAuditoria {
+	if id, tipo, ok := middleware.GetAtor(c); ok {
+		return &db.AtorAuditoria{ID: id.String(), Tipo: tipo}
+	}
+	return nil
+}
+
 // getDbClient retorna o *db.Client injetado pelo middleware de setup.
 //
 // H4-14: se o client não estiver no contexto (bug de configuração do router),

@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
-	"spuri/internal/domain/aggregates"
 	"spuri/internal/projections"
 	"spuri/internal/utils"
 )
@@ -213,26 +213,17 @@ func VincularEstudanteATurma(
 		return err
 	}
 
-	audit := db.AuditContext{UserID: atuadoPor.String(), UserType: "academia", IP: c.ClientIP()}
-	repository := GetRepository(c)
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		agg, err := repository.Load(turmaDTO.ID, "Turma")
-		if err != nil {
-			return err
+	audit := db.AuditContext{UserID: atuadoPor.String(), UserType: "academia", IP: c.ClientIP(), Ator: AtorDaRequisicao(c)}
+	// A regra "estudante já pertence a esta turma" é conferida dentro da
+	// transação do repositório (com bloqueio de linha); não há mais conflito de
+	// versão de agregado para repetir.
+	_, err = cadastros.NovoTurmasRepo(GetDbClient(c)).Atualizar(c.Request.Context(), audit, turmaDTO.ID, "EstudanteAdicionadoATurma", "",
+		func(t *cadastros.Turma) error { return t.AdicionarEstudante(codigoEstudante, anoLectivo) })
+	if err != nil {
+		if regra, ok := cadastros.EhErroRegra(err); ok {
+			return regra.Err
 		}
-		turma, ok := agg.(*aggregates.Turma)
-		if !ok {
-			return fmt.Errorf("erro ao converter agregado")
-		}
-		if err := turma.AdicionarEstudanteNoAnoLectivo(codigoEstudante, anoLectivo, atuadoPor); err != nil {
-			return err
-		}
-		if err := repository.SaveWithAudit(turma, audit); err != nil {
-			lastErr = err
-			continue
-		}
-		return nil
+		return err
 	}
-	return lastErr
+	return nil
 }

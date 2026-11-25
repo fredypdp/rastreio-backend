@@ -1,16 +1,18 @@
 package projections
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
 
@@ -53,235 +55,59 @@ func (p *TurmasProjection) UpdateCheckpoint(eventID int64) error {
 	return err
 }
 
+// ============================================================================
+// Efeito da avaliação final nas turmas
+// ============================================================================
+//
+// As turmas são CRUD (Tarefa 134, regra 17): projection_turmas é a tabela de
+// registro, não é mais reconstruída a partir do ledger. O que continua vindo do
+// ledger é um EFEITO: quando um estudante é aprovado na avaliação final (evento
+// que fica em event sourcing), ele sai das turmas do ano que terminou e entra
+// numa turma do ano seguinte. Este "projetor" só aplica esse efeito, e agora o
+// grava junto da auditoria (auditoria_crud), na mesma transação.
+//
+// Rebuild não repete o efeito: o registro já reflete o que foi aplicado, e
+// repeti-lo desfaria correções feitas depois pela academia.
+
 func (p *TurmasProjection) Handle(event db.Event) error {
-	handlers := map[string]func(db.Event) error{
-		"TurmaCriada":               p.handleTurmaCriada,
-		"TurmaAtivada":              p.handleTurmaAtivada,
-		"TurmaDesativada":           p.handleTurmaDesativada,
-		"EstudanteAdicionadoATurma": p.handleEstudanteAdicionado,
-		"EstudanteRemovidoDaTurma":  p.handleEstudanteRemovido,
-		"AvaliacaoFinalEscolar":     p.handleAvaliacaoFinalAnoAcademico,
-		"AvaliacaoFinalSuperior":    p.handleAvaliacaoFinalAnoAcademico,
-		"TurmaDadosAtualizados":     p.handleTurmaAtualizada,
-		"TurmaDeletada":             p.handleTurmaDeletada,
-	}
-	if handler, ok := handlers[event.EventType]; ok {
+	switch event.EventType {
+	case "AvaliacaoFinalEscolar", "AvaliacaoFinalSuperior":
 		log.Printf("[DEBUG] [turmas] Processando %s: %s", event.EventType, event.EventID)
-		return handler(event)
+		return p.handleAvaliacaoFinalAnoAcademico(event)
 	}
 	return nil
 }
 
+// Rebuild não faz nada: as turmas são CRUD e não vêm do ledger.
 func (p *TurmasProjection) Rebuild() error {
-	log.Printf("[DEBUG] [turmas] Rebuild iniciado")
-	if _, err := p.client.DB().Exec(`TRUNCATE TABLE projection_turmas CASCADE`); err != nil {
-		return fmt.Errorf("falha ao limpar: %w", err)
+	log.Printf("[DEBUG] [turmas] Rebuild ignorado: turmas são CRUD (Tarefa 134); nada a reconstruir")
+	return nil
+}
+
+// atorDoEvento devolve quem agiu, segundo o metadata do evento; sem isso, o
+// sistema.
+func atorDoEvento(event db.Event) db.AuditContext {
+	var md struct {
+		UserID   string `json:"user_id"`
+		UserType string `json:"user_type"`
+		IP       string `json:"ip"`
 	}
-	rows, err := p.client.DB().Query(`
-		SELECT id, event_id, aggregate_id, aggregate_type, event_type,
-			event_version, payload, metadata, occurred_at, recorded_at,
-			ledger_hash, previous_hash
-		FROM spuri_ledger
-		WHERE aggregate_type = 'Turma' OR event_type IN ('AvaliacaoFinalEscolar','AvaliacaoFinalSuperior')
-		ORDER BY id ASC
-	`)
-	if err != nil {
-		return err
+	_ = json.Unmarshal(event.Metadata, &md)
+	if md.UserID == "" {
+		return db.AuditContext{UserID: "sistema", UserType: "sistema"}
 	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		var event db.Event
-		var prevHash sql.NullString
-		if err := rows.Scan(
-			&event.ID, &event.EventID, &event.AggregateID, &event.AggregateType,
-			&event.EventType, &event.EventVersion, &event.Payload, &event.Metadata,
-			&event.OccurredAt, &event.RecordedAt, &event.LedgerHash, &prevHash,
-		); err != nil {
-			return err
+	return db.AuditContext{UserID: md.UserID, UserType: md.UserType, IP: md.IP}
+}
+
+// academiaUUIDDoAtor devolve o id da academia quando quem agiu é a própria
+// academia (a coluna academia_id da auditoria é UUID).
+func academiaUUIDDoAtor(a db.AuditContext) string {
+	if a.UserType == "academia" {
+		if _, err := uuid.Parse(a.UserID); err == nil {
+			return a.UserID
 		}
-		if prevHash.Valid {
-			event.PreviousHash = &prevHash.String
-		}
-		if err := p.Handle(event); err != nil {
-			return fmt.Errorf("erro no evento %d: %w", event.ID, err)
-		}
-		count++
 	}
-	log.Printf("[DEBUG] [turmas] Rebuild concluído: %d eventos", count)
-	return rows.Err()
-}
-
-// ============================================================================
-// Handlers de evento
-// ============================================================================
-
-func (p *TurmasProjection) handleTurmaCriada(event db.Event) error {
-	var payload struct {
-		CodigoTurma    string     `json:"CodigoTurma"`
-		CodigoAcademia string     `json:"CodigoAcademia"`
-		Nivel          string     `json:"Nivel"`
-		CursoID        *uuid.UUID `json:"CursoID"`
-		Turno          string     `json:"Turno"`
-		TemaTrabalho   *string    `json:"TemaTrabalho"`
-		CreatedAt      time.Time  `json:"CreatedAt"`
-	}
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("parse error TurmaCriada: %w", err)
-	}
-
-	estudantesJSON, _ := json.Marshal([]string{})
-	var cursoID interface{}
-	if payload.CursoID != nil {
-		cursoID = payload.CursoID.String()
-	}
-
-	var temaTrabalho interface{}
-	if payload.TemaTrabalho != nil && strings.TrimSpace(*payload.TemaTrabalho) != "" {
-		temaTrabalho = strings.TrimSpace(*payload.TemaTrabalho)
-	}
-
-	// FIX PROJ-TUR-02: usar created_at do payload para preservar timestamp real.
-	createdAt := payload.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = event.OccurredAt
-	}
-
-	_, err := p.client.DB().Exec(`
-		INSERT INTO projection_turmas (
-			id, codigo_turma, codigo_academia, nivel, curso_id, turno,
-			estudantes, historico_estudantes_ano_letivo, status, created_at, updated_at, version, last_event_id,
-			tema_trabalho
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, 'ativo', $8, CURRENT_TIMESTAMP, $9, $10, $11)
-		ON CONFLICT (id) DO UPDATE SET
-			codigo_turma    = EXCLUDED.codigo_turma,
-			codigo_academia = EXCLUDED.codigo_academia,
-			nivel           = EXCLUDED.nivel,
-			curso_id        = EXCLUDED.curso_id,
-			turno           = EXCLUDED.turno,
-			created_at      = EXCLUDED.created_at,
-			version         = EXCLUDED.version,
-			last_event_id   = EXCLUDED.last_event_id,
-			tema_trabalho   = EXCLUDED.tema_trabalho
-	`,
-		event.AggregateID, payload.CodigoTurma, payload.CodigoAcademia, payload.Nivel,
-		cursoID, payload.Turno, string(estudantesJSON),
-		createdAt.UTC(), event.EventVersion, event.EventID,
-		temaTrabalho,
-	)
-	return err
-}
-
-func (p *TurmasProjection) handleTurmaAtivada(event db.Event) error {
-	var payload struct {
-		AlteradoPor uuid.UUID `json:"AlteradoPor"`
-	}
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("parse error TurmaAtivada: %w", err)
-	}
-
-	_, err := p.client.DB().Exec(`
-		UPDATE projection_turmas
-		SET status              = 'ativo',
-		    status_alterado_por = $1,
-		    status_alterado_em  = $2,
-		    version             = $3,
-		    updated_at          = CURRENT_TIMESTAMP,
-		    last_event_id       = $4
-		WHERE id = $5
-	`, payload.AlteradoPor, event.OccurredAt.UTC(), event.EventVersion, event.EventID, event.AggregateID)
-	return err
-}
-
-func (p *TurmasProjection) handleTurmaDesativada(event db.Event) error {
-	var payload struct {
-		AlteradoPor uuid.UUID `json:"AlteradoPor"`
-	}
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("parse error TurmaDesativada: %w", err)
-	}
-
-	_, err := p.client.DB().Exec(`
-		UPDATE projection_turmas
-		SET status              = 'inativo',
-		    status_alterado_por = $1,
-		    status_alterado_em  = $2,
-		    version             = $3,
-		    updated_at          = CURRENT_TIMESTAMP,
-		    last_event_id       = $4
-		WHERE id = $5
-	`, payload.AlteradoPor, event.OccurredAt.UTC(), event.EventVersion, event.EventID, event.AggregateID)
-	return err
-}
-
-// handleEstudanteAdicionado — BUG #1 FIX: event type corrigido para "EstudanteAdicionadoATurma".
-func (p *TurmasProjection) handleEstudanteAdicionado(event db.Event) error {
-	var payload struct {
-		CodigoEstudante string `json:"CodigoEstudante"`
-		AnoLectivo      string `json:"AnoLectivo"`
-	}
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("parse error EstudanteAdicionadoATurma: %w", err)
-	}
-
-	_, err := p.client.DB().Exec(`
-		UPDATE projection_turmas
-		SET estudantes = (
-			SELECT jsonb_agg(DISTINCT val)
-			FROM (
-				SELECT jsonb_array_elements_text(estudantes::jsonb) AS val
-				UNION ALL SELECT $1::text
-			) sub
-		)::json,
-		historico_estudantes_ano_letivo = CASE
-			WHEN COALESCE(NULLIF($5, ''), '') = '' THEN historico_estudantes_ano_letivo
-			ELSE jsonb_set(
-				COALESCE(historico_estudantes_ano_letivo, '{}'::jsonb),
-				ARRAY[$5]::text[],
-				(
-					SELECT to_jsonb(COALESCE(array_agg(DISTINCT v), ARRAY[]::text[]))
-					FROM (
-						SELECT jsonb_array_elements_text(
-							COALESCE(historico_estudantes_ano_letivo -> $5, '[]'::jsonb)
-						) AS v
-						UNION ALL
-						SELECT $1::text AS v
-					) s
-				),
-				true
-			)
-		END,
-		version = $2, updated_at = CURRENT_TIMESTAMP, last_event_id = $3
-		WHERE id = $4
-	`, payload.CodigoEstudante, event.EventVersion, event.EventID, event.AggregateID, payload.AnoLectivo)
-	return err
-}
-
-func (p *TurmasProjection) handleEstudanteRemovido(event db.Event) error {
-	var payload struct {
-		CodigoEstudante string `json:"CodigoEstudante"`
-		AnoLectivo      string `json:"AnoLectivo"`
-	}
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("parse error EstudanteRemovidoDaTurma: %w", err)
-	}
-
-	_, err := p.client.DB().Exec(`
-		UPDATE projection_turmas
-		SET estudantes = COALESCE(
-			(
-				SELECT json_agg(val)
-				FROM (
-					SELECT jsonb_array_elements_text(estudantes::jsonb) AS val
-				) sub
-				WHERE val != $1
-			),
-			'[]'::json
-		),
-		version = $2, updated_at = CURRENT_TIMESTAMP, last_event_id = $3
-		WHERE id = $4
-	`, payload.CodigoEstudante, event.EventVersion, event.EventID, event.AggregateID)
-	return err
+	return ""
 }
 
 func (p *TurmasProjection) handleAvaliacaoFinalAnoAcademico(event db.Event) error {
@@ -297,232 +123,167 @@ func (p *TurmasProjection) handleAvaliacaoFinalAnoAcademico(event db.Event) erro
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return fmt.Errorf("parse error AvaliacaoFinalAnoAcademico em turmas: %w", err)
 	}
-	if payload.CodigoEstudante == "" {
+	if payload.CodigoEstudante == "" || event.EventType != "AvaliacaoFinalEscolar" ||
+		!payload.Aprovado || len(payload.CodigosTurmasRemovidas) == 0 {
 		return nil
 	}
 
-	if event.EventType != "AvaliacaoFinalEscolar" {
-		return nil
-	}
-	if !payload.Aprovado {
-		return nil
-	}
-	if len(payload.CodigosTurmasRemovidas) == 0 {
-		return nil
-	}
+	ator := atorDoEvento(event)
+	academia := academiaUUIDDoAtor(ator)
+	motivo := fmt.Sprintf("avaliação final (evento %s)", event.EventID)
+	return p.client.ComAuditoria(context.Background(), ator, func(tx *sqlx.Tx, aud *db.Auditor) error {
+		ctx := context.Background()
 
-	tx, err := p.client.DB().Begin()
-	if err != nil {
-		return fmt.Errorf("handleAvaliacaoFinalAnoAcademico: erro ao iniciar transação: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	if _, err := tx.Exec(`
-		UPDATE projection_turmas
-		SET estudantes = COALESCE(
-			(
-				SELECT json_agg(val)
-				FROM (
-					SELECT jsonb_array_elements_text(estudantes::jsonb) AS val
-				) sub
-				WHERE val != $1
-			),
-			'[]'::json
-		),
-		historico_estudantes_ano_letivo = CASE
-			WHEN COALESCE(NULLIF($2, ''), '') = '' THEN historico_estudantes_ano_letivo
-			ELSE jsonb_set(
-				COALESCE(historico_estudantes_ano_letivo, '{}'::jsonb),
-				ARRAY[$2]::text[],
+		// 1) sai das turmas do ano que terminou (e fica no histórico do ano letivo).
+		rows, err := tx.QueryxContext(ctx, `
+			UPDATE projection_turmas
+			SET estudantes = COALESCE(
 				(
-					SELECT to_jsonb(COALESCE(array_agg(DISTINCT v), ARRAY[]::text[]))
-					FROM (
-						SELECT jsonb_array_elements_text(
-							COALESCE(historico_estudantes_ano_letivo -> $2, '[]'::jsonb)
-						) AS v
-						UNION ALL
-						SELECT $1::text AS v
-					) s
+					SELECT jsonb_agg(val)
+					FROM (SELECT jsonb_array_elements_text(estudantes::jsonb) AS val) sub
+					WHERE val != $1
 				),
-				true
-			)
-		END,
-		updated_at = CURRENT_TIMESTAMP
-		WHERE codigo_turma = ANY($3) AND deleted_at IS NULL
-	`, payload.CodigoEstudante, payload.AnoLectivo, pq.Array(payload.CodigosTurmasRemovidas)); err != nil {
-		return err
-	}
-
-	if payload.ProximoAnoAcademico == nil || *payload.ProximoAnoAcademico == "" {
-		return tx.Commit()
-	}
-	if payload.MotivoProgressao != nil && *payload.MotivoProgressao == "academia_sem_oferta_do_proximo_ano_academico_fundamental" {
-		return tx.Commit()
-	}
-
-	res, err := tx.Exec(`
-		WITH origem_info AS (
-			SELECT t.codigo_turma, t.turno, t.curso_id
-			FROM projection_turmas t
-			WHERE t.codigo_turma = ANY($4)
-			  AND t.codigo_academia = $1
-			  AND t.deleted_at IS NULL
-			ORDER BY t.codigo_turma ASC
-			LIMIT 1
-		),
-		destinos_compativeis AS (
-			SELECT
-				t.id,
-				t.codigo_turma,
-				COALESCE(jsonb_array_length(COALESCE(t.estudantes::jsonb, '[]'::jsonb)), 0) AS qtd_estudantes
-			FROM projection_turmas t
-			JOIN origem_info o ON true
-			WHERE t.codigo_academia = $1
-			  AND t.nivel = $2
-			  AND t.turno IS NOT DISTINCT FROM o.turno
-			  AND t.curso_id IS NOT DISTINCT FROM o.curso_id
-			  AND t.deleted_at IS NULL
-		),
-		destinos_gerais AS (
-			SELECT
-				t.id,
-				t.codigo_turma,
-				COALESCE(jsonb_array_length(COALESCE(t.estudantes::jsonb, '[]'::jsonb)), 0) AS qtd_estudantes
-			FROM projection_turmas t
-			WHERE t.codigo_academia = $1
-			  AND t.nivel = $2
-			  AND t.deleted_at IS NULL
-		),
-		destinos_priorizados AS (
-			SELECT 1 AS prioridade, dc.id, dc.codigo_turma, dc.qtd_estudantes FROM destinos_compativeis dc
-			UNION ALL
-			SELECT 2 AS prioridade, dg.id, dg.codigo_turma, dg.qtd_estudantes
-			FROM destinos_gerais dg
-			WHERE NOT EXISTS (SELECT 1 FROM destinos_compativeis)
-		),
-		destinos_ranked AS (
-			SELECT
-				dp.id,
-				dp.prioridade,
-				dp.qtd_estudantes,
-				ROW_NUMBER() OVER (PARTITION BY dp.prioridade ORDER BY dp.codigo_turma ASC) - 1 AS idx,
-				COUNT(*) OVER (PARTITION BY dp.prioridade) AS total
-			FROM destinos_priorizados dp
-		),
-		destino AS (
-			SELECT dr.id
-			FROM destinos_ranked dr
-			CROSS JOIN origem_info o
-			WHERE dr.total > 0
-			  AND dr.idx = CASE
-				WHEN dr.prioridade = 1 THEN ABS(hashtext(COALESCE(o.codigo_turma, $3))) % dr.total
-				ELSE ABS(hashtext($3)) % dr.total
-			  END
-			ORDER BY dr.prioridade ASC, dr.qtd_estudantes ASC, dr.id ASC
-			LIMIT 1
-		)
-		UPDATE projection_turmas t
-		SET estudantes = CASE
-				WHEN EXISTS (
-					SELECT 1
-					FROM jsonb_array_elements_text(COALESCE(t.estudantes::jsonb, '[]'::jsonb)) AS v(val)
-					WHERE v.val = $3
-				) THEN t.estudantes
-				ELSE COALESCE(t.estudantes::jsonb, '[]'::jsonb) || to_jsonb($3::text)
+				'[]'::jsonb
+			),
+			historico_estudantes_ano_letivo = CASE
+				WHEN COALESCE(NULLIF($2, ''), '') = '' THEN historico_estudantes_ano_letivo
+				ELSE jsonb_set(
+					COALESCE(historico_estudantes_ano_letivo, '{}'::jsonb),
+					ARRAY[$2]::text[],
+					(
+						SELECT to_jsonb(COALESCE(array_agg(DISTINCT v), ARRAY[]::text[]))
+						FROM (
+							SELECT jsonb_array_elements_text(
+								COALESCE(historico_estudantes_ano_letivo -> $2, '[]'::jsonb)
+							) AS v
+							UNION ALL
+							SELECT $1::text AS v
+						) s
+					),
+					true
+				)
 			END,
-			updated_at = CURRENT_TIMESTAMP
-		FROM destino d
-		WHERE t.id = d.id
-	`, payload.CodigoAcademia, *payload.ProximoAnoAcademico, payload.CodigoEstudante, pq.Array(payload.CodigosTurmasRemovidas))
-	if err != nil {
-		return err
-	}
-	if rows, _ := res.RowsAffected(); rows == 0 {
-		return fmt.Errorf("nenhuma turma destino válida encontrada para estudante aprovado %s no nível %s", payload.CodigoEstudante, *payload.ProximoAnoAcademico)
-	}
-
-	return tx.Commit()
-}
-
-func (p *TurmasProjection) handleTurmaAtualizada(event db.Event) error {
-	var payload struct {
-		Nivel   *string    `json:"Nivel"`
-		CursoID *uuid.UUID `json:"CursoID"`
-		Turno   *string    `json:"Turno"`
-		// TemaTrabalho: nil = sem alteração; "" = remover o tema.
-		TemaTrabalho *string `json:"TemaTrabalho"`
-	}
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("parse error TurmaDadosAtualizados: %w", err)
-	}
-
-	// FIX PROJ-08: transação única para todas as atualizações parciais.
-	tx, err := p.client.DB().Begin()
-	if err != nil {
-		return fmt.Errorf("handleTurmaAtualizada: erro ao iniciar transação: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	if payload.Nivel != nil {
-		if _, err := tx.Exec(
-			`UPDATE projection_turmas SET nivel = $1 WHERE id = $2`,
-			*payload.Nivel, event.AggregateID,
-		); err != nil {
-			return fmt.Errorf("handleTurmaAtualizada: erro ao atualizar nivel: %w", err)
+			version = version + 1, updated_at = CURRENT_TIMESTAMP
+			WHERE codigo_turma = ANY($3) AND codigo_academia = $4 AND deleted_at IS NULL
+			RETURNING id`, payload.CodigoEstudante, payload.AnoLectivo,
+			pq.Array(payload.CodigosTurmasRemovidas), payload.CodigoAcademia)
+		if err != nil {
+			return err
 		}
-	}
-	if payload.CursoID != nil {
-		if _, err := tx.Exec(
-			`UPDATE projection_turmas SET curso_id = $1 WHERE id = $2`,
-			payload.CursoID.String(), event.AggregateID,
-		); err != nil {
-			return fmt.Errorf("handleTurmaAtualizada: erro ao atualizar curso_id: %w", err)
+		var removidas []uuid.UUID
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			removidas = append(removidas, id)
 		}
-	}
-	if payload.Turno != nil {
-		if _, err := tx.Exec(
-			`UPDATE projection_turmas SET turno = $1 WHERE id = $2`,
-			*payload.Turno, event.AggregateID,
-		); err != nil {
-			return fmt.Errorf("handleTurmaAtualizada: erro ao atualizar turno: %w", err)
+		if err := rows.Close(); err != nil {
+			return err
 		}
-	}
-
-	if payload.TemaTrabalho != nil {
-		if _, err := tx.Exec(
-			`UPDATE projection_turmas SET tema_trabalho = NULLIF(BTRIM($1), '') WHERE id = $2`,
-			*payload.TemaTrabalho, event.AggregateID,
-		); err != nil {
-			return fmt.Errorf("handleTurmaAtualizada: erro ao atualizar tema_trabalho: %w", err)
+		for _, id := range removidas {
+			if err := aud.Registrar(ctx, db.EntradaAuditoria{
+				EntidadeTipo: "Turma", EntidadeID: id.String(), AcademiaID: academia,
+				Acao:   "EstudanteRemovidoDaTurmaPorAvaliacaoFinal",
+				Depois: map[string]any{"codigo_estudante": payload.CodigoEstudante, "ano_letivo": payload.AnoLectivo, "codigo_academia": payload.CodigoAcademia},
+				Motivo: motivo,
+			}); err != nil {
+				return err
+			}
 		}
-	}
 
-	if _, err := tx.Exec(`
-		UPDATE projection_turmas
-		SET version = $1, updated_at = CURRENT_TIMESTAMP, last_event_id = $2
-		WHERE id = $3
-	`, event.EventVersion, event.EventID, event.AggregateID); err != nil {
-		return fmt.Errorf("handleTurmaAtualizada: erro ao atualizar version: %w", err)
-	}
+		if payload.ProximoAnoAcademico == nil || *payload.ProximoAnoAcademico == "" {
+			return nil
+		}
+		if payload.MotivoProgressao != nil && *payload.MotivoProgressao == "academia_sem_oferta_do_proximo_ano_academico_fundamental" {
+			return nil
+		}
 
-	return tx.Commit()
-}
-
-func (p *TurmasProjection) handleTurmaDeletada(event db.Event) error {
-	var payload struct {
-		DeletedAt time.Time `json:"DeletedAt"`
-	}
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("parse error TurmaDeletada: %w", err)
-	}
-
-	_, err := p.client.DB().Exec(`
-		UPDATE projection_turmas
-		SET status = 'deletado', deleted_at = $1,
-			updated_at = CURRENT_TIMESTAMP, version = $2, last_event_id = $3
-		WHERE id = $4
-	`, payload.DeletedAt.UTC(), event.EventVersion, event.EventID, event.AggregateID)
-	return err
+		// 2) entra numa turma do ano seguinte (a mais compatível, balanceando a lotação).
+		var destino uuid.UUID
+		err = tx.QueryRowxContext(ctx, `
+			WITH origem_info AS (
+				SELECT t.codigo_turma, t.turno, t.curso_id
+				FROM projection_turmas t
+				WHERE t.codigo_turma = ANY($4)
+				  AND t.codigo_academia = $1
+				  AND t.deleted_at IS NULL
+				ORDER BY t.codigo_turma ASC
+				LIMIT 1
+			),
+			destinos_compativeis AS (
+				SELECT t.id, t.codigo_turma,
+					COALESCE(jsonb_array_length(COALESCE(t.estudantes::jsonb, '[]'::jsonb)), 0) AS qtd_estudantes
+				FROM projection_turmas t
+				JOIN origem_info o ON true
+				WHERE t.codigo_academia = $1
+				  AND t.nivel = $2
+				  AND t.turno IS NOT DISTINCT FROM o.turno
+				  AND t.curso_id IS NOT DISTINCT FROM o.curso_id
+				  AND t.deleted_at IS NULL
+			),
+			destinos_gerais AS (
+				SELECT t.id, t.codigo_turma,
+					COALESCE(jsonb_array_length(COALESCE(t.estudantes::jsonb, '[]'::jsonb)), 0) AS qtd_estudantes
+				FROM projection_turmas t
+				WHERE t.codigo_academia = $1
+				  AND t.nivel = $2
+				  AND t.deleted_at IS NULL
+			),
+			destinos_priorizados AS (
+				SELECT 1 AS prioridade, dc.id, dc.codigo_turma, dc.qtd_estudantes FROM destinos_compativeis dc
+				UNION ALL
+				SELECT 2 AS prioridade, dg.id, dg.codigo_turma, dg.qtd_estudantes
+				FROM destinos_gerais dg
+				WHERE NOT EXISTS (SELECT 1 FROM destinos_compativeis)
+			),
+			destinos_ranked AS (
+				SELECT dp.id, dp.prioridade, dp.qtd_estudantes,
+					ROW_NUMBER() OVER (PARTITION BY dp.prioridade ORDER BY dp.codigo_turma ASC) - 1 AS idx,
+					COUNT(*) OVER (PARTITION BY dp.prioridade) AS total
+				FROM destinos_priorizados dp
+			),
+			destino AS (
+				SELECT dr.id
+				FROM destinos_ranked dr
+				CROSS JOIN origem_info o
+				WHERE dr.total > 0
+				  AND dr.idx = CASE
+					WHEN dr.prioridade = 1 THEN ABS(hashtext(COALESCE(o.codigo_turma, $3))) % dr.total
+					ELSE ABS(hashtext($3)) % dr.total
+				  END
+				ORDER BY dr.prioridade ASC, dr.qtd_estudantes ASC, dr.id ASC
+				LIMIT 1
+			)
+			UPDATE projection_turmas t
+			SET estudantes = CASE
+					WHEN EXISTS (
+						SELECT 1
+						FROM jsonb_array_elements_text(COALESCE(t.estudantes::jsonb, '[]'::jsonb)) AS v(val)
+						WHERE v.val = $3
+					) THEN t.estudantes
+					ELSE COALESCE(t.estudantes::jsonb, '[]'::jsonb) || to_jsonb($3::text)
+				END,
+				version = t.version + 1, updated_at = CURRENT_TIMESTAMP
+			FROM destino d
+			WHERE t.id = d.id
+			RETURNING t.id`,
+			payload.CodigoAcademia, *payload.ProximoAnoAcademico, payload.CodigoEstudante,
+			pq.Array(payload.CodigosTurmasRemovidas)).Scan(&destino)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("nenhuma turma destino válida encontrada para estudante aprovado %s no nível %s", payload.CodigoEstudante, *payload.ProximoAnoAcademico)
+		}
+		if err != nil {
+			return err
+		}
+		return aud.Registrar(ctx, db.EntradaAuditoria{
+			EntidadeTipo: "Turma", EntidadeID: destino.String(), AcademiaID: academia,
+			Acao:   "EstudanteAdicionadoATurmaPorAvaliacaoFinal",
+			Depois: map[string]any{"codigo_estudante": payload.CodigoEstudante, "proximo_ano_academico": *payload.ProximoAnoAcademico, "codigo_academia": payload.CodigoAcademia},
+			Motivo: motivo,
+		})
+	})
 }
 
 // ============================================================================

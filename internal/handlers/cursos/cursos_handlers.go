@@ -233,6 +233,7 @@ func CriarCurso(c *gin.Context) {
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 	if err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).Criar(c.Request.Context(), audit, curso); err != nil {
 		apoio.RespondErroCadastro(c, err, "curso")
@@ -374,6 +375,7 @@ func AtualizarDadosCurso(c *gin.Context) {
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 	curso, err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).Atualizar(
 		c.Request.Context(), audit, cursoID, "CursoDadosAtualizados", "",
@@ -491,6 +493,7 @@ func AtivarCurso(c *gin.Context) {
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 	curso, err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).Atualizar(
 		c.Request.Context(), audit, cursoID, "CursoAtivado", "",
@@ -533,6 +536,7 @@ func DesativarCurso(c *gin.Context) {
 		UserID:   userID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 	curso, err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).Atualizar(
 		c.Request.Context(), audit, cursoID, "CursoDesativado", "",
@@ -630,22 +634,23 @@ func DeletarCurso(c *gin.Context) {
 		}
 	}
 
-	repository := apoio.GetRepository(c) // só para as turmas, que ainda são event sourcing (Parte 2B, tarefa própria)
 	audit := db.AuditContext{
 		UserID:   academiaID.String(),
 		UserType: "academia",
 		IP:       c.ClientIP(),
+		Ator:     apoio.AtorDaRequisicao(c),
 	}
 
 	// ── 5. Validar as turmas vinculadas ANTES de gravar qualquer coisa ────
+	// (mensagens claras; a mesma regra é conferida de novo dentro da
+	// transação de DeletarComMaterias).
 	turmasProj := apoio.GetTurmasProjection(c)
 	turmasDoCurso, err := turmasProj.ListByCurso(cursoID)
 	if err != nil {
 		utils.RespondWithInternalError(c, err)
 		return
 	}
-	var turmasParaDeletar []int
-	for i, t := range turmasDoCurso {
+	for _, t := range turmasDoCurso {
 		if t.Status == "deletado" {
 			continue // já deletada — skip seguro
 		}
@@ -662,35 +667,12 @@ func DeletarCurso(c *gin.Context) {
 			))
 			return
 		}
-		turmasParaDeletar = append(turmasParaDeletar, i)
 	}
 
-	// ── 6. Deletar as turmas (event sourcing). Repetível: turma já deletada
-	// é ignorada, então uma nova tentativa depois de falha parcial continua
-	// de onde parou.
-	var turmasDeletedCodigos []string
-	for _, i := range turmasParaDeletar {
-		t := turmasDoCurso[i]
-		turmaAgg, err := repository.Load(t.ID, "Turma")
-		if err != nil {
-			utils.RespondWithInternalError(c, err)
-			return
-		}
-		turma := turmaAgg.(*aggregates.Turma)
-		if err := turma.Deletar(academiaID, fmt.Sprintf("cascata: curso %s deletado", cursoDTO.Nome)); err != nil {
-			utils.RespondWithInternalError(c, fmt.Errorf("erro ao deletar turma '%s': %w", t.CodigoTurma, err))
-			return
-		}
-		if err := repository.SaveWithAudit(turma, audit); err != nil {
-			utils.RespondWithInternalError(c, err)
-			return
-		}
-		turmasDeletedCodigos = append(turmasDeletedCodigos, t.CodigoTurma)
-	}
-
-	// ── 7. Deletar as matérias inativas (cascata) e o curso numa só transação:
-	// ou saem todas e o curso, ou nenhuma. Cada uma gera a sua auditoria.
-	_, materiasDeletedNomes, err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).
+	// ── 6. Deletar as turmas, as matérias inativas (cascata) e o curso numa só
+	// transação: ou saem todas e o curso, ou nenhuma. Cada uma gera a sua
+	// auditoria.
+	_, materiasDeletedNomes, turmasDeletedCodigos, err := cadastros.NovoCursosRepo(apoio.GetDbClient(c)).
 		DeletarComMaterias(c.Request.Context(), audit, cursoID, req.Motivo)
 	if err != nil {
 		apoio.RespondErroCadastro(c, err, "curso")

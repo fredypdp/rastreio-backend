@@ -214,20 +214,27 @@ func TestContas03AuditoriaGravaOSecretarioComoAtorEAAcademiaComoDonaDaAcao(t *te
 	if code != http.StatusOK {
 		t.Fatalf("secretário com turmas.gerir deveria desativar a turma: %d %v", code, resp)
 	}
-	var atorID, atorTipo, userID, userType string
-	err := fx.client.DB().QueryRow(`
-		SELECT COALESCE(metadata->>'ator_id',''), COALESCE(metadata->>'ator_tipo',''),
-		       COALESCE(metadata->>'user_id',''), COALESCE(metadata->>'user_type','')
-		  FROM spuri_ledger WHERE aggregate_id = $1 AND event_type = 'TurmaDesativada'
-		 ORDER BY id DESC LIMIT 1`, fx.turmaAtiva.ID).Scan(&atorID, &atorTipo, &userID, &userType)
+	// Turmas são CRUD (Tarefa 134): a auditoria está em auditoria_crud, com o
+	// secretário como ator e a academia como dona da ação.
+	linhas, err := fx.client.ListarAuditoria(context.Background(), cadastros.EntidadeTurma, fx.turmaAtiva.ID.String(), 10, 0)
 	if err != nil {
-		t.Fatalf("evento TurmaDesativada não encontrado: %v", err)
+		t.Fatal(err)
 	}
-	if atorID != secID || atorTipo != "secretario" {
-		t.Errorf("o ator deveria ser o secretário %s, está %q/%q", secID, atorID, atorTipo)
+	var achada *db.LinhaAuditoria
+	for i := range linhas {
+		if linhas[i].Acao == "TurmaDesativada" {
+			achada = &linhas[i]
+			break
+		}
 	}
-	if userID != fx.academia.ID.String() || userType != "academia" {
-		t.Errorf("a ação é em nome da academia %s, está %q/%q", fx.academia.ID, userID, userType)
+	if achada == nil {
+		t.Fatalf("auditoria TurmaDesativada não encontrada: %+v", linhas)
+	}
+	if achada.EmNomeDeID != secID || achada.EmNomeDeTipo != "secretario" {
+		t.Errorf("o ator deveria ser o secretário %s, está %q/%q", secID, achada.EmNomeDeID, achada.EmNomeDeTipo)
+	}
+	if achada.AtorID != fx.academia.ID.String() || achada.AtorTipo != "academia" {
+		t.Errorf("a ação é em nome da academia %s, está %q/%q", fx.academia.ID, achada.AtorID, achada.AtorTipo)
 	}
 }
 

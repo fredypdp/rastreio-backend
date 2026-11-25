@@ -174,38 +174,43 @@ func logStorageProviderStartup(provider storage.StorageProvider) {
 	log.Printf("[INFO] armazenamento de arquivos: modo local (provider=%q), diretório=%q, ambiente=%q", name, localRoot, env)
 }
 
+// registrarProjecoes registra todas as projeções reconstruíveis. É uma função à
+// parte para que os testes de reconstrução usem exatamente a mesma lista da
+// produção.
+func registrarProjecoes(pm *projections.Manager, client *db.Client) {
+	// ── Tier 1 — sem dependências externas ───────────────────────────────
+	pm.RegisterProjection("admins", projections.NewAdminProjection(client))
+	pm.RegisterProjection("contas", projections.NewContasProjection(client))
+	pm.RegisterProjection("academias", projections.NewAcademiaProjection(client))
+	pm.RegisterProjection("servicos_extras", projections.NewServicoExtraProjection(client))
+	pm.RegisterProjection("categorias_servico", projections.NewCategoriaServicoProjection(client))
+	pm.RegisterProjection("documentos_extra", projections.NewDocumentoExtraProjection(client))
+	pm.RegisterProjection("remetentes_comunicacao", projections.NewRemetenteComunicacaoProjection(client))
+	pm.RegisterProjection("mensagens_comunicacao", projections.NewMensagemComunicacaoProjection(client))
+	pm.RegisterProjection("solicitacoes_servico_extra", projections.NewSolicitacaoServicoExtraProjection(client))
+	pm.RegisterProjection("categorias_nota", projections.NewCategoriasNotaProjection(client))
+
+	// ── Tier 2 — dependem de academias/cursos ────────────────────────────
+	pm.RegisterProjection("estudantes", projections.NewEstudanteProjection(client))
+	pm.RegisterProjection("estudante_vinculos", projections.NewEstudanteVinculosProjection(client))
+	pm.RegisterProjection("turmas", projections.NewTurmasProjection(client))
+
+	// ── Tier 3 — dependem de estudantes e materias ───────────────────────
+	pm.RegisterProjection("notas", projections.NewNotasProjection(client))
+	pm.RegisterProjection("faltas", projections.NewFaltasProjection(client))
+	pm.RegisterProjection("configuracao_sistema", projections.NewConfiguracaoSistemaProjection(client))
+
+	// ── Tier 4 — avaliação final ──────────────────────────────────────────
+	pm.RegisterProjection("avaliacao_final", projections.NewAvaliacaoFinalProjection(client))
+	pm.RegisterProjection("solicitacoes_edicao_dados_estudante", projections.NewSolicitacaoEdicaoDadoEstudanteProjection(client))
+	pm.RegisterProjection("solicitacoes_alteracao_nif_academia", projections.NewSolicitacaoAlteracaoNIFAcademiaProjection(client))
+	pm.RegisterProjection("financeiro", projections.NewFinanceiroProjection(client))
+}
+
 func initProjections() error {
 	projManager = projections.NewManager(dbClient)
 
-	// ── Tier 1 — sem dependências externas ───────────────────────────────
-	projManager.RegisterProjection("admins", projections.NewAdminProjection(dbClient))
-	projManager.RegisterProjection("contas", projections.NewContasProjection(dbClient))
-	projManager.RegisterProjection("academias", projections.NewAcademiaProjection(dbClient))
-	projManager.RegisterProjection("servicos_extras", projections.NewServicoExtraProjection(dbClient))
-	projManager.RegisterProjection("categorias_servico", projections.NewCategoriaServicoProjection(dbClient))
-	projManager.RegisterProjection("documentos_extra", projections.NewDocumentoExtraProjection(dbClient))
-	projManager.RegisterProjection("remetentes_comunicacao", projections.NewRemetenteComunicacaoProjection(dbClient))
-	projManager.RegisterProjection("mensagens_comunicacao", projections.NewMensagemComunicacaoProjection(dbClient))
-	projManager.RegisterProjection("solicitacoes_servico_extra", projections.NewSolicitacaoServicoExtraProjection(dbClient))
-	projManager.RegisterProjection("sumarios", projections.NewSumariosProjection(dbClient))
-	projManager.RegisterProjection("categorias_nota", projections.NewCategoriasNotaProjection(dbClient))
-
-	// ── Tier 2 — dependem de academias/cursos ────────────────────────────
-	projManager.RegisterProjection("estudantes", projections.NewEstudanteProjection(dbClient))
-	projManager.RegisterProjection("estudante_vinculos", projections.NewEstudanteVinculosProjection(dbClient))
-	projManager.RegisterProjection("turmas", projections.NewTurmasProjection(dbClient))
-
-	// ── Tier 3 — dependem de estudantes e materias ───────────────────────
-	projManager.RegisterProjection("notas", projections.NewNotasProjection(dbClient))
-	projManager.RegisterProjection("faltas", projections.NewFaltasProjection(dbClient))
-	projManager.RegisterProjection("faltas_configuracao", projections.NewFaltasConfiguracaoProjection(dbClient))
-	projManager.RegisterProjection("configuracao_sistema", projections.NewConfiguracaoSistemaProjection(dbClient))
-
-	// ── Tier 4 — avaliação final ──────────────────────────────────────────
-	projManager.RegisterProjection("avaliacao_final", projections.NewAvaliacaoFinalProjection(dbClient))
-	projManager.RegisterProjection("solicitacoes_edicao_dados_estudante", projections.NewSolicitacaoEdicaoDadoEstudanteProjection(dbClient))
-	projManager.RegisterProjection("solicitacoes_alteracao_nif_academia", projections.NewSolicitacaoAlteracaoNIFAcademiaProjection(dbClient))
-	projManager.RegisterProjection("financeiro", projections.NewFinanceiroProjection(dbClient))
+	registrarProjecoes(projManager, dbClient)
 
 	db.SetLedgerWriteHook(projManager.Wake)
 

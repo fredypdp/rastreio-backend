@@ -47,4 +47,4 @@ EXPOSE 8080
 CMD ["./spuri"]
 
 LABEL maintainer="Spuri"
-LABEL version="4.0.1"
+LABEL version="4.0.2"

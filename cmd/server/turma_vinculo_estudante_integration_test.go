@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/handlers/estudantes"
@@ -31,10 +33,10 @@ type turmaVinculoFixture struct {
 	router        *gin.Engine
 	academia      *aggregates.Academia
 	outraAcademia *aggregates.Academia
-	turmaAtiva    *aggregates.Turma
-	turmaInativa  *aggregates.Turma
-	turmaOutra    *aggregates.Turma
-	turmaAtiva2   *aggregates.Turma
+	turmaAtiva    *cadastros.Turma
+	turmaInativa  *cadastros.Turma
+	turmaOutra    *cadastros.Turma
+	turmaAtiva2   *cadastros.Turma
 	token         string
 }
 
@@ -83,18 +85,21 @@ func setupTurmaVinculoIntegration(t *testing.T) *turmaVinculoFixture {
 	if err := projections.NewAcademiaProjection(client).Rebuild(); err != nil {
 		t.Fatalf("rebuild academias: %v", err)
 	}
-	makeTurma := func(cod string, acad *aggregates.Academia, inactive bool) *aggregates.Turma {
-		tr := aggregates.NewTurma()
-		if err := tr.Criar(cod, acad.CodigoAcademia, "1_ano_fundamental", nil, "manha", nil, acad.ID); err != nil {
+	makeTurma := func(cod string, acad *aggregates.Academia, inactive bool) *cadastros.Turma {
+		tr, err := cadastros.NovaTurma(cod, acad.CodigoAcademia, "1_ano_fundamental", nil, "manha", nil)
+		if err != nil {
+			t.Fatalf("montar turma: %v", err)
+		}
+		audit := db.AuditContext{UserID: acad.ID.String(), UserType: "academia", IP: "127.0.0.1"}
+		repoTurmas := cadastros.NovoTurmasRepo(client)
+		if err := repoTurmas.Criar(context.Background(), audit, tr); err != nil {
 			t.Fatalf("criar turma: %v", err)
 		}
 		if inactive {
-			if err := tr.Desativar(acad.ID); err != nil {
+			if _, err := repoTurmas.Atualizar(context.Background(), audit, tr.ID, "TurmaDesativada", "",
+				func(x *cadastros.Turma) error { return x.Desativar(acad.ID) }); err != nil {
 				t.Fatalf("desativar turma: %v", err)
 			}
-		}
-		if err := repository.SaveWithAudit(tr, db.AuditContext{UserID: acad.ID.String(), UserType: "academia", IP: "127.0.0.1"}); err != nil {
-			t.Fatalf("salvar turma: %v", err)
 		}
 		return tr
 	}
@@ -102,9 +107,6 @@ func setupTurmaVinculoIntegration(t *testing.T) *turmaVinculoFixture {
 	inativa := makeTurma("1B", academia, true)
 	outraTurma := makeTurma("1C", outra, false)
 	ativa2 := makeTurma("1D", academia, false)
-	if err := projections.NewTurmasProjection(client).Rebuild(); err != nil {
-		t.Fatalf("rebuild turmas: %v", err)
-	}
 	token, err := middleware.GenerateToken(academia.ID, "academia")
 	if err != nil {
 		t.Fatalf("token: %v", err)
@@ -377,15 +379,12 @@ func TestTurmaVinculo09FalhaPosCriacaoGeraTurmaAvisoSemAbortarCadastro(t *testin
 	if err := projections.NewAcademiaProjection(fx.client).Rebuild(); err != nil {
 		t.Fatalf("rebuild academias: %v", err)
 	}
-	turma := aggregates.NewTurma()
-	if err := turma.Criar("9A", academiaSemAnoLetivo.CodigoAcademia, "1_ano_fundamental", nil, "manha", nil, academiaSemAnoLetivo.ID); err != nil {
+	turma, err := cadastros.NovaTurma("9A", academiaSemAnoLetivo.CodigoAcademia, "1_ano_fundamental", nil, "manha", nil)
+	if err != nil {
+		t.Fatalf("montar turma sem ano letivo: %v", err)
+	}
+	if err := cadastros.NovoTurmasRepo(fx.client).Criar(context.Background(), db.AuditContext{UserID: academiaSemAnoLetivo.ID.String(), UserType: "academia", IP: "127.0.0.1"}, turma); err != nil {
 		t.Fatalf("criar turma sem ano letivo: %v", err)
-	}
-	if err := fx.repository.SaveWithAudit(turma, db.AuditContext{UserID: academiaSemAnoLetivo.ID.String(), UserType: "academia", IP: "127.0.0.1"}); err != nil {
-		t.Fatalf("salvar turma sem ano letivo: %v", err)
-	}
-	if err := projections.NewTurmasProjection(fx.client).Rebuild(); err != nil {
-		t.Fatalf("rebuild turmas: %v", err)
 	}
 	tokenSemAnoLetivo, err := middleware.GenerateToken(academiaSemAnoLetivo.ID, "academia")
 	if err != nil {
@@ -471,9 +470,6 @@ func TestTurmaVinculo11AdicionarEstudanteATurmaRotaManualPreservaStatusERegraDup
 	}
 	if rr := call(fx.turmaAtiva.CodigoTurma); rr.Code != 200 {
 		t.Fatalf("ativo: %d %s", rr.Code, rr.Body.String())
-	}
-	if err := projections.NewTurmasProjection(fx.client).Rebuild(); err != nil {
-		t.Fatalf("rebuild turmas: %v", err)
 	}
 	if rr := call("TURMA_INEXISTENTE"); rr.Code != 404 {
 		t.Fatalf("inexistente: %d %s", rr.Code, rr.Body.String())

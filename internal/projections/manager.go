@@ -435,6 +435,14 @@ func (m *Manager) RebuildAllProjections() error {
 func (m *Manager) executeRebuild(name string, projection Projection, verifyIntegrity bool) error {
 	log.Printf("[DEBUG] Reconstruindo projeção: %s", name)
 
+	// Guarda da regra 17: nenhuma tabela CRUD pode ser atingida pelo TRUNCATE ...
+	// CASCADE de uma reconstrução. Confere o banco real a cada reconstrução, não
+	// só nos testes, para que uma migration futura que esqueça a regra não
+	// apague dados em silêncio.
+	if err := m.client.VerificarTabelasCRUDProtegidas(m.ctx); err != nil {
+		return fmt.Errorf("projeção %s: %w", name, err)
+	}
+
 	if err := m.markRebuildStart(name); err != nil {
 		log.Printf("[WARN] %s: erro ao marcar início de rebuild: %v", name, err)
 	}

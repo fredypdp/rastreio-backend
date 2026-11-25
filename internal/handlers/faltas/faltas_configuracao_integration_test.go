@@ -2,15 +2,18 @@ package faltas
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/handlers/apoio"
@@ -32,22 +35,6 @@ func ctxConfigFaltas(client *db.Client, academiaID uuid.UUID, metodo string, bod
 	ctx.Set("user_id", academiaID)
 	ctx.Set("user_type", "academia")
 	return ctx, rec
-}
-
-// levarLedgerDaConfiguracaoParaProjecao aplica na projeção os eventos já gravados
-// no ledger (o Projection Manager assíncrono não sobe em testes de handler).
-func levarLedgerDaConfiguracaoParaProjecao(t *testing.T, client *db.Client, codigoAcademia string) {
-	t.Helper()
-	eventos, err := db.NewAggregateRepository(client).GetEventHistory(aggregates.ConfiguracaoFaltasAggregateID(codigoAcademia))
-	if err != nil {
-		t.Fatal(err)
-	}
-	proj := projections.NewFaltasConfiguracaoProjection(client)
-	for _, ev := range eventos {
-		if err := proj.Handle(ev); err != nil {
-			t.Fatalf("projeção falhou: %v", err)
-		}
-	}
 }
 
 type respostaConfigFaltas struct {
@@ -101,7 +88,6 @@ func TestIntegrationConfiguracaoFaltasPutEGet(t *testing.T) {
 	if r.Data.Limite == nil || *r.Data.Limite != 5 || !r.Data.Reprovacao {
 		t.Fatalf("resposta do PUT deveria trazer limite 5 + reprovação: %+v", r.Data)
 	}
-	levarLedgerDaConfiguracaoParaProjecao(t, client, codigo)
 	ctx, rec = ctxConfigFaltas(client, academiaID, http.MethodGet, nil)
 	GetConfiguracaoFaltas(ctx)
 	r = respostaConfigFaltas{}
@@ -116,7 +102,6 @@ func TestIntegrationConfiguracaoFaltasPutEGet(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("segundo PUT: %d %s", rec.Code, rec.Body.String())
 	}
-	levarLedgerDaConfiguracaoParaProjecao(t, client, codigo)
 	ctx, rec = ctxConfigFaltas(client, academiaID, http.MethodGet, nil)
 	GetConfiguracaoFaltas(ctx)
 	r = respostaConfigFaltas{}
@@ -124,19 +109,18 @@ func TestIntegrationConfiguracaoFaltasPutEGet(t *testing.T) {
 	if r.Data.Limite == nil || *r.Data.Limite != 8 || r.Data.Reprovacao {
 		t.Fatalf("GET depois do segundo PUT: %+v", r.Data)
 	}
-	repo := db.NewAggregateRepository(client)
-	aggID := aggregates.ConfiguracaoFaltasAggregateID(codigo)
-	eventos, err := repo.GetEventHistory(aggID)
-	if err != nil || len(eventos) != 2 {
-		t.Fatalf("os dois PUTs válidos devem virar 2 eventos no MESMO agregado: eventos=%d err=%v", len(eventos), err)
+	// Os dois PUTs válidos viram duas linhas de auditoria da MESMA configuração;
+	// a segunda guarda o estado anterior (limite 5, reprovação ligada).
+	linhas, err := client.ListarAuditoria(context.Background(), cadastros.EntidadeConfiguracaoFaltas, codigo, 10, 0)
+	if err != nil || len(linhas) != 2 {
+		t.Fatalf("os dois PUTs válidos devem virar 2 linhas de auditoria: %d %v", len(linhas), err)
 	}
-	agg, err := repo.Load(aggID, "ConfiguracaoFaltas")
-	if err != nil {
-		t.Fatal(err)
+	if linhas[1].Acao != "ConfiguracaoFaltasDefinida" || !strings.Contains(string(linhas[0].Antes), `"limite_faltas_por_periodo": 5`) && !strings.Contains(string(linhas[0].Antes), `"limite_faltas_por_periodo":5`) {
+		t.Fatalf("a segunda auditoria deveria guardar o estado anterior: %s", string(linhas[0].Antes))
 	}
-	cfg, ok := agg.(*aggregates.ConfiguracaoFaltas)
-	if !ok || cfg.LimiteFaltasPorPeriodo == nil || *cfg.LimiteFaltasPorPeriodo != 8 || cfg.ReprovacaoPorFaltas {
-		t.Fatalf("estado reconstruído do ledger inesperado: %+v", agg)
+	var versao int
+	if err := client.DB().Get(&versao, `SELECT version FROM projection_faltas_configuracao WHERE codigo_academia=$1`, codigo); err != nil || versao != 2 {
+		t.Fatalf("versão do registro = %d %v (esperado 2)", versao, err)
 	}
 
 	// Remover o limite (null) desliga tudo.
@@ -160,7 +144,6 @@ func TestIntegrationConfiguracaoFaltasIsoladaPorAcademia(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT academia A: %d %s", rec.Code, rec.Body.String())
 	}
-	levarLedgerDaConfiguracaoParaProjecao(t, client, codA)
 
 	ctx, rec = ctxConfigFaltas(client, idB, http.MethodGet, nil)
 	GetConfiguracaoFaltas(ctx)

@@ -1,12 +1,11 @@
 package faltas
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"spuri/internal/cadastros"
 	"spuri/internal/db"
-	"spuri/internal/domain/aggregates"
 	"spuri/internal/handlers/apoio"
 	"spuri/internal/middleware"
 	"spuri/internal/projections"
@@ -36,8 +35,8 @@ func GetConfiguracaoFaltas(c *gin.Context) {
 
 // DefinirConfiguracaoFaltas substitui a configuração de faltas da academia.
 // limite_faltas_por_periodo omitido ou null = sem limite (e a reprovação por
-// faltas não pode ficar ligada). A resposta devolve os valores salvos, porque a
-// projeção é atualizada de forma assíncrona.
+// faltas não pode ficar ligada). A configuração é CRUD (Tarefa 135): grava e
+// audita na mesma transação, e a leitura seguinte já vê o valor novo.
 // Rota: PUT /academia/faltas/configuracao
 func DefinirConfiguracaoFaltas(c *gin.Context) {
 	academiaID, _ := middleware.GetUserID(c)
@@ -57,39 +56,15 @@ func DefinirConfiguracaoFaltas(c *gin.Context) {
 		return
 	}
 
-	repository := apoio.GetRepository(c)
-	aggID := aggregates.ConfiguracaoFaltasAggregateID(academiaDTO.CodigoAcademia)
-	var cfg *aggregates.ConfiguracaoFaltas
-	existe, err := repository.Exists(aggID)
+	cfg, err := cadastros.NovaConfiguracaoFaltas(academiaDTO.CodigoAcademia, req.LimiteFaltasPorPeriodo, req.ReprovacaoPorFaltas, academiaID)
 	if err != nil {
-		utils.RespondWithInternalError(c, err)
-		return
-	}
-	if existe {
-		loaded, err := repository.Load(aggID, "ConfiguracaoFaltas")
-		if err != nil {
-			utils.RespondWithInternalError(c, err)
-			return
-		}
-		var ok bool
-		cfg, ok = loaded.(*aggregates.ConfiguracaoFaltas)
-		if !ok {
-			utils.RespondWithInternalError(c, fmt.Errorf("tipo inesperado ao carregar ConfiguracaoFaltas"))
-			return
-		}
-	} else {
-		cfg = aggregates.NewConfiguracaoFaltas()
-		cfg.SetID(aggID)
-	}
-
-	if err := cfg.Definir(academiaDTO.CodigoAcademia, req.LimiteFaltasPorPeriodo, req.ReprovacaoPorFaltas, academiaID); err != nil {
 		utils.RespondWithValidationError(c, err)
 		return
 	}
 
-	audit := db.AuditContext{UserID: academiaID.String(), UserType: "academia", IP: c.ClientIP()}
-	if err := repository.SaveWithAudit(cfg, audit); err != nil {
-		utils.RespondWithInternalError(c, err)
+	audit := db.AuditContext{UserID: academiaID.String(), UserType: "academia", IP: c.ClientIP(), Ator: apoio.AtorDaRequisicao(c)}
+	if err := cadastros.NovoFaltasConfiguracaoRepo(apoio.GetDbClient(c)).Definir(c.Request.Context(), audit, cfg); err != nil {
+		apoio.RespondErroCadastro(c, err, "configuração de faltas")
 		return
 	}
 
