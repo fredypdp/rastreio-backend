@@ -20,7 +20,7 @@ import (
 // respostas para o vocabulário de estados da plataforma e autenticação/leitura
 // dos webhooks.
 //
-// Para acrescentar um provedor novo (ex.: Intelize, PayPay):
+// Para acrescentar um provedor novo (ex.: Intelize):
 //  1. crie provedor_<nome>.go com um tipo que implemente Provedor;
 //  2. acrescente a sua fábrica em fabricasProvedores abaixo;
 //  3. nada mais no núcleo muda — nem tabelas, nem eventos, nem rotas de
@@ -31,6 +31,7 @@ import (
 // ledger e portanto nunca podem mudar.
 const (
 	ProvedorAppyPay = "APPYPAY"
+	ProvedorPayPay  = "PAYPAY"
 	// ProvedorExterno é o pseudo-provedor das cobranças registradas pela
 	// academia como pagas FORA da plataforma (sem nenhum PSP por trás). Nunca
 	// aparece no catálogo, não tem credenciais e nunca é consultado.
@@ -77,6 +78,9 @@ type CampoCredencial struct {
 	// Secreto indica que o valor nunca é devolvido pela API (apenas mascarado).
 	Secreto bool   `json:"secreto"`
 	Ajuda   string `json:"ajuda,omitempty"`
+	// Multilinha pede um campo de texto maior (chaves RSA, por exemplo). É só
+	// uma dica de apresentação; a validação continua a ser do provedor.
+	Multilinha bool `json:"multilinha,omitempty"`
 }
 
 // RotaWebhook liga um sub-caminho de /webhooks/<slug>/ a um método canônico.
@@ -118,6 +122,9 @@ type pedidoCobranca struct {
 	Opcoes        map[string]any
 	Notificar     map[string]any
 	Async         bool
+	// IPPagador é o IP de quem pediu o pagamento. Só os provedores que o
+	// exigem no pedido (ex.: PayPay) o usam; os demais o ignoram.
+	IPPagador string
 }
 
 // pedidoQRCode é o pedido de QR Code de pagamento (método MetodoGPOQR).
@@ -176,9 +183,13 @@ type Provedor interface {
 	// por credencial para autenticar as notificações. AutenticarWebhook
 	// escolhe, entre as credenciais candidatas do provedor, a dona da
 	// notificação (índice) — sem expor como cada provedor autentica.
+	//
+	// AutenticarWebhook recebe também o corpo bruto da notificação: os
+	// provedores que assinam o conteúdo (ex.: PayPay, RSA) só o conseguem
+	// autenticar com ele.
 	UsaSegredoWebhook() bool
 	RotasWebhook() []RotaWebhook
-	AutenticarWebhook(h http.Header, candidatos []credencialProvedor) (int, bool)
+	AutenticarWebhook(h http.Header, corpo []byte, candidatos []credencialProvedor) (int, bool)
 	// InterpretarWebhook extrai o identificador da notificação e o payload.
 	InterpretarWebhook(contentType string, corpo []byte) (id string, payload map[string]any, err error)
 	// ResultadoWebhook traduz o payload da notificação para o vocabulário da
@@ -188,6 +199,44 @@ type Provedor interface {
 	RespostaWebhook(aceito bool) (status int, contentType, corpo string)
 }
 
+// Extensões OPCIONAIS do contrato. Um provedor só implementa as que precisa; o
+// núcleo testa cada uma com uma asserção de tipo e, sem ela, mantém o
+// comportamento padrão (o mesmo que a AppyPay sempre teve).
+
+// ProvedorCancelavel é implementada pelos provedores que permitem FECHAR uma
+// cobrança ainda não paga (ex.: PayPay, trade_close). Com ela, cancelar a
+// cobrança no Spuri a fecha também no provedor e o pagador deixa de poder
+// pagá-la; sem ela, o cancelamento é só local (AppyPay).
+type ProvedorCancelavel interface {
+	CancelarCobranca(ctx context.Context, cred credencialProvedor, ref referenciaCobranca) error
+}
+
+// ProvedorComChaveDeEvento é implementada pelos provedores que enviam VÁRIAS
+// notificações para a mesma cobrança (ex.: PayPay): a idempotência não pode
+// usar só o identificador da cobrança, senão a segunda notificação (a que
+// confirma o pagamento) seria descartada como repetida da primeira.
+type ProvedorComChaveDeEvento interface {
+	ChaveEventoWebhook(payload map[string]any) string
+}
+
+// ProvedorComPedidoNoWebhook é implementada pelos provedores cujo webhook é
+// autenticado por uma chave que pode ser comum a várias credenciais (ex.: a
+// chave pública do PayPay). Devolve o identificador do comerciante presente no
+// corpo, para o núcleo restringir a autenticação à credencial que EMITIU a
+// cobrança — senão a notificação de uma academia poderia ser atribuída a outra.
+type ProvedorComPedidoNoWebhook interface {
+	PedidoDoWebhook(corpo []byte) string
+}
+
+// ProvedorValidaPedido é implementada pelos provedores com limites próprios
+// por método (ex.: PayPay exige mais de 1000 Kz em REF) ou formatos próprios
+// dos dados do pagador (telefone do Express). A validação corre
+// ANTES de qualquer registo no ledger, para um pedido impossível nunca deixar
+// uma cobrança "falhada" fantasma.
+type ProvedorValidaPedido interface {
+	ValidarPedido(metodo string, valor float64, info map[string]any) error
+}
+
 // fabricaProvedor cria uma instância de provedor usando o cliente HTTP do
 // Service (permite trocar o transporte nos testes sem estado global).
 type fabricaProvedor func(client *http.Client) Provedor
@@ -195,6 +244,7 @@ type fabricaProvedor func(client *http.Client) Provedor
 // fabricasProvedores é a lista de provedores implementados.
 var fabricasProvedores = []fabricaProvedor{
 	novoProvedorAppyPay,
+	novoProvedorPayPay,
 }
 
 func novosProvedores(client *http.Client) map[string]Provedor {

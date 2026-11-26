@@ -531,7 +531,7 @@ type WebhookOwner struct {
 // Apenas as credenciais DESSE provedor são candidatas — um segredo de um
 // provedor nunca autentica notificações de outro. O provedor (e não o
 // contexto) decide como autenticar: segredo em cabeçalho, assinatura etc.
-func (s *Service) AuthenticateWebhook(ctx context.Context, provedor string, headers http.Header) (WebhookOwner, error) {
+func (s *Service) AuthenticateWebhook(ctx context.Context, provedor string, headers http.Header, corpo []byte) (WebhookOwner, error) {
 	prov, err := s.ProvedorPorID(provedor)
 	if err != nil {
 		return WebhookOwner{}, err
@@ -572,6 +572,7 @@ func (s *Service) AuthenticateWebhook(ctx context.Context, provedor string, head
 	if err := arquivadas.Err(); err != nil {
 		return WebhookOwner{}, err
 	}
+	owners = s.restringirDonosDoWebhook(ctx, prov, corpo, owners)
 	candidatos := make([]credencialProvedor, 0, len(owners))
 	validos := make([]WebhookOwner, 0, len(owners))
 	for _, o := range owners {
@@ -582,10 +583,51 @@ func (s *Service) AuthenticateWebhook(ctx context.Context, provedor string, head
 		candidatos = append(candidatos, credencialProvedor{ID: o.CredentialID, Provedor: prov.ID(), Valores: secrets})
 		validos = append(validos, o)
 	}
-	if idx, ok := prov.AutenticarWebhook(headers, candidatos); ok && idx >= 0 && idx < len(validos) {
+	if idx, ok := prov.AutenticarWebhook(headers, corpo, candidatos); ok && idx >= 0 && idx < len(validos) {
 		return validos[idx], nil
 	}
 	return WebhookOwner{}, errors.New("webhook não autenticado")
+}
+
+// restringirDonosDoWebhook reduz os candidatos à credencial que EMITIU a
+// cobrança a que a notificação se refere, quando o provedor sabe dizer qual é a
+// cobrança (ProvedorComPedidoNoWebhook). Necessário quando a chave que autentica
+// o webhook é comum a várias credenciais (a chave pública do PayPay vale para
+// todas as contas): sem isto, a primeira credencial que verificasse a
+// assinatura "seria" a dona e a notificação de uma academia poderia ser
+// atribuída a outra. Cobrança desconhecida: todos continuam candidatos (a
+// assinatura tem de verificar, e sem cobrança nada é alterado).
+func (s *Service) restringirDonosDoWebhook(ctx context.Context, prov Provedor, corpo []byte, owners []WebhookOwner) []WebhookOwner {
+	extrator, ok := prov.(ProvedorComPedidoNoWebhook)
+	if !ok {
+		return owners
+	}
+	pedido := strings.TrimSpace(extrator.PedidoDoWebhook(corpo))
+	if pedido == "" {
+		return owners
+	}
+	row, err := s.loadChargeDoProvedor(ctx, prov.ID(), pedido)
+	if err != nil {
+		return owners
+	}
+	restritos := make([]WebhookOwner, 0, 1)
+	for _, o := range owners {
+		switch {
+		case row.CredencialID != uuid.Nil:
+			if o.CredentialID == row.CredencialID {
+				restritos = append(restritos, o)
+			}
+		case o.ContextoTipo == row.Contexto && o.CodigoAcademia == row.Academia:
+			// Cobrança legada, sem credencial emitente: vale o contexto.
+			restritos = append(restritos, o)
+		}
+	}
+	if len(restritos) == 0 {
+		// A credencial emitente já não existe (nem ativa nem arquivada): ninguém
+		// pode ser o dono desta notificação.
+		return nil
+	}
+	return restritos
 }
 
 // validarCofre confirma que o cofre tem todos os campos obrigatórios do provedor.

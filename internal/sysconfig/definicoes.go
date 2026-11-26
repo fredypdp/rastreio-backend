@@ -118,8 +118,15 @@ var definicoes = []Definicao{
 		validador: validarUUID,
 	},
 	{
+		Chave: "PAYPAY_API_URL", Grupo: "Pagamentos (PayPay)", Tipo: TipoTexto, Aplicacao: AplicaImediato,
+		Descricao:  "Endereço da API do PayPay (o que a equipa comercial do PayPay entrega, um por ambiente), usado em todos os pedidos ao PayPay.",
+		Exemplo:    "https://api.paypay.exemplo.ao/gateway",
+		Observacao: "Vale para todas as academias e para o Spuri. Só aceita https. O Partner ID, o Sale Product Code e as chaves RSA de cada conta ficam nas credenciais do provedor.",
+		validador:  validarURLHTTPS,
+	},
+	{
 		Chave: "RECONCILIACAO_ATIVA", Grupo: "Reconciliação de pagamentos", Tipo: TipoBooleano, Aplicacao: AplicaReinicio,
-		Descricao: "Liga ou desliga o job que reconcilia cobranças pendentes com a AppyPay. Padrão: ligado.",
+		Descricao: "Liga ou desliga o job que reconcilia cobranças pendentes com os provedores de pagamento. Padrão: ligado.",
 	},
 	{
 		Chave: "RECONCILIACAO_CONCORRENCIA", Grupo: "Reconciliação de pagamentos", Tipo: TipoNumero, Aplicacao: AplicaReinicio,
@@ -284,6 +291,18 @@ func validarUUID(v string) (string, error) {
 		return "", invalido("APPYPAY_RESOURCE: deve ser um UUID")
 	}
 	return id.String(), nil
+}
+
+// validarURLHTTPS aceita só um endereço https absoluto, sem credenciais
+// embutidas nem fragmento. Quem edita a chave é o FPP, mas o endereço recebe
+// pedidos assinados do servidor: nunca deve poder apontar para um esquema
+// diferente de https.
+func validarURLHTTPS(v string) (string, error) {
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return "", invalido("deve ser um endereço https completo (ex.: https://api.exemplo.ao/gateway), sem utilizador nem #")
+	}
+	return strings.TrimRight(u.String(), "/"), nil
 }
 
 func validarPasta(v string) (string, error) {

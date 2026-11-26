@@ -493,7 +493,7 @@ func (p *appyPayProvider) RotasWebhook() []RotaWebhook {
 // AutenticarWebhook compara, em tempo constante, o valor do cabeçalho fixo
 // com o webhook_secret de cada credencial candidata. Nunca revela qual conta
 // correspondeu.
-func (p *appyPayProvider) AutenticarWebhook(h http.Header, candidatos []credencialProvedor) (int, bool) {
+func (p *appyPayProvider) AutenticarWebhook(h http.Header, _ []byte, candidatos []credencialProvedor) (int, bool) {
 	candidate := h.Get(WebhookHeaderName)
 	if candidate == "" {
 		return -1, false

@@ -84,7 +84,7 @@ func (p *provedorFalso) RotasWebhook() []RotaWebhook {
 // notificação de OUTRO provedor ser aceita aqui é o núcleo entregar-lhe
 // credenciais que não são deste provedor — exatamente o que o filtro por
 // provedor em AuthenticateWebhook impede.
-func (p *provedorFalso) AutenticarWebhook(h http.Header, candidatos []credencialProvedor) (int, bool) {
+func (p *provedorFalso) AutenticarWebhook(h http.Header, _ []byte, candidatos []credencialProvedor) (int, bool) {
 	for i, c := range candidatos {
 		if got := h.Get("X-Fake-Token"); got != "" && got == c.Valores["token"] {
 			return i, true
@@ -235,7 +235,7 @@ func TestIntegrationDefinirProvedorExigeCredenciaisEUnicoAtivo(t *testing.T) {
 		if p.Ativo {
 			ativos++
 		}
-		if !p.CredenciaisConfiguradas {
+		if !p.CredenciaisConfiguradas && p.ID != ProvedorPayPay {
 			t.Fatalf("provedor %s deveria ter credenciais", p.ID)
 		}
 	}
@@ -364,7 +364,7 @@ func TestIntegrationRetroativoCobrancaPendenteSegueProvedorOriginalAposTroca(t *
 
 	// 3. Webhook da AppyPay para a cobrança antiga continua autenticando e
 	// confirmando, mesmo com a FAKEPSP como provedor ativo.
-	owner, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{appySecret}})
+	owner, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{appySecret}}, nil)
 	if err != nil || owner.CredentialID != appyCredID || owner.Provedor != ProvedorAppyPay {
 		t.Fatalf("webhook da AppyPay após a troca: owner=%+v err=%v", owner, err)
 	}
@@ -394,7 +394,7 @@ func TestIntegrationRetroativoCobrancaPendenteSegueProvedorOriginalAposTroca(t *
 	if arquivadas != 0 {
 		t.Fatalf("snapshot não foi descartado ao resolver a última pendente: %d", arquivadas)
 	}
-	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{appySecret}}); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{appySecret}}, nil); err == nil {
 		t.Fatal("o segredo do snapshot descartado continuou autenticando")
 	}
 	if ativo, _ := service.ProvedorAtivo(ctx, ContextoAcademia, academia); ativo != provedorFalsoID {
@@ -412,13 +412,13 @@ func TestIntegrationWebhookNaoAutenticaEntreProvedores(t *testing.T) {
 	_, appySecret := configurarAppyPay(t, service, academia)
 	configurarFalso(t, service, academia, "tok-fake-"+uuid.NewString())
 
-	if _, err := service.AuthenticateWebhook(ctx, provedorFalsoID, http.Header{WebhookHeaderName: []string{appySecret}}); err == nil {
+	if _, err := service.AuthenticateWebhook(ctx, provedorFalsoID, http.Header{WebhookHeaderName: []string{appySecret}}, nil); err == nil {
 		t.Fatal("o segredo da AppyPay autenticou notificação do outro provedor")
 	}
-	if _, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{"X-Fake-Token": []string{"tok-fake"}}); err == nil {
+	if _, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{"X-Fake-Token": []string{"tok-fake"}}, nil); err == nil {
 		t.Fatal("o token do outro provedor autenticou notificação da AppyPay")
 	}
-	if _, err := service.AuthenticateWebhook(ctx, "NAOEXISTE", http.Header{}); !errors.Is(err, ErrProvedorDesconhecido) {
+	if _, err := service.AuthenticateWebhook(ctx, "NAOEXISTE", http.Header{}, nil); !errors.Is(err, ErrProvedorDesconhecido) {
 		t.Fatalf("provedor desconhecido: %v", err)
 	}
 	// O provedor falso não usa segredo gerado pelo Spuri: não deve existir webhook_secret.

@@ -68,7 +68,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | **Fase 2 — Credenciais** | | | | |
 | 5 ✅ | Credenciais temporárias: ajustes do cadastro e do reset | 4 | Implementado | 131 (back) · 41 (front) |
 | **Fase 3 — Finanças** | | | | |
-| 6 | Provedor PayPay e troca de provedor | 2 (inclui `finance`), 4 | Parcial | |
+| 6 ✅ | Provedor PayPay e troca de provedor | 2 (inclui `finance`), 4 | Implementado (validado contra servidor simulado; falta só o teste com credenciais reais do PayPay) | 136 (back) · 42 (front) |
 | 7 | Serviços: catálogo fixo (Transporte e Atividade extracurricular) | 2 (inclui `finance`) | Pendente | |
 | 8 | Validação do módulo financeiro | 6, 7 | Pendente | |
 | **Fase 4 — Assinaturas e pagamento manual** | | | | |
@@ -433,9 +433,9 @@ _Nota (2026-11-21): a última linha mudou porque os planos agora são fixos no c
 
 # Fase 3 — Finanças
 
-### Parte 6 — Provedor PayPay e troca de provedor
+### Parte 6 — Provedor PayPay e troca de provedor ✅
 
-**Estado:** Parcial · **Depende de:** 2 (inclusive o pacote `finance` na pasta nova), 4
+**Estado:** Implementado (Tarefas 136 no back-end e 42 no front-end, 2026-11-26) · **Depende de:** 2 (inclusive o pacote `finance` na pasta nova), 4
 
 **Já existe (Tarefas 119 a 121)**
 - [x] Módulo financeiro dividido por provedores: interface `Provedor` (`finance/provedor.go`), AppyPay em `provedor_appypay.go`, **provedor novo = um arquivo `provedor_<nome>.go` + uma linha em `fabricasProvedores`**.
@@ -455,14 +455,32 @@ _Nota (2026-11-21): a última linha mudou porque os planos agora são fixos no c
 
 **Entregas**
 - [x] Arquitetura multiprovedor, retroativo, cofre, snapshot, reconciliação, métodos por pagador (Tarefas 119–121)
-- [ ] `provedor_paypay.go`: Express, Reference, consultar, fechar pedido
-- [ ] Fábrica registrada em `fabricasProvedores`; credenciais RSA; webhook por assinatura
-- [ ] Reconciliação com política por método do PayPay
-- [ ] Testes de troca AppyPay ↔ PayPay (métodos, cobrança nova, pendentes, duplicidade)
-- [ ] Front-end: seletor de provedor e subtela do PayPay (campos; sem manual por enquanto)
-- [ ] Documentação da API atualizada
+- [x] `provedor_paypay.go`: Express, Reference, consultar, fechar pedido (Tarefa 136)
+- [x] Fábrica registrada em `fabricasProvedores`; credenciais RSA; webhook por assinatura (Tarefa 136)
+- [x] Reconciliação com política por método do PayPay (Tarefa 136)
+- [x] Testes de troca AppyPay ↔ PayPay (métodos, cobrança nova, pendentes, duplicidade) (Tarefa 136)
+- [x] Front-end: seletor de provedor e subtela do PayPay (campos; sem manual por enquanto) (Tarefa 42)
+- [x] Documentação da API atualizada (versão 4.1.0)
 
 **Decisões (2026-11-22):** sem credenciais de teste do PayPay, ele é construído **a partir da documentação dele** (a tarefa a localiza em `docs/Integrações/`), com testes contra um servidor simulado do contrato (assinatura RSA, webhook). A validação no PayPay real só acontece quando houver credenciais. Manuais: o AppyPay mantém os textos atuais; o PayPay fica sem manual até existir um.
+
+**Como ficou (Tarefas 136 e 42, 2026-11-26)**
+- **Provedor:** `provedor_paypay.go` (Express `GPO` = banco `MUL`, Reference `REF`; consultar `trade_query`; fechar `trade_close`). Pedido com o objeto de negócio cifrado em blocos com a chave privada, assinatura SHA1withRSA e urlencode uma vez. Credenciais: `partner_id`, `sale_product_code`, `chave_privada`, `chave_publica_paypay`. O **Endereço da API** é a chave de sistema `PAYPAY_API_URL` (a mesma para todas as contas, como o `resource` da AppyPay), não um campo da credencial.
+- **Contrato do provedor:** `AutenticarWebhook` passou a receber o **corpo** da notificação (o PayPay assina o conteúdo). Quatro extensões opcionais, que a AppyPay não usa: fechar a cobrança no provedor (`ProvedorCancelavel`), chave de idempotência por notificação (`ProvedorComChaveDeEvento`), pedido presente no corpo (`ProvedorComPedidoNoWebhook`) e validação do pedido antes de registar (`ProvedorValidaPedido`).
+- **Webhook:** `POST /webhooks/paypay/notificacoes`, autenticado pela assinatura do PayPay; como a chave pública do PayPay pode ser igual em várias contas, só a credencial que **emitiu** a cobrança (achada por `out_trade_no`) é candidata. Resposta exata `success`.
+- **Estados:** só `TRADE_FINISHED` quita (com consulta ao vivo a concordar); `TRADE_SUCCESS` é aviso; `TRADE_CLOSED` leva a `Expired` (ou `Failed`, com motivo).
+- **Os dois pontos que a leitura não confirmou:** (a) **não existia** e foi implementado: a cobrança nova **fecha e cancela** a pendente de outro provedor quando ele sabe fechar (PayPay) e, se não sabe (AppyPay), a pendente **continua a bloquear** a nova; (b) **não existia** e foi implementado: a segunda cobrança paga da mesma dívida fica `pago_em_duplicidade`, não é aplicada a nenhuma dívida e aparece marcada na listagem e no detalhe.
+- **Estados comuns:** pagamento com valor diferente do cobrado ficou **divergente** e não quita (campos `pagamento_divergente` e `valor_pago_provedor`); vale para provedores que informam o valor do pedido (PayPay).
+- **Correção:** uma consulta a uma cobrança já **cancelada** no Spuri deixou de poder reabri-la ou reescrever o seu estado.
+- **Front-end:** seletor de provedor no topo com a subtela de cada um (situação, métodos, endereço de notificação do PayPay, credenciais e ações); campos de chave em texto grande; referência e entidade do pagador em REF; selos de duplicidade e divergência. O PayPay ficou sem manual; o texto da AppyPay não mudou.
+
+**Interpretações adotadas na Tarefa 136** (corrigir aqui se discordar)
+- O **Endereço da API** do PayPay vem da configuração do sistema e não da credencial: um endereço escolhido pela academia faria o servidor enviar pedidos assinados para onde ela quisesse.
+- `seller_actual_amount` (valor real pago) **não** entra na comparação de valores, porque pode vir líquido de taxas e daria divergências falsas; compara-se o `amount` (valor do pedido no PayPay) com o cobrado.
+- A assinatura da **resposta síncrona** do PayPay não é verificada (o texto a assinar de um `biz_content` aninhado não está definido na documentação); a das **notificações** é, sempre.
+- A rota de notificações é **uma só** (`notificacoes`) e o "método" gravado é `QUALQUER`, porque o portal do PayPay aceita um único endereço.
+- **Teste de conexão** antes de ativar o provedor (sugestão): **não implementado** (cortado): sem credenciais reais não há como provar o que o PayPay responderia a uma consulta de um pedido inexistente.
+- Sem credenciais do PayPay, tudo foi validado contra um servidor simulado do contrato, que verifica a assinatura e decifra o `biz_content` por código independente.
 
 ---
 
@@ -1409,4 +1427,5 @@ Preencher a cada entrega (ver "Como acompanhar o andamento").
 | 2026-11-24 | Parte 2B, entrega 2B-1: cursos e matérias convertidos para CRUD | 133 (back) | ver o texto do commit da Tarefa 133 | Migration 143. Pacote novo `internal/cadastros` (regras puras e persistência com auditoria na mesma transação). Mesmas rotas, respostas e permissões; a API não muda de versão. Saem os agregados, os eventos e a projeção de cursos e matérias (os tipos saíram da whitelist). Descoberta: o `TRUNCATE ... CASCADE` da reconstrução de academias apagaria cursos e matérias por causa das chaves estrangeiras; elas foram removidas (nova regra acima). Ajustes de comportamento: validação das turmas passou a vir antes de qualquer gravação em `DeletarCurso`; cascata de matérias e curso numa só transação; trocar o curso de uma matéria agora exige curso da mesma academia. Antes de aplicar em produção, rodar a conferência do ledger descrita no documento da tarefa |
 | 2026-11-25 | Parte 2B, entrega 2B-1: turmas e sumários (134) e configuração de faltas (135) convertidos para CRUD | 134 e 135 (back) | ver o texto do commit | Migrations 144 e 145. API 4.0.2 (PATCH). Saem os agregados `Turma`, `Sumario` e `ConfiguracaoFaltas` e 12 tipos de evento; a projeção de turmas continua só para o efeito da avaliação final (agora com auditoria e filtro por academia). Corrigido defeito da 133: o ator "em nome de" não ia para a auditoria CRUD. Nova guarda em tempo de execução contra FK de tabela CRUD para tabela reconstruível, e teste de reconstrução real de ponta a ponta. Falta da 2B-1: documentos extra, categorias de nota, `ConfiguracaoSistema`, comunicação, dados cadastrais e contas de pessoa; falta toda a 2B-2. |
 | 2026-11-26 | Parte 2B revista: critério do ledger mais estreito; entregas 2B-0, 2B-4 e 2B-5 novas; 2B-2 com tabela única de credenciais; comunicação na Parte 21; ajustes nas Partes 16, 19, 20, 21, 22 e 28 | — | ver o texto do commit | Só análise e planejamento; nada implementado em código. `main` @ `14ff9dd`. **Executado:** o renome das colunas da `auditoria_crud` numa transação desfeita (46 cadeias válidas). **Lido:** consumidores dos eventos de conta, 36 pontos que carregam os agregados, 31 arquivos de credenciais (187 ocorrências). Partes 6 e 7 não alteradas (a 6 está em outro chat). Cabeçalho da Parte 22 corrigido (17 → 21) |
+| 2026-11-26 | Parte 6 (todos os itens) | 136 (back) · 42 (front) | ver o texto do commit da Tarefa 136 | Sem migration. API 4.1.0 (MINOR). Provedor PayPay (Express e Reference), webhook por assinatura RSA, fecho de pedido, política de reconciliação própria, troca de provedor, pagamento em duplicidade e pagamento divergente (os dois pontos "não confirmados" não existiam e foram implementados). Corrigido: consulta a cobrança cancelada já não a reabre. Validado com PostgreSQL real e servidor PayPay simulado; front-end com `tsc`, `eslint` e `next build` (sem teste em navegador). Sem credenciais reais do PayPay |
 | | | | | |

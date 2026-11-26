@@ -214,6 +214,18 @@ type CobrancaResumo struct {
 	// identificador do comprovativo informado pela academia.
 	PagamentoExterno  bool   `json:"pagamento_externo,omitempty"`
 	ReferenciaExterna string `json:"referencia_externa,omitempty"`
+	// PagoEmDuplicidade é true quando esta cobrança foi paga, mas outra cobrança
+	// já paga quita a mesma dívida (ex.: o pagador pagou nos dois provedores
+	// depois de uma troca). Esta não é aplicada a nenhuma dívida: a academia
+	// deve devolver o valor ao pagador. DuplicidadeCom lista as outras cobranças.
+	PagoEmDuplicidade bool     `json:"pago_em_duplicidade,omitempty"`
+	DuplicidadeCom    []string `json:"duplicidade_com,omitempty"`
+	// PagamentoDivergente é true quando o provedor confirmou o pagamento mas o
+	// valor do pedido não é o que o Spuri cobrou: a cobrança NÃO é quitada e
+	// continua no estado em que estava. ValorPagoProvedor é o valor que o
+	// provedor informou; Valor, o que foi cobrado.
+	PagamentoDivergente bool     `json:"pagamento_divergente,omitempty"`
+	ValorPagoProvedor   *float64 `json:"valor_pago_provedor,omitempty"`
 }
 
 // CobrancaListResult é o resultado paginado de ListCobrancas.
@@ -272,6 +284,11 @@ func (s *Service) CreateCharge(ctx context.Context, in ChargeRequest, actorID, a
 	if !suportaMetodo(prov, method) {
 		return ChargeResult{}, fmt.Errorf("%w: %s não é suportado pelo %s", ErrMetodoIndisponivel, method, prov.Nome())
 	}
+	if v, ok := prov.(ProvedorValidaPedido); ok {
+		if err = v.ValidarPedido(method, in.Amount, in.PaymentInfo); err != nil {
+			return ChargeResult{}, err
+		}
+	}
 	if in.MerchantTransactionID == "" {
 		in.MerchantTransactionID = merchantID()
 	}
@@ -298,7 +315,7 @@ func (s *Service) CreateCharge(ctx context.Context, in ChargeRequest, actorID, a
 		_ = s.releaseChargeReservation(ctx, in.MerchantTransactionID, id)
 		return ChargeResult{}, err
 	}
-	resp, err := prov.CriarCobranca(ctx, credential, pedidoCobranca{Valor: in.Amount, Moeda: in.Currency, Descricao: in.Description, IDComerciante: in.MerchantTransactionID, Metodo: method, Info: in.PaymentInfo, Opcoes: in.Options, Notificar: in.Notify, Async: in.Async})
+	resp, err := prov.CriarCobranca(ctx, credential, pedidoCobranca{Valor: in.Amount, Moeda: in.Currency, Descricao: in.Description, IDComerciante: in.MerchantTransactionID, Metodo: method, Info: in.PaymentInfo, Opcoes: in.Options, Notificar: in.Notify, Async: in.Async, IPPagador: ip})
 	if err != nil {
 		_ = s.record(ctx, id, aggregates.CobrancaFalhou, comCredencial(comProvedor(chargePayload(id, in, "", "Failed", map[string]any{"error": "provider_request_failed"}), prov.ID()), credential), actorID, actorType, ip)
 		return ChargeResult{ID: id, Provedor: prov.ID(), MerchantTransactionID: in.MerchantTransactionID, Status: "Failed"}, err
@@ -457,6 +474,17 @@ func (s *Service) CancelCharge(ctx context.Context, contexto, academia, identifi
 	if row.Contexto != contexto || row.Academia != academia || !canCancelCharge(row, academia, actorType) {
 		return ChargeResult{}, fmt.Errorf("%w: cobrança não encontrada no contexto", ErrNotFound)
 	}
+	return s.cancelarCobranca(ctx, row, motivo, actorID, actorType, ip)
+}
+
+// cancelarCobranca é o cancelamento em si, depois de a autorização de quem
+// pede já ter sido decidida por quem chama (CancelCharge, para a academia e o
+// admin; a liberação de cobranças de outro provedor, para o sistema). Consulta
+// SEMPRE o provedor antes e, se o provedor sabe fechar a cobrança
+// (ProvedorCancelavel), fecha-a nele ANTES de a cancelar no Spuri: se o
+// fecho falhar, nada é cancelado localmente — uma cobrança cancelada aqui mas
+// ainda paga no provedor seria um pagamento sem dívida.
+func (s *Service) cancelarCobranca(ctx context.Context, row chargeRow, motivo, actorID, actorType, ip string) (ChargeResult, error) {
 	if isSuccessfulChargeStatus(row.Status) {
 		return ChargeResult{ID: row.ID, ProviderChargeID: row.ProviderID, MerchantTransactionID: row.Merchant, Status: row.Status}, ErrPagamentoExistente
 	}
@@ -472,6 +500,11 @@ func (s *Service) CancelCharge(ctx context.Context, contexto, academia, identifi
 		// confirmado localmente: reconcilia antes de recusar o cancelamento.
 		s.reconciliarPagamentoDescoberto(ctx, row.ID, actorID, actorType, ip)
 		return current, ErrPagamentoExistente
+	}
+	if !isTerminalChargeStatus(current.Status) {
+		if err = s.fecharNoProvedor(ctx, row); err != nil {
+			return current, err
+		}
 	}
 	payload := make(map[string]any, len(row.Payload)+4)
 	for key, value := range row.Payload {
@@ -490,6 +523,30 @@ func (s *Service) CancelCharge(ctx context.Context, contexto, academia, identifi
 		return ChargeResult{}, err
 	}
 	return ChargeResult{ID: row.ID, ProviderChargeID: current.ProviderChargeID, MerchantTransactionID: row.Merchant, Status: "cancelada", Response: current.Response}, nil
+}
+
+// fecharNoProvedor fecha a cobrança no provedor que a emitiu quando ele o
+// permite. Provedor sem essa capacidade: não faz nada (cancelamento só local).
+func (s *Service) fecharNoProvedor(ctx context.Context, row chargeRow) error {
+	prov, cred, err := s.provedorDaCobranca(ctx, row)
+	if err != nil {
+		return err
+	}
+	cancelavel, ok := prov.(ProvedorCancelavel)
+	if !ok {
+		return nil
+	}
+	return cancelavel.CancelarCobranca(ctx, cred, referenciaCobranca{IDProvedor: row.ProviderID, IDComerciante: row.Merchant})
+}
+
+// provedorPermiteFechar informa se o provedor sabe fechar cobranças abertas.
+func (s *Service) provedorPermiteFechar(id string) bool {
+	prov, err := s.ProvedorPorID(id)
+	if err != nil {
+		return false
+	}
+	_, ok := prov.(ProvedorCancelavel)
+	return ok
 }
 
 // ListCobrancas lista cobranças de um contexto/academia, com filtros
@@ -683,6 +740,18 @@ func scanCobrancaResumo(rows *sql.Rows) (CobrancaResumo, error) {
 	dto.MetodoPagamento, _ = payload["payment_method"].(string)
 	if qrType, ok := payload["qr_code_type"].(string); ok && qrType != "" {
 		dto.MetodoPagamento = "GPO_QR"
+	}
+	dto.PagamentoDivergente, _ = payload["pagamento_divergente"].(bool)
+	if v, ok := valorDoPayload(payload["valor_pago_provedor"]); ok && dto.PagamentoDivergente {
+		dto.ValorPagoProvedor = ptrFloat(v)
+	}
+	dto.PagoEmDuplicidade, _ = payload["pago_em_duplicidade"].(bool)
+	if com, ok := payload["duplicidade_com"].([]any); ok {
+		for _, v := range com {
+			if id, ok := v.(string); ok {
+				dto.DuplicidadeCom = append(dto.DuplicidadeCom, id)
+			}
+		}
 	}
 	dto.PagamentoExterno, _ = payload["pagamento_externo"].(bool)
 	dto.ReferenciaExterna, _ = payload["pagamento_externo_referencia"].(string)
@@ -933,6 +1002,20 @@ func (s *Service) aplicarConsulta(ctx context.Context, row chargeRow, resp respo
 	for key, value := range row.Payload {
 		payload[key] = value
 	}
+	// Pagamento com valor diferente do cobrado não quita: a cobrança fica como
+	// estava, marcada como divergente (a cobrança cancelada tem o seu próprio
+	// tratamento de conflito, abaixo).
+	divergencia := (*divergenciaValor)(nil)
+	if isSuccessfulChargeStatus(status) && !strings.EqualFold(row.Status, "cancelada") {
+		if divergencia = divergenciaDeValor(row.Payload, outcome.ValorProvedor); divergencia != nil {
+			status = row.Status
+		}
+	}
+	if divergencia != nil {
+		marcarDivergencia(payload, divergencia)
+	} else if isSuccessfulChargeStatus(status) {
+		limparDivergencia(payload)
+	}
 	payload["provider_charge_id"] = first(resp.ID, row.ProviderID)
 	payload["status"] = status
 	payload["response"] = sanitize(response)
@@ -945,6 +1028,14 @@ func (s *Service) aplicarConsulta(ctx context.Context, row chargeRow, resp respo
 		result.CodigoProvedor = &code
 	}
 	result.MensagemProvedor, result.FonteProvedor, result.CategoriaMotivo = outcome.Message, outcome.Source, outcome.Categoria
+	if strings.EqualFold(row.Status, "cancelada") && !isSuccessfulChargeStatus(status) {
+		// Cancelada no Spuri é definitivo: uma consulta posterior (que num
+		// provedor com fecho devolve "fechada", noutro "pendente") nunca
+		// reabre nem reescreve o estado local. Só um sucesso tem tratamento
+		// próprio (conflito pós-cancelamento, logo abaixo).
+		result.Status = "cancelada"
+		return result, nil
+	}
 	if strings.EqualFold(row.Status, "cancelada") && isSuccessfulChargeStatus(status) {
 		// Keep the cancellation definitive in the read model. The provider
 		// result is recorded for manual FPP reconciliation instead of silently
@@ -957,7 +1048,7 @@ func (s *Service) aplicarConsulta(ctx context.Context, row chargeRow, resp respo
 		result.Status = "cancelada"
 		return result, nil
 	}
-	if status != row.Status || providerID != row.ProviderID || !sameJSON(payload["response"], previousResponse) {
+	if status != row.Status || providerID != row.ProviderID || !sameJSON(payload["response"], previousResponse) || divergenciaMudou(row.Payload, payload) {
 		if err = s.record(ctx, row.ID, aggregates.CobrancaConsultada, payload, actorID, actorType, ip); err != nil {
 			return ChargeResult{}, err
 		}
@@ -980,6 +1071,7 @@ func (s *Service) record(ctx context.Context, id uuid.UUID, event string, payloa
 	}
 	s.liberarSnapshotsSeCobrancaTerminal(ctx, event, clean)
 	s.observarReconciliacao(event, clean, id)
+	s.verificarDuplicidade(ctx, event, clean, id, userID, userType, ip)
 	return nil
 }
 
@@ -1026,26 +1118,38 @@ func (s *Service) liberarSnapshotsSeCobrancaTerminal(ctx context.Context, event 
 // deixar uma cobrança presa sem nunca confirmar um pagamento que a própria
 // AppyPay já reportou como bem-sucedido no webhook (o mesmo raciocínio do
 // Bug 1 já corrigido, em que o webhook nunca confirmava a mensalidade).
-func (s *Service) liveChargeStatus(ctx context.Context, charge chargeRow) (status string, ok bool) {
+func (s *Service) liveChargeStatus(ctx context.Context, charge chargeRow) (status string, valor *float64, ok bool) {
 	prov, cred, err := s.provedorDaCobranca(ctx, charge)
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
 	resp, err := prov.ConsultarCobranca(ctx, cred, referenciaCobranca{IDProvedor: charge.ProviderID, IDComerciante: charge.Merchant})
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
 	status = normalizeChargeStatus(resp.Outcome.Status)
-	return status, status != ""
+	return status, resp.Outcome.ValorProvedor, status != ""
 }
 
 // AcceptWebhook reserves its event id first in the dedicated idempotency index.
 // If ledger persistence fails the reservation is removed, so a delivery retry is
 // still processed. No charge side-effect is executed here.
+//
+// eventID é o identificador da COBRANÇA (id do provedor ou do comerciante). A
+// chave de idempotência é, por omissão, o mesmo valor; os provedores que enviam
+// várias notificações por cobrança (ProvedorComChaveDeEvento) usam uma chave
+// própria por notificação, para a que confirma o pagamento não ser descartada
+// como repetição da anterior.
 func (s *Service) AcceptWebhook(ctx context.Context, provedor, metodo, eventID string, owner WebhookOwner, payload map[string]any) (accepted bool, confirmedSuccess bool, err error) {
 	prov, err := s.ProvedorPorID(provedor)
 	if err != nil {
 		return false, false, err
+	}
+	chaveEvento := eventID
+	if c, ok := prov.(ProvedorComChaveDeEvento); ok {
+		if k := strings.TrimSpace(c.ChaveEventoWebhook(payload)); k != "" {
+			chaveEvento = k
+		}
 	}
 	metodo = strings.ToUpper(metodo)
 	metodoValido := false
@@ -1058,7 +1162,7 @@ func (s *Service) AcceptWebhook(ctx context.Context, provedor, metodo, eventID s
 		return false, false, errors.New("webhook inválido")
 	}
 	actor := prov.Slug() + ":webhook"
-	res, err := s.client.DB().ExecContext(ctx, `INSERT INTO financeiro_webhooks_recebidos(provedor,event_id,metodo) VALUES($1,$2,$3) ON CONFLICT(provedor,event_id) DO NOTHING`, prov.ID(), eventID, metodo)
+	res, err := s.client.DB().ExecContext(ctx, `INSERT INTO financeiro_webhooks_recebidos(provedor,event_id,metodo) VALUES($1,$2,$3) ON CONFLICT(provedor,event_id) DO NOTHING`, prov.ID(), chaveEvento, metodo)
 	if err != nil {
 		return false, false, err
 	}
@@ -1066,9 +1170,9 @@ func (s *Service) AcceptWebhook(ctx context.Context, provedor, metodo, eventID s
 	if affected == 0 {
 		return false, false, nil
 	}
-	data := map[string]any{"provedor": prov.ID(), "event_id": eventID, "metodo": metodo, "credential_id": owner.CredentialID.String(), "contexto_tipo": owner.ContextoTipo, "codigo_academia": owner.CodigoAcademia, "payload": sanitize(payload)}
+	data := map[string]any{"provedor": prov.ID(), "event_id": chaveEvento, "cobranca": eventID, "metodo": metodo, "credential_id": owner.CredentialID.String(), "contexto_tipo": owner.ContextoTipo, "codigo_academia": owner.CodigoAcademia, "payload": sanitize(payload)}
 	if err = s.record(ctx, uuid.New(), aggregates.WebhookProvedorRecebido, data, actor, "sistema", "webhook"); err != nil {
-		_, _ = s.client.DB().ExecContext(ctx, `DELETE FROM financeiro_webhooks_recebidos WHERE provedor=$1 AND event_id=$2`, prov.ID(), eventID)
+		_, _ = s.client.DB().ExecContext(ctx, `DELETE FROM financeiro_webhooks_recebidos WHERE provedor=$1 AND event_id=$2`, prov.ID(), chaveEvento)
 		return false, false, err
 	}
 	// Reflete no read model qualquer estado que o webhook reporte — sucesso
@@ -1100,10 +1204,23 @@ func (s *Service) AcceptWebhook(ctx context.Context, provedor, metodo, eventID s
 			// CobrancaConflitoPosCancelamento) já não dispara nenhum
 			// efeito irreversível por si só — é só um registo de conflito
 			// para reconciliação manual — então não precisa do double-check.
+			var divergencia *divergenciaValor
 			if success && !strings.EqualFold(charge.Status, "cancelada") {
-				if live, ok := s.liveChargeStatus(ctx, charge); ok {
+				valorProvedor := outcome.ValorProvedor
+				if live, valorLive, ok := s.liveChargeStatus(ctx, charge); ok {
 					normalized = live
 					success = isSuccessfulChargeStatus(live)
+					if valorLive != nil {
+						valorProvedor = valorLive
+					}
+				}
+				// Pagamento com valor diferente do cobrado não quita: a cobrança
+				// fica como estava, marcada como divergente.
+				if success {
+					if divergencia = divergenciaDeValor(charge.Payload, valorProvedor); divergencia != nil {
+						success = false
+						normalized = charge.Status
+					}
 				}
 			}
 			updated := make(map[string]any, len(charge.Payload)+7)
@@ -1111,6 +1228,9 @@ func (s *Service) AcceptWebhook(ctx context.Context, provedor, metodo, eventID s
 				updated[k] = v
 			}
 			updated["status"] = normalized
+			if divergencia != nil {
+				marcarDivergencia(updated, divergencia)
+			}
 			if success {
 				updated["status"] = "Success"
 			}
@@ -1419,6 +1539,10 @@ type providerOutcome struct {
 	Message   string
 	Source    string
 	Categoria string
+	// ValorProvedor é o valor do pedido segundo o provedor, quando ele o
+	// informa. Se um pagamento chega confirmado com valor diferente do cobrado,
+	// não quita (ver divergencia_valor.go).
+	ValorProvedor *float64
 }
 
 func applyProviderOutcome(payload map[string]any, outcome providerOutcome) {

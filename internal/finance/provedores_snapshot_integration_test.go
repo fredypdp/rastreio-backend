@@ -163,11 +163,11 @@ func TestIntegrationSnapshotCredenciaisRemovidasComPendentesResolveRetroativamen
 
 	// 3. Webhooks: o segredo do snapshot ainda autentica a cobrança antiga; o
 	// novo autentica o contexto novo.
-	dono, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{velhoSegredo}})
+	dono, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{velhoSegredo}}, nil)
 	if err != nil || dono.CredentialID != velhoID {
 		t.Fatalf("webhook do snapshot: %+v %v", dono, err)
 	}
-	if donoNovo, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{novoSegredo}}); err != nil || donoNovo.CredentialID != novoID {
+	if donoNovo, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{novoSegredo}}, nil); err != nil || donoNovo.CredentialID != novoID {
 		t.Fatalf("webhook das credenciais novas: %+v %v", donoNovo, err)
 	}
 
@@ -186,11 +186,11 @@ func TestIntegrationSnapshotCredenciaisRemovidasComPendentesResolveRetroativamen
 	if n := contar(t, client, `SELECT COUNT(*) FROM spuri_ledger WHERE aggregate_id=$1 AND event_type='CredenciaisArquivadasPurgadas'`, velhoID); n != 1 {
 		t.Fatalf("evento de descarte no ledger: %d", n)
 	}
-	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{velhoSegredo}}); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{velhoSegredo}}, nil); err == nil {
 		t.Fatal("segredo de um snapshot descartado continuou autenticando")
 	}
 	// As credenciais ativas nunca são tocadas pelo descarte.
-	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{novoSegredo}}); err != nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{WebhookHeaderName: []string{novoSegredo}}, nil); err != nil {
 		t.Fatalf("o descarte afetou as credenciais ativas: %v", err)
 	}
 }

@@ -1,8 +1,8 @@
 ---
-modificado: 21-11-2026 09:15
+modificado: 26-11-2026 12:00
 criado: 05-04-2026 13:01
 ---
-Versão atual: 4.0.2
+Versão atual: 4.1.0
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -113,6 +113,7 @@ A linha `Versão atual` no topo deste documento segue o **Versionamento Semânti
 
 | Versão | Tarefa | Resumo |
 | --- | --- | --- |
+| **4.1.0** | 136 | Acrescenta o provedor **PayPay** (MULTICAIXA Express = `GPO` e MULTICAIXA Reference = `REF`) ao catálogo (19.27), com a rota pública `POST /webhooks/paypay/notificacoes` (19.30), autenticada pela assinatura RSA do PayPay. Campos novos e opcionais: `multilinha` nos campos de credencial; `pago_em_duplicidade`, `duplicidade_com`, `pagamento_divergente` e `valor_pago_provedor` nas cobranças. Passam a valer as regras de troca de provedor, pagamento em duplicidade e pagamento divergente (19.31). Cancelar uma cobrança de um provedor que sabe fechar pedidos (PayPay) fecha-a também no provedor. Nova chave de sistema `PAYPAY_API_URL` (16.7). |
 | **4.0.2** | 134 e 135 | Correção, sem alterar o contrato. Turmas, sumários e a configuração de faltas passam a ser gravados direto na tabela, com a auditoria na mesma transação (`auditoria_crud`), em vez de passar pelo ledger; rotas, campos, permissões e respostas são os mesmos. Comportamentos que mudam: a leitura logo depois de gravar já devolve o dado novo; `DELETE /academia/curso/:id` agora apaga turmas inativas e vazias, matérias inativas e o curso numa única transação; a ação de um secretário "em nome da academia" passa a constar na auditoria de cursos, matérias, turmas, sumários e configuração de faltas. |
 | **4.0.1** | 133 | Correção, sem alterar o contrato. Cursos e matérias passam a ser gravados direto na tabela, com a auditoria na mesma transação (`auditoria_crud`), em vez de passar pelo ledger; rotas, campos, permissões e respostas são os mesmos. Efeitos visíveis: a leitura logo depois de gravar já devolve o dado novo (sem esperar projeção); `DELETE /academia/curso/:id` valida as turmas antes de gravar qualquer coisa e deleta o curso e as matérias dele numa só transação; `PUT /academia/materia/:id/dados` passa a recusar de fato um `curso_id` de outra academia, como a documentação já dizia. |
 | **4.0.0** | 130 e 131 | **Incompatível.** Três novos tipos de login (`secretario`, `professor`, `encarregado`). O cadastro de estudante do nível escolar passa a exigir o encarregado (bloco `encarregado`, ou os campos `encarregado_*`). `PUT /estudante/encarregado/telefone` removida. O telefone das credenciais de estudante do nível escolar é sempre o do encarregado (sem queda para o do estudante). Reenvio de credenciais pelo admin (`adm` ou `fpp`) só para estudante sem nenhuma academia. |
@@ -7329,6 +7330,7 @@ Configurações operacionais que antes só existiam como variável de ambiente e
 | `BREVO_API_KEY` | E-mail (Brevo) | **segredo** | na hora | texto |
 | `ZIETT_API_KEY` | SMS (Ziett) | **segredo** | na hora | texto |
 | `APPYPAY_RESOURCE` | Pagamentos (AppyPay) | texto | na hora | UUID |
+| `PAYPAY_API_URL` | Pagamentos (PayPay) | texto | na hora | endereço `https` entregue pelo PayPay (um por ambiente), usado em todos os pedidos ao PayPay |
 | `RECONCILIACAO_ATIVA` | Reconciliação de pagamentos | booleano | **próximo reinício** | `true`/`false` (aceita também sim/não, 1/0) |
 | `RECONCILIACAO_CONCORRENCIA` | Reconciliação de pagamentos | número | **próximo reinício** | inteiro de 1 a 20 |
 | `RECONCILIACAO_CHAMADAS_POR_SEGUNDO` | Reconciliação de pagamentos | número | **próximo reinício** | de 0,1 a 50 |
@@ -7798,11 +7800,11 @@ O módulo financeiro é dividido por **provedores de serviços de pagamento (PSP
 - Academia autenticada opera apenas no próprio contexto: o backend força `contexto_tipo="academia"` e `codigo_academia` igual ao código do token, mesmo que esses campos venham vazios no request.
 - Admin FPP pode **consultar** o contexto global `spuri` e os contextos de academias específicas. Nas configurações financeiras de uma academia — provedor de pagamento e credenciais, mensalidades e mês de início de cobrança — somente a própria academia pode criar, atualizar, remover, definir ou rotacionar; tentativas de escrita por admin FPP retornam `403`. O admin FPP mantém escrita nessas configurações apenas no contexto global `spuri`. Essa restrição não se aplica às operações transacionais de cobrança e QR Code, cujo comportamento administrativo permanece o mesmo.
 - Segredos de provedor (ex.: `client_secret` e os métodos de pagamento da AppyPay) nunca são devolvidos em resposta; a API retorna apenas máscaras (`credenciais_mascaradas`) e metadados, e campos marcados como `secreto` no catálogo (19.27) nem aparecem mascarados. A única exceção deliberada é o segredo de webhook (`webhook_secret`), nos provedores que autenticam webhooks por segredo (`usa_segredo_webhook=true`): como é gerado pelo servidor e o usuário precisa colá-lo no painel do provedor, ele é devolvido em texto plano apenas na criação da credencial (seção 19.1) e nas rotas dedicadas de consulta/rotação (seções 19.12 e 19.13) — nunca em `PUT`, listagem ou qualquer outra resposta.
-- `ENV=development` ou `ENV=test` usa o ambiente de teste do provedor (AppyPay: gateway TEST); `ENV=production` usa o de produção. O ambiente persistido em credenciais e cobranças segue essa resolução do backend. No arranque, cada provedor valida a configuração de ambiente de que depende (AppyPay: `APPYPAY_RESOURCE`).
+- `ENV=development` ou `ENV=test` usa o ambiente de teste do provedor (AppyPay: gateway TEST); `ENV=production` usa o de produção. O ambiente persistido em credenciais e cobranças segue essa resolução do backend. No arranque, cada provedor valida a configuração de ambiente de que depende (AppyPay: `APPYPAY_RESOURCE`; PayPay: `PAYPAY_API_URL`, opcional, mas, se existir, tem de ser um endereço `https`; o PayPay não tem ambiente de teste separado no Spuri: o endereço entregue por ele para cada ambiente é o que vale).
 - Cada cobrança ou QR Code **novo** exige, no contexto resolvido, um provedor ativo com credenciais configuradas e que suporte o método pedido, antes de chamar o provedor; caso contrário a resposta é `404` (sem provedor/credenciais) ou `400` (método indisponível no provedor ativo).
 - Todo valor monetário do módulo usa `float64`, em conformidade com o `number<double>` da AppyPay. Valores de entrada devem ter no máximo duas casas decimais; antes de chamar o gateway o backend aplica arredondamento *half away from zero* a duas casas, e comparações monetárias usam tolerância de meio cêntimo. Os futuros campos `ValorMensalidade`, `ValorMatricula` e equivalentes devem reutilizar esse mesmo contrato.
-- O cancelamento de uma cobrança REF, GPO ou QR Code é exclusivamente interno ao Spuri: a AppyPay (único provedor implementado) não documenta endpoint de cancelamento para esses métodos. Por isso, o cancelamento deixa de exibir/cobrar pela plataforma, mas não invalida tecnicamente uma referência ou QR já emitido no banco/gateway até a expiração; qualquer sucesso detectado depois dele é registrado como conflito para reconciliação manual FPP.
-- Os webhooks são públicos por necessidade do provedor, mas autenticados pelo próprio provedor: na AppyPay, pelo segredo de webhook gerado automaticamente na criação da credencial, enviado num único cabeçalho HTTP fixo para toda a plataforma (`webhook_header_name`, sempre `X-Spuri-Webhook-Secret`). Só as credenciais **do provedor do webhook** são candidatas — o segredo de um provedor nunca autentica notificações de outro. As rotas são `/webhooks/<slug do provedor>/<método>` (AppyPay: `/webhooks/appypay/gpo` e `/webhooks/appypay/ref`, inalteradas). Eventos aceitos ou duplicados respondem `200` e são tratados de forma idempotente por `(provedor, identificador do evento)`.
+- O cancelamento de uma cobrança REF, GPO ou QR Code depende do provedor que a emitiu. Na **AppyPay**, que não documenta endpoint de cancelamento, é exclusivamente interno ao Spuri: deixa de exibir/cobrar pela plataforma, mas não invalida tecnicamente uma referência ou QR já emitido no banco/gateway até a expiração; qualquer sucesso detectado depois dele é registrado como conflito para reconciliação manual FPP. No **PayPay**, que tem `trade_close`, o pedido é **fechado no provedor antes** de ser cancelado no Spuri: se o fecho falhar (por exemplo, o pagador acabou de pagar), nada é cancelado e a resposta é `502`; um pedido que o PayPay já fechou sozinho não é fechado de novo.
+- Os webhooks são públicos por necessidade do provedor, mas autenticados pelo próprio provedor: na AppyPay, pelo segredo de webhook gerado automaticamente na criação da credencial, enviado num único cabeçalho HTTP fixo para toda a plataforma (`webhook_header_name`, sempre `X-Spuri-Webhook-Secret`). Só as credenciais **do provedor do webhook** são candidatas — o segredo de um provedor nunca autentica notificações de outro. No **PayPay**, a autenticação é pela **assinatura RSA** da própria notificação, conferida com a chave pública do PayPay guardada na credencial (sem segredo nem cabeçalho do Spuri; ver 19.30). As rotas são `/webhooks/<slug do provedor>/<caminho>` (AppyPay: `/webhooks/appypay/gpo` e `/webhooks/appypay/ref`, inalteradas; PayPay: `/webhooks/paypay/notificacoes`). Eventos aceitos ou duplicados respondem `200` e são tratados de forma idempotente por `(provedor, identificador do evento)`.
 - **Provedor da cobrança, credencial emitente e mecanismo retroativo:** toda cobrança grava o provedor que a emitiu (campo `provedor` nas respostas e no ledger; `EXTERNO` para pagamentos registrados fora da plataforma) **e a credencial com que foi emitida** (`credencial_id` no evento; sem campo público). Trocar o provedor ativo (19.28) afeta só as cobranças **novas**: consulta, cancelamento, conferência ao vivo, webhook e pagamento externo de uma cobrança já emitida usam sempre o provedor e as credenciais da própria cobrança, mesmo que o contexto já tenha outro provedor ativo. As credenciais do provedor anterior são mantidas. **Remover as credenciais de um provedor nunca é bloqueado (19.23):** se ele ainda tem cobranças pendentes (não terminais) no contexto, as credenciais ficam **arquivadas (snapshot)** — saem da listagem e nunca servem para cobranças novas, mas os segredos continuam cifrados no cofre para concluir essas cobranças (consulta, cancelamento, autenticação dos webhooks) — e são descartadas quando a última pendente é resolvida.
 - **Eventos do ledger:** os eventos de provedor têm nomes neutros (`CredenciaisProvedorConfiguradas`, `CredenciaisProvedorRemovidas`, `SegredoWebhookProvedorRotacionado`, `ProvedorPagamentoDefinido`, `CobrancaSolicitada`, `CobrancaCriada`, `CobrancaFalhou`, `CobrancaConsultada`, `CobrancaCancelada`, `CobrancaConflitoPosCancelamento`, `QRCodeSolicitado`, `QRCodeGerado`, `QRCodeFalhou`, `WebhookProvedorRecebido`, `CredenciaisArquivadasPurgadas`) e carregam o provedor no payload. Os nomes antigos com prefixo `AppyPay` continuam existindo no ledger (imutável) e são reprocessados normalmente pela projeção; eventos antigos sem o campo `provedor` são tratados como `APPYPAY`.
 - Não existe taxa de matrícula: a matrícula pública e a cobrança de matrícula foram removidas (Plano de Atualizações, Parte 1). Os valores cobrados são mensalidade, serviço extra e cobrança avulsa.
@@ -7837,6 +7839,7 @@ Além das rotas acima, o servidor executa em segundo plano a **reconciliação a
 | `DELETE` | `/financeiro/mensalidades/inicio-cobranca` | A própria academia remove a exceção de início de cobrança, voltando ao mês natural. |
 | `POST` | `/webhooks/appypay/gpo` | Recebe webhook público da AppyPay para eventos GPO. |
 | `POST` | `/webhooks/appypay/ref` | Recebe webhook público da AppyPay para eventos REF. |
+| `POST` | `/webhooks/paypay/notificacoes` | Recebe as notificações públicas do PayPay (assinadas com RSA), para qualquer método (19.30). |
 
 #### 19.1 POST /financeiro/credenciais
 
@@ -7885,6 +7888,7 @@ Além das rotas acima, o servidor executa em segundo plano a **reconciliação a
 
 - `provedor` é obrigatório e precisa existir no catálogo (`400` caso contrário). `credenciais` é indexado pelas chaves de `campos_credenciais` do provedor; o provedor valida presença e formato. Na AppyPay, `client_id`, `client_secret`, `gpo_method` (começa por `GPO_`) e `ref_method` (começa por `REF_`) são obrigatórios. `resource` não é enviado neste endpoint: é lido da variável de ambiente `APPYPAY_RESOURCE`, com o mesmo valor para todas as academias e para o Spuri no mesmo ambiente.
 - Configurar credenciais **não** troca o provedor ativo, exceto quando o contexto ainda não tem nenhum provedor definido: nesse caso o provedor configurado passa a ser o ativo (`ativo: true`). Para trocar de provedor use `PUT /financeiro/provedor` (19.28). Um contexto pode ter credenciais de vários provedores ao mesmo tempo (uma por provedor e ambiente); só um é o ativo.
+- No **PayPay**, `partner_id` (só dígitos), `sale_product_code` (9 caracteres), `chave_privada` (RSA, mínimo 1024 bits, PKCS#8 ou PKCS#1, em base64 ou PEM) e `chave_publica_paypay` (a chave pública **oficial do PayPay**, X.509, em base64 ou PEM) são obrigatórios. As chaves são validadas e guardadas normalizadas; a pública informada não pode ser a pública da chave privada (erro comum: colar a própria chave). O `Endereço da API` não é enviado aqui: vem da chave de sistema `PAYPAY_API_URL`.
 - Nos provedores com `usa_segredo_webhook=true` (AppyPay), o segredo de webhook não é enviado pelo cliente: o backend gera automaticamente um valor alfanumérico de 15 caracteres na criação da credencial e devolve-o em texto plano apenas nesta resposta (campo `webhook_secret`), para o usuário colar no painel de webhooks do provedor. O nome do cabeçalho HTTP (`webhook_header_name`) é fixo para toda a plataforma (`X-Spuri-Webhook-Secret`) — a AppyPay confirmou que o painel deles só oferece um único par nome/valor de cabeçalho HTTP, por isso não existe modo de autenticação alternativo (ex.: Basic Auth). Provedores que não usam segredo não devolvem `webhook_secret` nem `webhook_header_name`.
 - Uma academia não pode criar credenciais para `spuri` nem para outra academia.
 - Admin FPP não pode criar credenciais de academia; pode configurar somente as credenciais do contexto global `spuri`.
@@ -8068,6 +8072,7 @@ Neste caso, `currency` assume `AOA` e a AppyPay gera os dados de referência seg
 - `amount` deve ser positivo e ter no máximo duas casas decimais; `currency`, `description` e `paymentMethod` devem ser coerentes com o método configurado na credencial.
 - `merchantTransactionId` é a referência externa recomendada para idempotência e posterior consulta.
 - O mesmo `merchantTransactionId` devolve o resultado já persistido e não cria uma nova cobrança. Enquanto a primeira requisição ainda estiver sendo processada, a repetição recebe `409` e pode ser tentada novamente.
+- **PayPay:** `REF` exige valor **acima de 1000 Kz** e `GPO` (MULTICAIXA Express) exige em `paymentInfo.phoneNumber` os 9 dígitos do número registado no Express (aceita `+244`, `244` e espaços); `GPO_QR` não é suportado (`400`). Estas regras são validadas **antes** de qualquer registo: um pedido impossível devolve `400` e não deixa cobrança `Failed` nem chega ao PayPay. Em `REF`, a resposta traz em `response` a `entity_id` (entidade) e a `reference_id` (referência) para o pagador; o `trade_token` e o `dynamic_link` do PayPay nunca são guardados nem devolvidos. O IP de quem pediu o pagamento segue no pedido ao PayPay (`payer_ip`).
 - A cobrança é registrada no ledger como solicitação e, conforme resposta da AppyPay, como criada ou `Failed` (se a própria chamada HTTP à AppyPay falhar, sem chegar a existir cobrança do lado do provedor).
 
 #### 19.5 POST /financeiro/qr-codes
@@ -8288,6 +8293,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 - **Ordenação:** itens sintéticos (`status: "pendente"`) sempre vêm primeiro — representam ação pendente ("isto ainda precisa de uma cobrança"). Depois vêm os itens reais, por `updated_at DESC` (atividade mais recente primeiro). A paginação (`limit`/`offset`) percorre essa ordem combinada como uma lista única.
 - `total` é o número de itens nesta página; `total_geral` é o total real (pendências sintéticas + cobranças reais) que casa com os filtros aplicados.
 - `turma_id`, `curso_id`, `ano_academico` e `ano_letivo` só têm efeito sobre cobranças reais de origem `mensalidade`: usar qualquer um deles exclui automaticamente cobranças de `matricula` e `avulsa` do resultado, porque essas duas origens não têm um vínculo de turma/ano letivo resolvível (a cobrança de matrícula antecede a atribuição de turma do estudante). Pendências sintéticas só existem para `mensalidade`, então também dependem de pelo menos um desses quatro filtros — sem nenhum, nenhum item sintético é computado nem aparece na lista (evita varrer a academia inteira sem limite a cada chamada).
+- **Marcas de cobrança paga com problema (opcionais, só aparecem quando verdadeiras):** `pago_em_duplicidade` e `duplicidade_com` (ids das outras cobranças já pagas da mesma dívida) e `pagamento_divergente` com `valor_pago_provedor` (o `valor` é o cobrado). Ver 19.31.
 - **Itens sintéticos respeitam `estado` e `tipo`:** como toda pendência sintética é sempre `status: "pendente"` e `origem: "mensalidade"`, informar `estado` sem incluir `"pendente"`, ou `tipo` sem incluir `"mensalidade"`, exclui as pendências do resultado — mesmo dentro do escopo de turma/curso/ano onde elas normalmente apareceriam. Sem nenhum desses dois filtros, pendências continuam incluídas normalmente.
 
 #### 19.8 GET /financeiro/cobrancas/estudante/:codigo
@@ -8324,7 +8330,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 #### 19.9 POST /financeiro/cobrancas/:id/cancelar
 
-**Escopo da rota:** cancela localmente uma cobrança REF, GPO ou QR Code ainda não paga. Não chama endpoint de cancelamento do provedor (a AppyPay não documenta um para esses métodos). A reconsulta prévia vai ao provedor da cobrança.
+**Escopo da rota:** cancela uma cobrança REF, GPO ou QR Code ainda não paga. Numa cobrança da AppyPay o cancelamento é só local (a AppyPay não documenta endpoint de cancelamento); numa do PayPay o pedido é fechado no provedor (`trade_close`) antes de ser cancelado aqui. A reconsulta prévia vai ao provedor da cobrança.
 
 **Proteção:** autenticado + academia dona da própria cobrança, ou admin FPP somente quando a cobrança pertence ao contexto `spuri`. Ao contrário das demais operações financeiras, admin FPP nunca pode cancelar cobrança de academia.
 
@@ -8344,7 +8350,7 @@ Para `MULTIPLE`, os quatro campos adicionais são obrigatórios. Seus valores e 
 
 - Antes de registrar `CobrancaCancelada`, o backend reconsulta o provedor da cobrança. Se o estado mais recente já for `Success`, não cancela nem grava evento de cancelamento.
 - Cobranças em qualquer estado terminal — `cancelada`, `falhada`, `Success`, `Failed`, `Cancelled` ou `Expired` — não podem ser canceladas novamente ou reabertas. Para cobrar de novo, crie uma nova cobrança com outro `merchantTransactionId`.
-- O evento `CobrancaCancelada` é interno ao ledger Spuri. Uma referência/QR já emitido pode continuar tecnicamente pagável fora da plataforma até expirar; sucesso tardio gera `CobrancaConflitoPosCancelamento`, sem alterar o status local cancelado.
+- O evento `CobrancaCancelada` é interno ao ledger Spuri. Numa cobrança da AppyPay, uma referência/QR já emitido pode continuar tecnicamente pagável fora da plataforma até expirar; sucesso tardio gera `CobrancaConflitoPosCancelamento`, sem alterar o status local cancelado. Numa cobrança do PayPay, o pedido fica fechado no provedor; se o PayPay recusar o fecho, a resposta é `502`, a cobrança **não** é cancelada e pode tentar de novo. Uma consulta posterior a uma cobrança `cancelada` nunca a reabre, qualquer que seja o estado que o provedor devolva.
 
 #### 19.10 POST /webhooks/appypay/gpo
 
@@ -8754,11 +8760,25 @@ Quando `metodo_pagamento` é `GPO_QR`, `cobranca` inclui `qrCodeArr` em base64.
     "usa_segredo_webhook": true,
     "cabecalho_webhook": "X-Spuri-Webhook-Secret",
     "webhooks": ["/webhooks/appypay/gpo", "/webhooks/appypay/ref"]
+  },
+  {
+    "id": "PAYPAY",
+    "nome": "PayPay",
+    "slug": "paypay",
+    "metodos": ["REF", "GPO"],
+    "campos_credenciais": [
+      { "chave": "partner_id", "rotulo": "Partner ID", "obrigatorio": true, "secreto": false, "ajuda": "Entregue pela equipa comercial do PayPay (só dígitos)" },
+      { "chave": "sale_product_code", "rotulo": "Sale Product Code", "obrigatorio": true, "secreto": false, "ajuda": "Entregue pela equipa comercial do PayPay (9 caracteres)" },
+      { "chave": "chave_privada", "rotulo": "Chave privada RSA (1024 bits)", "obrigatorio": true, "secreto": true, "multilinha": true, "ajuda": "A que você gerou (formato PKCS#8, em base64 ou PEM). Nunca é mostrada de novo" },
+      { "chave": "chave_publica_paypay", "rotulo": "Chave pública do PayPay", "obrigatorio": true, "secreto": false, "multilinha": true, "ajuda": "A chave pública oficial do PayPay, descarregada em API Setting do portal (base64 ou PEM). Não confunda com a sua" }
+    ],
+    "usa_segredo_webhook": false,
+    "webhooks": ["/webhooks/paypay/notificacoes"]
   }
 ]
 ```
 
-**Regras de negócio:** `metodos` usa os métodos canônicos da plataforma (`REF`, `GPO`, `GPO_QR`); cada provedor traduz para os códigos próprios dele. Campos com `secreto=true` nunca são devolvidos pela API, nem mascarados. Provedores previstos (Intelize, PayPay) entram aqui quando forem implementados.
+**Regras de negócio:** `metodos` usa os métodos canônicos da plataforma (`REF`, `GPO`, `GPO_QR`); cada provedor traduz para os códigos próprios dele. Campos com `secreto=true` nunca são devolvidos pela API, nem mascarados. `multilinha` (opcional) é só uma dica de apresentação (campo de texto grande, para chaves). Provedores previstos (Intelize) entram aqui quando forem implementados.
 
 #### 19.28 GET e PUT /financeiro/provedor
 
@@ -8828,6 +8848,8 @@ Não é um endpoint: é um job em segundo plano do servidor, a rede de seguranç
 | `GPO_QR` | 5 min até 1 h · 30 min até 12 h · 2 h até 3 dias · 12 h até 30 dias | 30 dias |
 | `REF` e outros | 10 min até 1 h · 30 min até 6 h · 2 h até 2 dias · 6 h até 7 dias · 24 h até 30 dias | 30 dias |
 
+**PayPay** (política própria, porque o webhook é o caminho principal e a reconciliação é só a rede de segurança): `GPO` — 3 min até 15 min · 15 min até 2 h · 1 h até 24 h (idade máxima 24 h); `REF` — 15 min até 1 h · 1 h até 24 h · 6 h até 7 dias · 24 h até 30 dias (idade máxima 30 dias); `GPO_QR` não existe no PayPay.
+
 A idade vem de `financeiro_cobrancas.emitida_em` (migration 133), o momento do primeiro evento da cobrança. Depois de um arranque, a primeira verificação das pendentes acontece em até ~1 minuto, espalhada.
 
 **Variáveis de ambiente (todas opcionais):**
@@ -8841,6 +8863,32 @@ A idade vem de `financeiro_cobrancas.emitida_em` (migration 133), o momento do p
 | `RECONCILIACAO_RESYNC_MIN` | `1440` | recarrega as pendentes do banco a cada N min (padrão: diário); `0` = só no arranque |
 
 Os eventos de ledger gravados pelo job usam o ator `sistema:reconciliacao` (tipo `sistema`). O token de acesso do provedor passa a ser guardado em cache por credencial **e** valores (`client_id`/`client_secret`), de modo que editar uma credencial deixa de reaproveitar o token do cliente anterior.
+
+#### 19.30 POST /webhooks/paypay/notificacoes
+
+**Escopo da rota:** entrada pública das notificações assíncronas do PayPay (`trade_status_sync`) para **todos** os métodos: o portal do PayPay aceita um único endereço de notificação por conta. O endereço a configurar no portal (API Setting) é o do servidor mais este caminho; o frontend mostra-o na subtela do PayPay.
+
+**Proteção:** pública no roteamento, autenticada pela **assinatura RSA** (SHA1withRSA) que o PayPay põe em `sign`: o backend lê o corpo, monta o texto ordenado dos campos (sem `sign`, `sign_type` e valores vazios) e confere-o com a `chave_publica_paypay` da credencial. Como essa chave pode ser a mesma em várias contas, o backend primeiro localiza a cobrança por `out_trade_no` e só considera a credencial que **emitiu** essa cobrança (ativa ou arquivada), de modo que a notificação de uma academia nunca é atribuída a outra. Assinatura inválida, ausente ou corpo adulterado: `401`, sem efeito.
+
+**Request:** `application/x-www-form-urlencoded`, com os campos do PayPay (`notify_id`, `notify_type`, `out_trade_no`, `inner_trade_no`, `status`, `amount`, `sign`, `sign_type`...).
+
+**Response 200:** texto `success`, exatamente, sem espaços nem HTML (sem essa resposta o PayPay repete a notificação 7 vezes).
+
+**Regras de negócio:**
+
+- Só `status=TRADE_FINISHED` (pagamento liquidado) confirma o pagamento. `TRADE_SUCCESS` é registado e não altera a cobrança (o PayPay recomenda tratá-lo como aviso). `TRADE_CLOSED` leva a cobrança a `Expired` (ou `Failed`, se vier `failCode`/`failReason`). Notificações de reembolso (`orig_out_trade_no`) e de outros tipos são registadas sem efeito.
+- Um sucesso só é definitivo depois de uma **consulta ao vivo** (`trade_query`) concordar; se a consulta discordar, a cobrança fica como estava.
+- Idempotência por `notify_id` (por notificação, não por cobrança): o PayPay envia várias notificações por pedido e repete cada uma; repetições respondem `success` e não têm efeito.
+- Pagamento com valor diferente do cobrado: ver 19.31.
+
+#### 19.31 Troca de provedor, pagamento em duplicidade e pagamento divergente
+
+Regras do módulo financeiro, sem rota própria.
+
+- **Troca de provedor:** só o provedor ativo gera cobranças novas e o pagador só vê os métodos que a academia habilitou **e** que o provedor ativo suporta (por exemplo, `GPO_QR` desaparece com o PayPay ativo). As cobranças já emitidas continuam a ser acompanhadas no provedor que as emitiu.
+- **Cobrança nova para uma dívida que já tem cobrança em aberto noutro provedor:** se esse provedor sabe fechar pedidos (PayPay), a cobrança antiga é **fechada no provedor e cancelada** (motivo `substituída por nova cobrança após a troca de provedor`) e a nova segue; se o fecho for recusado, a nova **não** é criada e a antiga continua aberta. Se o provedor não sabe fechar (AppyPay), a antiga continua pagável e **continua a bloquear** a nova (`já possui cobrança em aberto`), porque cancelá-la só no Spuri deixaria o pagador a poder pagar uma dívida cancelada. Vale para mensalidades e para os serviços extra (taxa de inscrição e obrigações).
+- **Pagamento em duplicidade:** se duas cobranças confirmadas quitam a mesma dívida, a primeira quita e a segunda fica `pago_em_duplicidade=true` (com `duplicidade_com`), continua `Success` (o dinheiro entrou) mas **não é aplicada a nenhuma dívida**; a academia vê a marca na listagem (19.7) e no detalhe (19.6) para devolver o valor ao pagador.
+- **Pagamento divergente:** se o provedor confirma o pagamento de um pedido cujo valor **não** é o cobrado (tolerância de meio cêntimo), a cobrança **não quita**: fica no estado em que estava, com `pagamento_divergente=true` e `valor_pago_provedor`. Se o provedor corrigir o valor, a cobrança passa a quitar e a marca desaparece. Só vale para provedores que informam o valor do pedido (PayPay: campo `amount`); a AppyPay não é verificada.
 
 ## 20. Armazenamento
 

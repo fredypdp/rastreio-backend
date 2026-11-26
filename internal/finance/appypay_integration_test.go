@@ -606,24 +606,24 @@ func TestIntegrationWebhookSecretGeneratedOnceGlobalHeaderAndRotation(t *testing
 
 	okHeaders := http.Header{}
 	okHeaders.Set(WebhookHeaderName, firstSecret)
-	owner, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, okHeaders)
+	owner, err := service.AuthenticateWebhook(ctx, ProvedorAppyPay, okHeaders, nil)
 	if err != nil || owner.CredentialID != created.ID {
 		t.Fatalf("segredo correto não autenticou: owner=%#v err=%v", owner, err)
 	}
 
 	wrongValueHeaders := http.Header{}
 	wrongValueHeaders.Set(WebhookHeaderName, "valor-errado")
-	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, wrongValueHeaders); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, wrongValueHeaders, nil); err == nil {
 		t.Fatal("valor de segredo errado autenticou")
 	}
 
 	wrongHeaderNameHeaders := http.Header{}
 	wrongHeaderNameHeaders.Set("X-API-Key", firstSecret)
-	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, wrongHeaderNameHeaders); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, wrongHeaderNameHeaders, nil); err == nil {
 		t.Fatal("cabeçalho fora do nome global autenticou")
 	}
 
-	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{}); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, http.Header{}, nil); err == nil {
 		t.Fatal("requisição sem nenhum cabeçalho autenticou")
 	}
 
@@ -651,12 +651,12 @@ func TestIntegrationWebhookSecretGeneratedOnceGlobalHeaderAndRotation(t *testing
 	}
 	oldHeaders := http.Header{}
 	oldHeaders.Set(WebhookHeaderName, firstSecret)
-	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, oldHeaders); err == nil {
+	if _, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, oldHeaders, nil); err == nil {
 		t.Fatal("segredo antigo continuou autenticando após rotação")
 	}
 	newHeaders := http.Header{}
 	newHeaders.Set(WebhookHeaderName, rotated)
-	if owner, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, newHeaders); err != nil || owner.CredentialID != created.ID {
+	if owner, err = service.AuthenticateWebhook(ctx, ProvedorAppyPay, newHeaders, nil); err != nil || owner.CredentialID != created.ID {
 		t.Fatalf("segredo novo pós-rotação não autenticou: owner=%#v err=%v", owner, err)
 	}
 

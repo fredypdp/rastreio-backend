@@ -419,14 +419,17 @@ func ReceberWebhook(provedorID, metodo string) gin.HandlerFunc {
 			c.Status(http.StatusNotFound)
 			return
 		}
-		owner, err := apoio.FinanceiroService.AuthenticateWebhook(c.Request.Context(), prov.ID(), c.Request.Header)
-		if err != nil {
-			c.Status(http.StatusUnauthorized)
-			return
-		}
+		// O corpo é lido ANTES de autenticar: os provedores que assinam o
+		// conteúdo (PayPay) só o conseguem autenticar com ele. O limite de 1 MB
+		// vale para qualquer notificação, autenticada ou não.
 		corpo, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
 		if err != nil {
 			c.Status(http.StatusBadRequest)
+			return
+		}
+		owner, err := apoio.FinanceiroService.AuthenticateWebhook(c.Request.Context(), prov.ID(), c.Request.Header, corpo)
+		if err != nil {
+			c.Status(http.StatusUnauthorized)
 			return
 		}
 		eventID, payload, err := prov.InterpretarWebhook(c.ContentType(), corpo)

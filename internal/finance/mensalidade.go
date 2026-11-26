@@ -368,6 +368,15 @@ func (s *Service) IniciarPagamentoMensalidades(ctx context.Context, in Mensalida
 		if !found {
 			return MensalidadePagamentoView{}, fmt.Errorf("mensalidade %s/%02d não está pendente", m.AnoLetivo, m.Mes)
 		}
+		// Troca de provedor: fecha, se o provedor o permitir, a cobrança em
+		// aberto que o outro provedor ainda tem para este mês.
+		abertas, err := s.idsAbertosMensalidade(ctx, in.CodigoEstudante, in.CodigoAcademia, m.AnoLetivo, m.Mes)
+		if err != nil {
+			return MensalidadePagamentoView{}, err
+		}
+		if err = s.liberarCobrancasDeOutroProvedor(ctx, in.CodigoAcademia, abertas, actorID, actorType, ip); err != nil {
+			return MensalidadePagamentoView{}, err
+		}
 		open, err := s.mensalidadeTemCobrancaAberta(ctx, in.CodigoEstudante, in.CodigoAcademia, m.AnoLetivo, m.Mes)
 		if err != nil {
 			return MensalidadePagamentoView{}, err
@@ -959,6 +968,10 @@ func (s *Service) confirmMensalidadeCharge(ctx context.Context, chargeID uuid.UU
 	row, err := s.loadCharge(ctx, chargeID.String())
 	if err != nil || !isSuccessfulChargeStatus(row.Status) {
 		return err
+	}
+	if dup, _ := row.Payload["pago_em_duplicidade"].(bool); dup {
+		// Outra cobrança já quitou estas mensalidades: esta não se aplica a nada.
+		return nil
 	}
 	months := mensalidadesDoPayload(row.Payload)
 	if len(months) == 0 {

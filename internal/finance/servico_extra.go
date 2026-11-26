@@ -46,6 +46,13 @@ func (s *Service) IniciarPagamentoTaxaInscricaoServicoExtra(ctx context.Context,
 	if !contains(metodos, in.MetodoPagamento) {
 		return TaxaInscricaoServicoExtraPagamentoView{}, errors.New("método de pagamento não está habilitado para esta taxa de inscrição")
 	}
+	abertas, err := s.idsAbertosTaxaInscricao(ctx, in.SolicitacaoID)
+	if err != nil {
+		return TaxaInscricaoServicoExtraPagamentoView{}, err
+	}
+	if err = s.liberarCobrancasDeOutroProvedor(ctx, academia, abertas, "solicitacao_servico_extra:"+in.SolicitacaoID, "solicitante", ip); err != nil {
+		return TaxaInscricaoServicoExtraPagamentoView{}, err
+	}
 	open, err := s.servicoExtraTemCobrancaAberta(ctx, in.SolicitacaoID)
 	if err != nil {
 		return TaxaInscricaoServicoExtraPagamentoView{}, err
@@ -203,6 +210,13 @@ func (s *Service) IniciarPagamentoServicoExtraObrigacao(ctx context.Context, in 
 	}
 	if estado == EstadoAnulado {
 		return QRCodeResult{}, errors.New("este lançamento foi anulado pela academia")
+	}
+	abertas, err := s.idsAbertosServicoExtraObrigacao(ctx, in.SolicitacaoID, in.TipoLancamento, in.Ano, in.Mes)
+	if err != nil {
+		return QRCodeResult{}, err
+	}
+	if err = s.liberarCobrancasDeOutroProvedor(ctx, codigoAcademia, abertas, "solicitacao_servico_extra:"+in.SolicitacaoID, "solicitante", ip); err != nil {
+		return QRCodeResult{}, err
 	}
 	open, err := s.servicoExtraObrigacaoTemCobrancaAberta(ctx, in.SolicitacaoID, in.TipoLancamento, in.Ano, in.Mes)
 	if err != nil {
