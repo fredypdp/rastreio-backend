@@ -1,6 +1,6 @@
 # Plano de Atualizações — Regras de Negócio e Partes (v2)
 
-> Base: `Lista de tarefas.md` (2026-11-08) + `notificacoes_eventos_spuri.md` · Atualizado em 2026-11-23
+> Base: `Lista de tarefas.md` (2026-11-08) + `notificacoes_eventos_spuri.md` · Atualizado em 2026-11-26
 > **Back-end verificado:** `rastreio-backend`, `main` @ `d9c47fd`, por leitura do código, das rotas e dos documentos de tarefa. A suíte de testes **não foi executada**.
 > **Verificação de 2026-11-21 (Partes 8 e 13):** `rastreio-backend`, `main` @ `ffc13e2`. `gofmt`, `go vet` e `go test ./...` limpos, com os testes de integração executados em PostgreSQL 16.15 (Go 1.27.4; o CI usa 1.24.12). O front-end não foi reanalisado nessa verificação.
 > **Front-end:** `rastreio-frontend`, `main` @ `740ce90` (2026-11-18), lido e validado com `tsc` e `eslint` na Tarefa 39. Os trechos do plano sobre telas que ainda não foram implementadas continuam vindo das regras do plano; cada tarefa de front começa pela análise do código.
@@ -8,6 +8,7 @@
 > **Verificação de 2026-11-23:** `rastreio-backend`, `main` @ `7f9b70e`: lidos o commit das Tarefas 130 e 131, os documentos dessas tarefas, o plano que o commit alterou, `internal/permissoes` e o reenvio de credenciais. O front-end é privado e não foi lido; o que consta dele vem do plano e dos documentos de tarefa.
 > **Partes 4 e 5** estão implementadas (back-end `7f9b70e`, Tarefas 130 e 131; front-end, Tarefas 40 e 41), e os detalhes da implementação estão integrados nesta versão.
 > **Atualização de 2026-11-23 (Parte 2B):** só plano, sem código. `rastreio-backend`, `main` @ `86ef281`: contados em `internal/db/safe_queries.go` 22 tipos de agregado e 165 tipos de evento. Entram a **Parte 2B** (modelo híbrido) e a regra 17; a planilha de custo operacional foi analisada. Nada foi executado; o front-end não foi lido.
+> **Atualização de 2026-11-26 (Parte 2B, revisão da política):** `rastreio-backend`, `main` @ `14ff9dd` (Tarefas 134 e 135 já em produção). Lidos no código: quem consome os eventos de Academia, Admin e contas de pessoa, quem carrega esses agregados, os pontos de escrita no ledger e a leitura de credenciais. **Executado:** o renome das colunas da `auditoria_crud` numa transação desfeita (PostgreSQL 16: as 46 cadeias de hash continuaram válidas). A Parte 6 está em andamento em outro chat e **não foi alterada** por esta atualização. O front-end não foi lido.
 
 ## O que mudou nesta versão
 
@@ -22,6 +23,7 @@
 9. **Atualização de 2026-11-21 (módulos, serviços, facturação, passaporte, sumários):** (a) **módulos, recursos e planos passam a ser definidos no código, e os preços são editáveis pelo FPP** (Gestão Académica, Finanças, Facturação, Comunicação e Serviços); administradores deixam de criar planos (Parte 9); o bloqueio por módulo é feito em **middleware no back-end** e a **consulta continua**; (b) **novo modelo de cobrança por número de estudantes**: a academia define o **limite** ao contratar e paga **excedente** por módulo para ultrapassá-lo; **demonstração gratuita** de 15 dias (Partes 9 e 10); preços editáveis pelo FPP, valendo só para quem não tem o módulo contratado, e Finanças e Serviços a 15 Kz por estudante; (c) **toda cobrança pode ser marcada como paga manualmente**, com a mesma sequência de efeitos de um pagamento por provedor (Parte 11, nova); (d) **Serviços** vira catálogo nosso, com Transporte e Atividade extracurricular (Parte 7 reescrita, Parte 8 ajustada); (e) **Facturação** sobe para a Parte 12, logo depois das Partes 8 a 11, ganha cópia de segurança no Mega e envio do recibo por e-mail; (f) novas Partes **19** (sumários sequenciais) e **20** (passaporte no cadastro); (g) o pacote `finance` vai para `internal/handlers/finance` (Parte 2); (h) a Parte 23 passa a tratar os pacotes de SMS como **cota de envio**, complemento das Partes 26 e 27; (i) **renumeração** das partes depois da 10; (j) revisões do mesmo dia: o front permite navegar e bloqueia a ação com aviso (CTA) para a página de assinatura do módulo; a Comunidade e seus recursos vão para o `Plano de Atualizações 2.md`; o reset de credenciais de encarregado, professor e secretário vira a Parte 28; o evento 34 foi retirado.
 10. **Atualização de 2026-11-23 (versão final):** as Partes 4 e 5 foram implementadas (Tarefas 130 e 131 no back-end; 40 e 41 no front-end), com os detalhes integrados ao plano; entram o passo 9 (versão da API em SemVer) e as interpretações 56 a 64; a seção de renumeração foi removida.
 11. **Atualização de 2026-11-23 (Parte 2B):** nova **Parte 2B — Modelo híbrido: event sourcing só no que é sensível**, logo depois da Parte 2, com as listas aprovadas por você (o que fica em event sourcing e o que vai para CRUD), a **regra 17** e a nova redação da regra 6 (auditoria do CRUD). As Partes 16 e 19 passam a depender da 2B-1 e a Parte 28, da 2B-2; as Partes 7, 9, 12, 21 e 23 ganham uma nota de persistência; a Parte 19 deixa de depender do ledger e do `rebuild`. Interpretações 65 a 69.
+12. **Atualização de 2026-11-26 (Parte 2B, política revista por você):** o critério de event sourcing fica mais estreito: **só o que serve de prova de um fato e de base para reconstruir outros dados** (dinheiro, nota, falta, avaliação, ano letivo, identidade e trajetória do estudante). **Academia, admin, secretário, professor, encarregado, permissões e vínculos saem do ledger** (CRUD com `auditoria_crud`), e o **estudante** fica com a identidade e a trajetória no ledger e o cadastro em tabela própria. Entram as regras 18 a 20; as entregas **2B-0** (política e auditoria), **2B-4** (contas) e **2B-5** (estudante); a 2B-2 ganha uma tabela única de credenciais; a comunicação é convertida dentro da Parte 21; e as Partes 20, 22 e 28 passam a depender das entregas novas. A 2B sai da sequência obrigatória porque a Parte 6 já foi iniciada. Interpretações 70 a 78.
 
 ---
 
@@ -46,7 +48,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
    Atualize junto: `modificado:` no cabeçalho e a tabela **Versionamento da API** (seção 1.2 da documentação), com a versão, a(s) tarefa(s) e um resumo de uma linha. O documento da tarefa informa a versão anterior e a nova. Uma entrega que altera a API sem atualizar a versão está incompleta.
 
 **Outras orientações**
-- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a próxima tarefa livre é a **136** (a 130 fechou a Parte 4, a 131, a Parte 5, a 132 abriu a Parte 2B, a 133 converteu cursos e matérias, a 134 turmas e sumários e a 135 a configuração de faltas). Front-end (numeração própria): a próxima é a **42** (a 40 fechou a Parte 4 e a 41, a Parte 5).
+- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a última tarefa aplicada é a **135** (a 130 fechou a Parte 4, a 131, a Parte 5, a 132 abriu a Parte 2B, a 133 converteu cursos e matérias, a 134 turmas e sumários e a 135 a configuração de faltas). **Com mais de um chat trabalhando ao mesmo tempo** (a Parte 6 corre em outro), o número da tarefa e o da migration **não são pré-atribuídos neste plano**: cada tarefa reserva o seu ao começar, conferindo o último em `origin/main` (`ls migrations | tail -3` e a pasta de tarefas) e dizendo qual reservou na primeira mensagem; se dois chats tomarem o mesmo número, o pacote aplicado por último é renumerado antes de aplicar. Front-end (numeração própria): a próxima é a **42** (a 40 fechou a Parte 4 e a 41, a Parte 5).
 - **(sugestão)** = regra acrescentada por mim para fechar lacuna; pode ser cortada. **(a confirmar)** = decisão pendente, com padrão na seção final.
 - Ordem de deploy padrão: back-end primeiro, depois front-end. Exceção: partes que removem funcionalidade (1 e 14, e a remoção da criação genérica de serviços na Parte 7): front-end primeiro.
 - As partes estão na ordem de execução; as que não dependem uma da outra podem andar em paralelo (ver "Ordem de execução").
@@ -60,7 +62,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | **Fase 1 — Fundações** | | | | |
 | 1 ✅ | Remover a matrícula pública | — | Implementado | 128 (back) · 38 (front) |
 | 2 | Back-end em pacotes (refatoração) | 1 | Parcial (falta o pacote `finance`) | 129 (back) |
-| 2B | Modelo híbrido: event sourcing só no que é sensível (2B-1 e 2B-2; 2B-3 condicional) | 2 (2B-3: 8) | Parcial (falta converter) | 132 (back: regra 17 e auditoria), 133 (back: cursos e matérias), 134 (back: turmas e sumários), 135 (back: configuração de faltas) |
+| 2B | Modelo híbrido: event sourcing só no que é sensível (2B-0 a 2B-2, 2B-4 e 2B-5; 2B-3 condicional) | 2 (2B-3: 8) | Parcial (2B-1 em parte) | 132 (back: regra 17 e auditoria), 133 (back: cursos e matérias), 134 (back: turmas e sumários), 135 (back: configuração de faltas) |
 | 3 ✅ | Configurações do sistema (variáveis de ambiente → banco) | 2 | Implementado | 129 (back) · 39 (front) |
 | 4 ✅ | Usuários e permissões (encarregado, secretário, professor) | 2, 3 | Implementado | 130 (back) · 40 (front) |
 | **Fase 2 — Credenciais** | | | | |
@@ -79,33 +81,35 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | 13 | Notas e faltas só por professores + recálculo da avaliação final | 4 | Pendente | |
 | 14 | Avaliação final do ensino superior fixa no código | 2, 13 | Pendente | |
 | 15 | Horários das turmas | 4 | Pendente | |
-| 16 | Grupos do 4º ano de cursos técnicos | 4, 2B | Parcial | |
+| 16 | Grupos do 4º ano de cursos técnicos | 4, 2B (2B-1 feita) | Parcial | |
 | 17 | Material de apoio | 4, 9 | Pendente | |
 | 18 | Refazer matrícula | 8, 13 | Pendente | |
-| 19 | Sumários sequenciais | 4, 2B | Pendente | |
-| 20 | Documento de identificação alternativo (passaporte) | 4, 5 | Pendente | |
+| 19 | Sumários sequenciais | 4, 2B (2B-1 feita) | Pendente | |
+| 20 | Documento de identificação alternativo (passaporte) | 4, 5, 2B-5 | Pendente | |
 | **Fase 7 — Comunicação e notificações** | | | | |
 | 21 | Núcleo de notificações (e-mail e SMS) | 3, 5 | Parcial | |
-| 22 | Notificações de segurança e conta | 21 | Pendente | |
+| 22 | Notificações de segurança e conta | 21, 2B-2, 2B-4 | Pendente | |
 | 23 | Pacotes de SMS: cota de envio da academia | 8, 9, 10, 11, 21 | Pendente | |
 | 24 | Notificações acadêmicas | 4, 13, 21, 23 | Pendente | |
 | 25 | Notificações financeiras e de serviços | 7, 8, 21, 23 | Pendente | |
 | 26 | SMS manual da academia (individual, coletivo, citação) | 9, 21, 23 | Parcial | |
 | 27 | SMS agendado e automático (academia e Spuri) | 26 | Pendente | |
 | **Fase 8 — Credenciais complementares** | | | | |
-| 28 | Reset de credenciais de encarregado, professor e secretário | 4, 5, 2B | Pendente | |
+| 28 | Reset de credenciais de encarregado, professor e secretário | 4, 5, 2B-2, 2B-4 | Pendente | |
 
 ### Ordem de execução
 
 **1. Sequência obrigatória.** Cada passo só começa quando o anterior fecha. As partes entre colchetes precisam estar prontas juntas, e `+` marca uma segunda parte de que o passo também depende:
 
-`2 → 2B-1 e 2B-2 → [6 e 7] → 8 → (+ 9) 10 → 11 → (+ 21) 23 → 26 → 27`
+`2 → [6 e 7] → 8 → (+ 9) 10 → 11 → (+ 21) 23 → 26 → 27`
+
+Trilha da 2B (anda em paralelo à sequência, **uma tarefa por vez**): `2B-0 → 2B-1 (restante) → 2B-2 → 2B-4 e 2B-5`. A 2B-3 só vem depois da 8.
 
 - A **2** (pacote `finance`) vem antes de **6** e **7**, porque as duas mexem nesse pacote. A **8** precisa das duas.
-- A **2B-1** e a **2B-2** vêm depois da **2** (mexem nos mesmos arquivos de `handlers`, `safe_queries.go` e `main.go`) e antes das Partes **6** e **7**. A **2B-3** é condicional: só vem depois da **8** e só se a medição pedir. As Partes **16** e **19** esperam a **2B-1**; a **28** espera a **2B-2**.
+- A **2B** saiu da sequência obrigatória em 2026-11-26, porque a Parte **6** foi iniciada em outro chat antes de a 2B terminar. A regra antiga (2B antes de 6 e 7) existia porque as duas mexem nos mesmos arquivos (`handlers`, `safe_queries.go`, `main.go`); agora isso se resolve **aplicando uma tarefa de cada vez** e conferindo `main` antes de substituir (ver Cuidados). Quem espera a 2B: **16** e **19** já estão liberadas (turmas e sumários, Tarefa 134); a **20** espera a **2B-5**; a **22** espera a **21**, a **2B-2** e a **2B-4**; a **28** espera a **2B-2** e a **2B-4**. A **2B-3** é condicional: só vem depois da **8** e só se a medição pedir.
 - A **10** precisa da **8** e da **9**. A **11** precisa da **10**.
 - A **23** precisa da **11** e da **21**. A **26** precisa da **23**, e a **27**, da **26**.
-- Dependem das partes da sequência, mas ficam fora dela: **12** (depois da 11), **14** (depois da 13), **18** (depois da 8 e da 13), **22** (depois da 21), **24** (depois da 13, 21 e 23) e **25** (depois da 7, 8, 21 e 23).
+- Dependem das partes da sequência, mas ficam fora dela: **12** (depois da 11), **14** (depois da 13), **18** (depois da 8 e da 13), **22** (depois da 21, da 2B-2 e da 2B-4), **24** (depois da 13, 21 e 23) e **25** (depois da 7, 8, 21 e 23).
 - As Partes **1, 3, 4 e 5** já foram feitas.
 
 **2. Etapas em ordem, com o que pode andar em paralelo.** Em cada etapa, a coluna "Em paralelo" pode ser feita em qualquer combinação, desde que a parte de que ela depende já tenha fechado.
@@ -113,10 +117,10 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | Etapa | Obrigatória | Em paralelo | Observação |
 |---|---|---|---|
 | 0 | 1, 3, 4, 5 (feitas) | — | Já aplicadas (commit `7f9b70e`; Tarefas 130, 131, 40 e 41) |
-| 1 | 2 (pacote `finance`) | 13, 15, 20, 21 | Nenhuma dessas mexe em `finance`, em Turma, em Sumário nem na autenticação |
-| 1B | 2B-1 e 2B-2 | 16 e 19 (depois da 2B-1); 28 (depois da 2B-2) | Aplicar uma de cada vez: a 2B mexe em `safe_queries.go` e `main.go`. A 2B-3 não entra aqui |
-| 2 | 6 e 7 (andam juntas) | 9; 14 (se a 13 já fechou); 22 (se a 21 já fechou) | A 9 está no caminho crítico e só depende da 4 |
-| 3 | 8 | 17 (precisa da 9); 2B-3 (condicional) | |
+| 1 | 2 (pacote `finance`) | 13, 15, 21 | Nenhuma dessas mexe em `finance`, em Turma, em Sumário nem na autenticação. A 20 saiu daqui: espera a 2B-5 (mexe no cadastro do estudante). A 21 converte também a comunicação (2B) |
+| 1B | 2B-0, 2B-1 (restante) e 2B-2 | 16 e 19 (liberadas desde a Tarefa 134); 28 (depois da 2B-2 e da 2B-4) | Andam junto da etapa 2 (a Parte 6 foi iniciada antes). Uma tarefa de cada vez: a 2B mexe em `safe_queries.go` e `main.go`. A 2B-3 não entra aqui |
+| 2 | 6 e 7 (andam juntas) | 9; 14 (se a 13 já fechou); 22 (se a 21, a 2B-2 e a 2B-4 já fecharam) | A 9 está no caminho crítico e só depende da 4. **A 6 já está em andamento (outro chat)** |
+| 3 | 8 | 17 (precisa da 9); 2B-3 (condicional); 2B-4 e 2B-5 (depois da 2B-2, uma de cada vez; podem começar antes, na etapa 2); 20 (depois da 2B-5) | |
 | 4 | 10 | 18 (precisa da 8 e da 13) | |
 | 5 | 11 | O que sobrou das etapas anteriores | |
 | 6 | 12 e 23 | — | As duas só esperam a 11 (a 23 também espera a 21) |
@@ -126,6 +130,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 **Cuidados com o paralelo**
 - A **Parte 9** declara o módulo em **todas** as rotas. Se rodar ao mesmo tempo que partes que criam rotas (13, 15, 16, 19, 28...), aplique a 9 por último ou reconfira as rotas novas depois, pela regra 11.
 - Cada parte em paralelo é uma tarefa separada, com seu pacote de arquivos e seu documento de tarefa. Como cada entrega substitui arquivos inteiros, duas tarefas que mexam no **mesmo arquivo** se sobrescrevem: aplique uma de cada vez e rode o comando de divergência (`git fetch origin && git diff <commit-base> origin/main`) antes de substituir.
+- **Mais de um chat ao mesmo tempo (Parte 6 e 2B):** os arquivos mais disputados são este plano, `safe_queries.go`, `politica_eventsourcing.go`, `main.go`, a `Documentação da API.md` e a versão no `Dockerfile`. Antes de aplicar qualquer pacote: `git fetch origin && git diff --stat <commit-base-do-pacote> origin/main`. Se aparecer um arquivo que o pacote também altera, avise antes: o pacote entregue depois reaplica a sua alteração **em cima** do arquivo novo, em vez de substituí-lo. No plano, cada chat altera só as suas Partes e o Registro de andamento. A versão da API é a que estiver em `main` na hora de aplicar, mais o PATCH ou MINOR da tarefa.
 - Se preferir uma parte de cada vez, a ordem das etapas acima já serve como ordem única.
 
 ---
@@ -160,7 +165,10 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 14. **Cada parte atualiza este plano** (ver "Como acompanhar o andamento").
 15. **Módulos que cobram por número de estudantes cobram pelo limite contratado**: o número que a academia define ao contratar, que é o **máximo de estudantes ativos** que ela pode cadastrar durante o período do plano. Passar dele exige pagar o **excedente**, por módulo (Parte 9). A contagem de estudantes ativos serve só para conferir o limite.
 16. **Toda cobrança pode ser marcada como paga manualmente** (estudante → academia e academia → Spuri), com a mesma sequência de efeitos de um pagamento por provedor (Parte 11).
-17. **Event sourcing só no que é sensível** (Parte 2B). Só entra em event sourcing o que (a) pode ser disputado ou exigido como prova (dinheiro, nota, falta, identidade, permissões) e (b) precisa responder "qual era o estado em tal data e quem mudou". O resto é CRUD, com a auditoria da Parte 2B. Nenhum agregado nem evento novo entra em event sourcing fora da lista aprovada (teste-guarda), e um evento que depende de dado em CRUD grava o valor do momento (snapshot). Vale para todas as partes.
+17. **Event sourcing só no que é sensível** (Parte 2B). Só entra em event sourcing o que (a) **serve de prova de um fato** e é **base para reconstruir outros dados** (dinheiro, nota, falta, avaliação, ano letivo, identidade e trajetória do estudante) e (b) precisa responder "qual era o estado em tal data e quem mudou". O resto é CRUD, com a auditoria da Parte 2B (`auditoria_crud`: só inserção, hash encadeado, na mesma transação). Contas, acesso e permissões são CRUD: a auditoria dá a história e a alteração vale na hora. Nenhum agregado nem evento novo entra em event sourcing fora da lista aprovada (teste-guarda), e um evento que depende de dado em CRUD grava o valor do momento (snapshot). Vale para todas as partes.
+18. **Uma tabela é do ledger ou é CRUD, nunca as duas.** Tabela reconstruída a partir do ledger não recebe coluna escrita por handler, e tabela CRUD não é esvaziada por reconstrução. Exceção declarada: a **projeção de efeito** (Tarefa 134), que continua registrada só para aplicar o efeito de um evento do ledger numa tabela CRUD, com auditoria e `Rebuild()` vazio.
+19. **Credenciais ficam numa tabela própria** (`credenciais_conta`, 2B-2). Hash de senha, senha temporária e código de verificação **nunca** entram em evento, em payload de auditoria nem em log; a auditoria diz quem fez a ação e quando. O ledger também recusa esses campos (validador na gravação), como a `auditoria_crud` já recusa por trigger.
+20. **Conta nunca é apagada de verdade.** Os fatos do ledger apontam para academia, admin, professor, secretário, encarregado e estudante por id ou código; a exclusão é lógica (`status = 'deletado'`) e a auditoria registra o motivo.
 
 ---
 
@@ -219,65 +227,77 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 
 ### Parte 2B — Modelo híbrido: event sourcing só no que é sensível
 
-**Estado:** Parcial (2B-1: regra 17 e auditoria prontas, Tarefa 132; cursos e matérias convertidos, Tarefa 133; turmas e sumários, Tarefa 134; configuração de faltas, Tarefa 135; demais conversões pendentes) · **Depende de:** 2 (entregas 2B-1 e 2B-2); 8 (entrega 2B-3, condicional)
+**Estado:** Parcial (2B-1: regra 17 e auditoria, Tarefa 132; cursos e matérias, 133; turmas e sumários, 134; configuração de faltas, 135. Faltam: 2B-0, o fim da 2B-1, 2B-2, 2B-4 e 2B-5) · **Depende de:** 2; 8 (entrega 2B-3, condicional)
 
 **Por quê (2026-11-23):** a whitelist do ledger tem hoje 22 tipos de agregado e 165 tipos de evento (`internal/db/safe_queries.go`, `main` @ `86ef281`), e cada funcionalidade exige evento, agregado, whitelist e projeção. O custo aparece no código: três vezes o evento faltou na whitelist e a rota devolveu 500 sempre (`NotaCorrigida`/`FaltaCorrigida`, alteração de NIF e Sumário). Os eventos de senha de estudante, admin, academia e contas de pessoa gravam o hash bcrypt num ledger imutável. A confiabilidade do que fica já existe: cadeia de hash (`verify_hash_chain`) e proteção contra truncate (migration 029). Pela planilha de custo operacional, o banco custa 4,0% (cenário 1) e 0,5% (cenário 5) da receita na modalidade Preço fixo; o argumento é **manutenção, segurança e a janela sem academias** (depois da primeira academia real, os tipos de evento ficam para sempre), não a fatura. O que mais pesa na planilha é e-mail e SMS (83% do custo no cenário 5), definido pelas Partes 21 a 27.
 
-**Critério:** só entra em event sourcing o que (a) pode ser disputado ou exigido como prova (dinheiro, nota, falta, identidade, permissões) e (b) precisa responder "qual era o estado em tal data e quem mudou". O resto é CRUD, com auditoria.
+**Critério (revisto em 2026-11-26, por você):** só entra em event sourcing o que (a) **serve de prova de um fato** e é **base para reconstruir outros dados** (dinheiro, nota, falta, avaliação, ano letivo, identidade e trajetória do estudante) e (b) precisa responder "qual era o estado em tal data e quem mudou". O resto é CRUD, com auditoria. Contas, acesso e permissões são CRUD porque a mudança vale na hora (o middleware lê o status em tabela) e a `auditoria_crud` já dá a cadeia de hash e a história. A versão de 2026-11-23 mantinha identidade, permissões e contas no ledger.
 
-**Fica em event sourcing** (lista aprovada por você em 2026-11-23)
+**Fica em event sourcing** (lista aprovada em 2026-11-23 e **revista em 2026-11-26**)
 - **Dinheiro:** cobranças e pagamentos (solicitada, criada, falhou, cancelada, conflito pós-cancelamento, pagamento externo e manual registrado, `MensalidadePaga`, `MensalidadesCobrancaConfirmada`, `ServicoExtraLancamentoPago`); obrigações de mensalidade e de serviço extra anuladas e reativadas; configuração de mensalidade e mês de início de cobrança; solicitações de serviço extra (criada, aprovada, vinculada, reprovada, cancelada); períodos de assinatura de módulo e cobranças do Spuri (Partes 9 a 11).
 - **Notas, faltas e resultados:** notas registradas e corrigidas; faltas registradas, corrigidas e eliminadas; avaliação final (escolar e superior), aprovação e reprovação e o recálculo da Parte 13.
-- **Estudante, identidade e trajetória:** criação com vínculo, desvinculação, reintegração, interrupção, abandono e retoma (fundamental, médio e superior), equivalências, ingresso no superior, alteração de curso, eliminação e refazer matrícula (Parte 18); dados críticos (nome, BI do estudante e do encarregado, data de nascimento, passaporte da Parte 20) e as solicitações de edição (criada, aprovada, reprovada).
-- **Academia e permissões:** academia criada, ativada, desativada (com motivo) e eliminada; NIF e solicitações de alteração de NIF; ano letivo definido e finalizado; admin criado, ativado, desativado, eliminado e mudança de role; `AcaoAdminRegistrada`; contas de secretário, professor e encarregado (criada, ativada, desativada, eliminada); permissões do secretário; vínculo e desvínculo encarregado↔educando.
+- **Estudante, identidade e trajetória:** criação com vínculo, desvinculação, reintegração, interrupção, abandono e retoma (fundamental, médio e superior), equivalências, ingresso no superior, alteração de curso, eliminação e refazer matrícula (Parte 18); dados críticos (nome, BI do estudante e do encarregado, data de nascimento, passaporte da Parte 20) e as solicitações de edição (criada, aprovada, reprovada). **Na 2B-5**, o evento de criação passa a levar só a identidade e o vínculo: sem hash de senha e sem contato; o cadastro (contato, endereço e dados não críticos) fica em tabela própria.
+- **Ano letivo:** `AnoLetivoAcademiaDefinido` e `AnoLetivoAcademiaFinalizado`. Condicionam a validade das notas e das faltas, e finalizar fecha as contas do ano. Hoje estão dentro do agregado `Academia`; quando a academia sair do ledger (2B-4) eles ficam num agregado próprio (desenho decidido na 2B-0).
+- **Solicitações aprovadas:** de alteração de NIF da academia e de edição de dado crítico do estudante (criada, aprovada, reprovada). A mudança aprovada é gravada em CRUD, com a auditoria apontando para o código da solicitação.
 
 **Vai para CRUD** (lista aprovada por você em 2026-11-23)
 - **Catálogos e estrutura:** cursos, matérias (período e pendência), turmas (incluindo adicionar e remover estudante e encerrar), grupos do 4º ano (mentor, descrição, estado), serviços extra e categorias de serviço, documentos extra, Transporte e atividades (rotas, veículos, horários), horários das turmas e material de apoio.
-- **Configurações:** configuração de faltas, configuração do sistema, categorias de nota, lista de anos letivos, documentos obrigatórios da academia, "aceitar passaporte", remetente de comunicação e provedor de pagamento escolhido.
-- **Dados cadastrais não críticos:** dados gerais de academia e admin, dados das contas de secretário, professor e encarregado, dados pessoais do estudante fora os críticos, relação do encarregado, vínculo professor↔turma+disciplina (com início e fim) e metadados de documentos.
+- **Configurações:** configuração de faltas, configuração do sistema, categorias de nota, lista de anos que a academia oferece (`anos_academicos`; **não** é o ano letivo definido e finalizado, que fica em event sourcing), documentos obrigatórios da academia, "aceitar passaporte", remetente de comunicação e provedor de pagamento escolhido.
+- **Dados cadastrais não críticos:** dados gerais de academia e admin, dados das contas de secretário, professor e encarregado, dados pessoais do estudante fora os críticos, relação do encarregado, vínculo professor↔turma+disciplina (com início e fim) e metadados de documentos. Na 2B-5, o cadastro do estudante (contato, endereço e dados não críticos) em tabela própria.
+- **Contas e acesso (2B-4):** academia (criada, ativada, desativada com motivo, eliminada, dados, cursos, documentos obrigatórios e anos que oferece), admin (criado, ativado, desativado, eliminado, role e dados), contas de secretário, professor e encarregado (criada, ativada, desativada, eliminada, dados), permissões do secretário, vínculo e desvínculo encarregado↔educando e vínculo professor↔turma+disciplina (com início e fim). `AcaoAdminRegistrada` vira ação de auditoria, salvo se o levantamento da 2B-0 achar uso que só o ledger atenda.
 - **Conteúdo e comunicação:** sumários de aula (com número de ordem e histórico), eventos da Comunidade, mensagens de comunicação, histórico de notificações, agendamentos e regras automáticas.
 - **Preços e cotas:** preços de módulos e pacotes (com versões) e cota de SMS (decremento atômico).
 - **Documentos fiscais emitidos:** tabela imutável depois da emissão.
-- **Autenticação e segurança (entrega 2B-2):** senha (alterada e temporária; estudante, admin, academia e contas de pessoa), 2FA e verificação de e-mail.
+- **Autenticação e segurança (entrega 2B-2):** senha (alterada e temporária; estudante, admin, academia e contas de pessoa), 2FA e verificação de e-mail, tudo em `credenciais_conta` (regra 19).
 - **Pagamentos, operacional (entrega 2B-3, condicional):** webhooks brutos, QR code, cobrança consultada e credenciais do provedor (configurar, remover, rotacionar segredo, arquivar e purgar).
 
-**Auditoria do que fica em CRUD:** uma tabela de auditoria só de inserção (ator, tipo do ator, IP, ação, entidade, antes e depois, motivo), gravada **na mesma transação** da alteração. A tabela é `auditoria_crud` (migration 142): UPDATE, DELETE e TRUNCATE são bloqueados por trigger, como no ledger (a aplicação e as migrations usam a mesma role, então revogar permissão não bastaria), e o hash é encadeado por entidade como o do ledger. Onde se precisa do estado numa data (preços, vínculo professor↔turma+disciplina), a tabela guarda versões, ou início e fim, sem apagar as anteriores. A ação administrativa continua usando `AcaoAdminRegistrada`.
+**Auditoria do que fica em CRUD:** uma tabela de auditoria só de inserção (ator, tipo do ator, IP, ação, entidade, antes e depois, motivo), gravada **na mesma transação** da alteração. A tabela é `auditoria_crud` (migration 142): UPDATE, DELETE e TRUNCATE são bloqueados por trigger, como no ledger (a aplicação e as migrations usam a mesma role, então revogar permissão não bastaria), e o hash é encadeado por entidade como o do ledger. Onde se precisa do estado numa data (preços, vínculo professor↔turma+disciplina), a tabela guarda versões, ou início e fim, sem apagar as anteriores. A ação administrativa passa a ser uma ação de auditoria (2B-4).
 
 **Regras**
 - **Snapshot:** todo evento que fica em event sourcing e depende de dado em CRUD grava o valor do momento: preço do serviço, rótulo da categoria de nota, limite de faltas aplicado, nome do curso. Sem isso, editar o CRUD reescreve a explicação do passado.
-- **Senhas:** o hash bcrypt fica só na tabela da conta. A auditoria diz quem alterou e quando, **sem o hash**, e o código de verificação nunca vai para a auditoria.
-- **Eventos antigos:** como não há academias, a tarefa confere se o ledger só tem dados de teste e **remove** os tipos de evento da whitelist e do replay (como a Parte 1). Se houver dado real, os tipos ficam aceitos e congelados, nunca apagados.
+- **Senhas:** o hash bcrypt fica só em `credenciais_conta` (regra 19). A auditoria diz quem alterou e quando, **sem o hash**, e o código de verificação nunca vai para a auditoria. O hash do admin FPP que já está em `AdminCriado` no ledger de produção **não pode ser apagado**; a 2B-2 força a troca da senha dele depois de aplicada, o que torna o hash antigo inútil.
+- **Eventos antigos:** como não há academias, a tarefa confere se o ledger só tem dados de teste e **remove** os tipos de evento da whitelist e do replay (como a Parte 1). Se houver dado real, os tipos ficam aceitos e congelados, nunca apagados. Exceção conhecida: o admin FPP é real e já tem hash no ledger (ver Senhas).
 - **Teste-guarda (negar por padrão):** a lista aprovada de agregados e eventos fica em código, e um teste percorre a whitelist e os agregados e falha se surgir um fora dela (mesmo padrão de `internal/permissoes` e de `TestPacotesDeModuloNaoSeImportam`). A tarefa prova o teste desfazendo a regra. **Feito na Tarefa 132** (`politica_eventsourcing.go` e `politica_eventsourcing_test.go`): todo tipo da whitelist e do código tem de estar aprovado, pendente de conversão (com a entrega 2B-1, 2B-2, 2B-3 ou Parte 7) ou convertido histórico (congelado); fora disso o teste falha. Conversão concluída = o tipo sai da lista de pendentes (e da whitelist, ou vai para convertidos se ficar congelado).
 - **Conversão por agregado:** uma entrega interna por agregado ou grupo. O handler grava direto na tabela, em transação, com a auditoria; a projeção atual vira a tabela de registro (nada se migra, pois não há academias); saem o agregado, os eventos e o handler de projeção. Mesmas rotas, respostas, regras e permissões.
-- **Tabelas CRUD e reconstrução (descoberto na Tarefa 133):** a reconstrução da projeção de academias faz `TRUNCATE ... CASCADE`, e cursos e matérias tinham chave estrangeira para ela, então reconstruir as academias apagaria todos eles, e, como deixaram de vir do ledger, sem volta. A migration 143 tirou essas chaves; a existência da academia passou a ser exigida pelo código, na mesma transação da gravação. **Regra para toda conversão:** tabela CRUD nenhuma pode ter chave estrangeira para uma tabela que o ledger reconstrói (apontar para outra tabela CRUD é permitido); o teste `TestTabelasCRUDNaoDependemDeProjecoesReconstruiveis` confere isso, e cada tarefa de conversão acrescenta as suas tabelas em `internal/db/politica_eventsourcing.go` e no teste. O inverso (projeções que apontam para tabelas CRUD, como notas e faltas para matérias) é seguro.
+- **Tabelas CRUD e reconstrução (descoberto na Tarefa 133):** a reconstrução da projeção de academias faz `TRUNCATE ... CASCADE`, e cursos e matérias tinham chave estrangeira para ela, então reconstruir as academias apagaria todos eles, e, como deixaram de vir do ledger, sem volta. A migration 143 tirou essas chaves; a existência da academia passou a ser exigida pelo código, na mesma transação da gravação. **Regra para toda conversão:** tabela CRUD nenhuma pode ter chave estrangeira para uma tabela que o ledger reconstrói (apontar para outra tabela CRUD é permitido); o teste `TestTabelasCRUDNaoDependemDeProjecoesReconstruiveis` confere isso, e cada tarefa de conversão acrescenta as suas tabelas em `db.TabelasCRUD` (`internal/db/politica_eventsourcing.go`); o teste e a guarda do gestor leem a mesma lista. O inverso (projeções que apontam para tabelas CRUD, como notas e faltas para matérias) é seguro.
 - **Guarda em tempo de execução (Tarefa 134):** `db.TabelasCRUD` lista as tabelas CRUD e o gestor de projeções (`executeRebuild`) recusa QUALQUER reconstrução se alguma delas tiver chave estrangeira para tabela reconstruível (`VerificarTabelasCRUDProtegidas`). Toda conversão acrescenta as suas tabelas a `TabelasCRUD`. O teste `TestReconstrucaoRealPreservaTabelasCRUD` (`cmd/server`) roda a reconstrução completa real num banco isolado e prova que cursos, matérias, turmas e sumários sobrevivem.
-- **Auditoria "em nome de" (Tarefa 134):** `db.AuditContext.Ator` leva à `auditoria_crud` quem realmente agiu (secretário como a academia). Todo handler CRUD novo passa `Ator: apoio.AtorDaRequisicao(c)`. Atenção ao nome das colunas: `ator_id/ator_tipo` = a conta em nome de quem se agiu; `em_nome_de_id/em_nome_de_tipo` = quem agiu de fato.
+- **Auditoria "em nome de" (Tarefa 134):** `db.AuditContext.Ator` leva à `auditoria_crud` quem realmente agiu (secretário como a academia). Todo handler CRUD novo passa `Ator: apoio.AtorDaRequisicao(c)`. **Nomes das colunas:** hoje `ator_*` guarda a conta em nome de quem se agiu e `em_nome_de_*` quem agiu de fato, o inverso do que os nomes sugerem; a **2B-0 renomeia** para `conta_*` (a conta dona da ação) e `executor_*` (quem executou), sem alterar dados nem hashes. Testado em 2026-11-26 numa transação desfeita (PostgreSQL 16): as quatro colunas renomeadas e as funções de inserção e de verificação recriadas com os nomes novos; as 46 cadeias existentes continuaram válidas, uma inserção nova continuou a cadeia e o `UPDATE` seguiu bloqueado.
 - **Efeitos de eventos sobre tabelas CRUD (Tarefa 134):** quando um evento que continua em event sourcing precisa alterar uma tabela CRUD (ex.: avaliação final move o estudante de turma), a projeção permanece registrada só para aplicar o efeito, grava a auditoria na mesma transação e seu `Rebuild()` não faz nada (repetir o efeito desfaria correções).
 - **Fora da 2B-1:** `ServicoExtra` e `CategoriaServico` não são convertidos antes; a Parte 7 os substitui já em CRUD. `Turma` e `Sumario` são convertidos na 2B-1, porque as Partes 16 e 19 se apoiam neles.
-- **Endpoints de auditoria atuais:** `/eventos-estudante/:codigo` e `/eventos/:event_id` mostram eventos do ledger. A tarefa decide e documenta como a auditoria do que foi para CRUD aparece neles (sugestão: alimentar a partir da tabela de auditoria) ou se ganha rota própria.
+- **Endpoints de auditoria atuais:** `/eventos-estudante/:codigo`, `/eventos/:event_id` e `GET /dominis/auditoria/delecoes` leem o ledger. A 2B-0 decide e documenta como a auditoria do que foi para CRUD aparece neles (sugestão: alimentar a partir da `auditoria_crud`) ou se ganha rota própria. Achado de 2026-11-26: o endpoint de deleções lê `AcademiaDeletada`, `AdminDeletado` e `EstudanteDeletado` do ledger; depois da 2B-4 as duas primeiras estarão em `auditoria_crud`, e o endpoint terá de ler as duas fontes e juntar o resultado, com o mesmo contrato.
 - **2B-3 (condicional):** só entra depois da Parte 8 (os testes das quatro garantias são a rede de segurança) e se a medição no Neon (tamanho do `spuri_ledger` e das projeções, horas ativas do mês) mostrar ganho. Antes de mover os webhooks, a tarefa confere se a idempotência deles depende do ledger.
+- **Levantamento de 2026-11-26 (portão da 2B-4):** (a) os eventos de Academia, Admin e contas de pessoa são consumidos só pelas projeções `academia`, `admin`, `contas` e `categorias_nota` e pelo endpoint de deleções acima; nenhuma outra projeção os lê (conferido por leitura; a 2B-0 transforma isso em teste). (b) Os agregados `Academia` e `Admin` são carregados pelo ledger em 36 pontos de 12 arquivos de handlers e serviços (`administradores` 12, `academias` 11, `autenticacao` 8, `notas` 2, `apoio`, `credmigracao` e o bootstrap do admin). (c) O agregado `Academia` guarda também o ano letivo; só a projeção de academias o consome. (d) O ledger tem dois `INSERT` em `internal/db/event_store.go`: o validador da regra 19 entra neles. (e) O middleware lê `status`, `deve_alterar_senha` e `sessoes_validas_desde` de `projection_academias`, `projection_admins` e `projection_contas_pessoa`; em CRUD a mudança passa a valer na hora, sem esperar a projeção. (f) Credenciais: 31 arquivos de produção e 187 ocorrências de `senha_hash`, `deve_alterar_senha`, `sessoes_validas_desde`, `dois_fatores_ativo` e `email_verificado`, mais 25 arquivos de teste. **Se a 2B-0 achar projeção de outros dados que dependa dos eventos de conta além disto, a 2B-4 mantém só o evento mínimo de criação.**
 
 **Como as outras partes se adaptam**
 - As Partes **7, 9, 12, 16, 19, 21 e 23** têm uma nota de persistência no próprio texto. As Partes **15, 17, 26 e 27** e a Parte 1 do `Plano de Atualizações 2.md` (Eventos da Comunidade) nascem em CRUD, com tabelas e a auditoria da 2B, sem tarefa de conversão.
 - As Partes **11** (pagamento manual), **13** (notas, faltas e recálculo), **18** (refazer matrícula) e **20** (passaporte, dados críticos) seguem em event sourcing.
-- As Partes **16** e **19** dependem da **2B-1** (`Turma` e `Sumario` viram CRUD antes). A Parte **28** depende da **2B-2** (o hash da senha nova já nasce fora do ledger).
+- A Parte **21** converte `RemetenteComunicacao` e `MensagemComunicacao` junto da migration de comunicação (ela já reescreve a tabela e os handlers). As Partes **16** e **19** dependiam da **2B-1** (turmas e sumários), **feita na Tarefa 134**. A **20** depende da **2B-5**; a **22**, da **21**, da **2B-2** e da **2B-4**; a **28**, da **2B-2** e da **2B-4**.
 
-**Entregas**
-- [x] **2B-1:** regra 17 e lista aprovada em código, com teste-guarda (Tarefa 132: `internal/db/politica_eventsourcing.go`; os tipos ainda no ledger constam como pendentes de conversão, por entrega, e cada tarefa de conversão os remove da lista)
-- [x] **2B-1:** tabela de auditoria e auxiliar transacional para o CRUD, com teste de que a alteração e a auditoria entram ou saem juntas (Tarefa 132: migration 142, `internal/db/auditoria_crud.go`)
-- [ ] **2B-1:** conversão para CRUD, sem dinheiro e sem autenticação, um grupo por tarefa:
+**Entregas** (a ordem é a da trilha: 2B-0 → 2B-1 → 2B-2 → 2B-4 e 2B-5; o número da tarefa é reservado ao começar, ver "Outras orientações")
+- [x] **2B-1 (feito):** regra 17 e lista aprovada em código, com teste-guarda (Tarefa 132: `internal/db/politica_eventsourcing.go`)
+- [x] **2B-1 (feito):** tabela de auditoria e auxiliar transacional para o CRUD (Tarefa 132: migration 142, `internal/db/auditoria_crud.go`)
+- [x] **2B-1 (feito):** guarda em tempo de execução contra chave estrangeira de tabela CRUD (`db.TabelasCRUD`, `VerificarTabelasCRUDProtegidas`), reconstrução real de ponta a ponta provada em teste, e ator "em nome de" na auditoria CRUD (Tarefa 134)
+- [ ] **2B-0 — política e auditoria (sem converter dados):**
+  - [ ] política adaptada em `politica_eventsourcing.go` (lista aprovada revista; destinos 2B-4, 2B-5 e Parte 21) e na regra 17, com o teste-guarda provado desfazendo a regra
+  - [ ] colunas da `auditoria_crud` renomeadas (`conta_*`, `executor_*`) pelo procedimento testado, ajustando `AuditContext`, `ListarAuditoria` e os testes; as cadeias existentes seguem válidas
+  - [ ] verificação global das cadeias da `auditoria_crud` (rotina periódica e alerta), nos moldes da verificação do ledger
+  - [ ] validador no ledger que recusa campos de senha, hash e código de verificação (nos dois `INSERT` de `event_store.go`), com teste por reflexão sobre os eventos
+  - [ ] regra 18 em teste: nenhuma projeção reconstruível escreve em tabela de `TabelasCRUD` (fora a projeção de efeito declarada); cada projeção declara as tabelas que reconstrói
+  - [ ] teste do portão da 2B-4: as demais projeções, rodadas sem os eventos de Academia, Admin e conta, reconstroem iguais
+  - [ ] decisão documentada: auditoria do CRUD nos endpoints de auditoria atuais, e desenho do agregado de ano letivo
+- [ ] **2B-1 — fim:** conversão para CRUD, um grupo por tarefa:
   - [x] cursos e matérias (Tarefa 133: `internal/cadastros`, migration 143)
-  - [x] turmas e sumários (Tarefa 134: `internal/cadastros`, migration 144; destrava as Partes 16 e 19)
-  - [ ] documentos extra e categorias de nota
-  - [ ] configurações: faltas feita (Tarefa 135: migration 145); faltam sistema (`ConfiguracaoSistema`) e a lista de anos letivos (nota: `AnoLetivoAcademiaDefinido/Finalizado` estão na lista APROVADA de event sourcing; só entra aqui o que a política marca como pendente)
-  - [ ] comunicação (remetente e mensagens)
-  - [ ] dados cadastrais não críticos e dados das contas de pessoa
-- [ ] **2B-2:** senhas de todas as contas, 2FA, verificação de e-mail e senha temporária em tabelas, com o hash fora do ledger e a auditoria sem hash
-- [ ] **2B-2:** tipos de evento antigos removidos da whitelist e do replay (ou congelados, se houver dado real)
+  - [x] turmas e sumários (Tarefa 134: migration 144; liberou as Partes 16 e 19)
+  - [x] configuração de faltas (Tarefa 135: migration 145)
+  - [ ] documentos extra (4 eventos), `ConfiguracaoSistema` (2) e categorias de nota (2; saem do agregado `Academia`)
+  - [ ] comunicação (`RemetenteComunicacao`, `MensagemComunicacao`): feita **na Parte 21**
+- [ ] **2B-2 — credenciais:** tabela única `credenciais_conta` (tipo e id da conta; hash, senha temporária, `deve_alterar_senha`, `sessoes_validas_desde`, 2FA, e-mail verificado), gravada na mesma transação da criação da conta (repositório com gancho de transação); migration que copia as colunas atuais das quatro tabelas de conta e depois as remove; eventos de criação sem hash; os 9 tipos de evento de senha, 2FA e e-mail saem; todos os pontos de leitura migrados (31 arquivos de produção, 187 ocorrências); a auditoria registra a ação sem o valor; troca forçada da senha do admin FPP; testes que provam que a alteração e a auditoria entram juntas e que nenhum evento novo leva hash
+- [ ] **2B-4 — contas e academia fora do ledger:** admin, academia, secretário, professor e encarregado (incluindo permissões e vínculos) em CRUD com `auditoria_crud`, exclusão sempre lógica (regra 20); `AnoLetivoAcademia*` em agregado próprio; `anos_academicos`, `cursos` e documentos obrigatórios com os dados da academia; endpoint de deleções lendo as duas fontes; ações da Parte 22 disparadas pelos handlers; por grupo, teste de que não grava evento no ledger e reconstrução real cobrindo as tabelas novas
+- [ ] **2B-5 — estudante:** cadastro (contato, endereço, dados não críticos) em tabela própria; evento de criação só com identidade e vínculo; decidir no levantamento se `EstudanteDocumentosCompletados` (que muda o status) continua em event sourcing; leituras migradas (ou uma view só de leitura, se reescrever as consultas de listagem custar mais que o ganho)
 - [ ] **2B-3 (condicional):** financeiro operacional (webhooks brutos, QR code, cobrança consultada, credenciais e provedor escolhido) em tabelas, depois da Parte 8 e da medição
-- [ ] Suíte completa idêntica antes e depois e, por agregado convertido, um teste que prova que ele não grava evento no ledger (com revert, falha e reaplicação)
+- [ ] Suíte completa idêntica antes e depois e, por grupo convertido, um teste que prova que ele não grava evento no ledger (com revert, falha e reaplicação)
 - [ ] Plano e Documentação da API atualizados (mesmas rotas e respostas; a versão só muda se algo do contrato mudar, pelo passo 9)
-- [ ] Front-end: sem mudança prevista
+- [ ] Front-end: sem mudança prevista (conferir na 2B-4 a tela de auditoria de deleções)
 
 ---
 
@@ -847,9 +867,9 @@ Nos exemplos, os meses que faltam (6 e 11) são os dados de cada cenário; no si
 
 ### Parte 16 — Grupos do 4º ano de cursos técnicos
 
-**Estado:** Parcial · **Depende de:** 4, 2B (2B-1)
+**Estado:** Parcial · **Depende de:** 4, 2B (2B-1, feita na Tarefa 134)
 
-**Já existe (Tarefa 116):** no `4_ano_medio` não há turmas, há **grupos**. O agregado `Turma` continua sendo a fonte (`tipo_agrupamento` derivado do nível) e já tem **`tema_trabalho`** (opcional, até 200 caracteres). Vínculo de estudantes, histórico por ano letivo, faltas e notas já dependem de `Turma`; **não criar agregado paralelo** (depois da Parte 2B-1, `Turma` é CRUD; a regra de não criar estrutura paralela continua valendo para a tabela).
+**Já existe (Tarefa 116):** no `4_ano_medio` não há turmas, há **grupos**. O registro da turma (tabela `projection_turmas`, CRUD desde a Tarefa 134) continua sendo a fonte (`tipo_agrupamento` derivado do nível) e já tem **`tema_trabalho`** (opcional, até 200 caracteres). Vínculo de estudantes, histórico por ano letivo, faltas e notas já dependem de `Turma`; **não criar agregado paralelo** (`Turma` é CRUD desde a Tarefa 134; a regra de não criar estrutura paralela vale para a tabela).
 
 **O que falta**
 - Dados: **mentor** (professor ativo da mesma academia), descrição, estado (em formação, em andamento, concluído) e data de defesa (sugestão). Um mentor pode orientar vários grupos (limite a definir na tarefa).
@@ -918,9 +938,9 @@ Nos exemplos, os meses que faltam (6 e 11) são os dados de cada cenário; no si
 
 ### Parte 19 — Sumários sequenciais
 
-**Estado:** Pendente · **Depende de:** 4, 2B (2B-1)
+**Estado:** Pendente · **Depende de:** 4, 2B (2B-1, feita na Tarefa 134)
 
-**Já existe (Tarefa 75; `internal/handlers/sumarios`, agregado `Sumario`):** o sumário pertence a uma academia e tem título, descrição, período, ano acadêmico, nível, curso (opcional) e **matéria**. **Não tem número de ordem**; os eventos são criado, dados atualizados e deletado. A tarefa confere como a listagem ordena hoje.
+**Já existe (Tarefa 75; `internal/handlers/sumarios`; CRUD desde a Tarefa 134, em `internal/cadastros`):** o sumário pertence a uma academia e tem título, descrição, período, ano acadêmico, nível, curso (opcional) e **matéria**. **Não tem número de ordem**; a auditoria registra criado, dados atualizados e deletado. A tarefa confere como a listagem ordena hoje.
 
 **Regras**
 - Os sumários de uma **disciplina** (matéria) passam a poder ser **sequenciais**: cada um tem um **número de ordem** (1, 2, 3...) que define a ordem em que a matéria é dada. A sequência vale por (academia, matéria, curso quando houver, nível, ano acadêmico, período), a mesma chave que o sumário já usa (interpretação adotada).
@@ -929,7 +949,7 @@ Nos exemplos, os meses que faltam (6 e 11) são os dados de cada cenário; no si
 - Numeração **sem lacunas e sem repetição**. O sumário novo nasce no fim (próximo número) ou numa posição escolhida, empurrando os seguintes.
 - **Reordenar** = mover um sumário para outra posição, renumerando os afetados **numa só operação**. Duas pessoas ao mesmo tempo nunca geram número repetido (guarda de versão).
 - Remover um sumário faz os seguintes subirem uma posição (a confirmar). O removido continua no histórico (regra 7).
-- **Persistência (Parte 2B, regra 17):** o sumário passa a CRUD. O número de ordem é uma coluna da tabela do sumário, e cada criação com posição, reordenação e remoção grava um registro de histórico (ordem anterior, nova e autor) na mesma transação.
+- **Persistência (Parte 2B, regra 17):** o sumário já é CRUD (Tarefa 134). O número de ordem é uma coluna da tabela do sumário, e cada criação com posição, reordenação e remoção grava um registro de histórico (ordem anterior, nova e autor) na mesma transação.
 - Estudantes, encarregados e professores veem os sumários **na ordem**. Módulo Gestão Académica (`gestao_academica`).
 
 **Entregas**
@@ -944,7 +964,9 @@ Nos exemplos, os meses que faltam (6 e 11) são os dados de cada cenário; no si
 
 ### Parte 20 — Documento de identificação alternativo: passaporte
 
-**Estado:** Pendente · **Depende de:** 4, 5
+**Estado:** Pendente · **Depende de:** 4, 5, 2B (2B-5)
+
+**Persistência (2B-5):** o passaporte e o BI são dados críticos do estudante e ficam em event sourcing; o arquivo e os metadados do documento ficam no cadastro, em CRUD. Por isso a Parte 20 começa depois da 2B-5, que separa o cadastro do estudante.
 
 Fica **fora das Partes 4 e 5 de propósito**: elas estão em implementação em outro chat; esta só começa depois de ambas.
 
@@ -1000,10 +1022,11 @@ O catálogo completo de eventos está no **Anexo A**.
 - **Resumos** (diário/semanal) exigem um **executor de tarefas agendadas** que nunca roda a mesma tarefa duas vezes (mesmo com mais de uma instância ou reinício). Esse executor é reaproveitado na Parte 27.
 - **Limitadores de requisição:** os "no-op" antigos já foram removidos (Tarefa 123), mas **login e e-mail seguem sem limite** (risco D1 declarado). **Antes de ligar qualquer SMS por rota pública** (recuperação de senha, verificação de telefone, reenvio de 2FA), implementar limitadores reais por rota e por destinatário.
 - **Histórico** de toda notificação: quem/o quê, canal, destinatário, estado, segmentos, custo. A academia vê só as suas. Histórico, agendamentos e regras automáticas ficam em tabelas (CRUD, Parte 2B, regra 17).
+- **Persistência da comunicação (2B):** esta Parte converte `RemetenteComunicacao` e `MensagemComunicacao` para CRUD (regra 17) junto da migration de comunicação, porque ela já reescreve a tabela e os handlers. A tarefa atualiza `politica_eventsourcing.go` (a entrega desses tipos passa a ser a Parte 21) e tira os dois agregados e seus eventos da whitelist.
 
 **Entregas**
 - [x] Envio de SMS com GoSMS/Ziett e fallback; histórico básico (Tarefa 93)
-- [ ] Migration de comunicação (tipo `sistema`, canal, e-mail, segmentos, custo, estados)
+- [ ] Migration de comunicação (tipo `sistema`, canal, e-mail, segmentos, custo, estados); remetente e mensagens passam a CRUD (2B)
 - [ ] Disparo pós-commit com chave de idempotência e fila
 - [ ] Lista fechada de SMS do Spuri em código
 - [ ] Configuração por academia (liga/desliga por evento, destinatário, modo, tetos, 160 caracteres, alternativa por e-mail)
@@ -1016,7 +1039,7 @@ O catálogo completo de eventos está no **Anexo A**.
 
 ### Parte 22 — Notificações de segurança e conta
 
-**Estado:** Pendente · **Depende de:** 17
+**Estado:** Pendente · **Depende de:** 21, 2B (2B-2 e 2B-4)
 
 Eventos **1 a 14** do Anexo A. Rodam por e-mail; o SMS é pago pelo Spuri **só** nesta lista fechada:
 
@@ -1030,7 +1053,7 @@ Eventos **1 a 14** do Anexo A. Rodam por e-mail; o SMS é pago pelo Spuri **só*
 | 7 e 8 Troca de e-mail ou de telefone | Para o contato **antigo** |
 | 12 e 13 Academia ativada ou desativada | Sempre (comunicação da Spuri com a sua cliente) |
 
-**Já existe:** eventos `SenhaAlterada`, `AcademiaSenhaAlterada`, `AdminSenhaAlterada`, `DoisFatoresAtivados`, `DoisFatoresDesativados`; e-mail de verificação, boas-vindas de admin, 2FA por e-mail; **recuperação de senha por link** (Tarefa 123).
+**Já existe:** eventos `SenhaAlterada`, `AcademiaSenhaAlterada`, `AdminSenhaAlterada`, `DoisFatoresAtivados`, `DoisFatoresDesativados`; e-mail de verificação, boas-vindas de admin, 2FA por e-mail; **recuperação de senha por link** (Tarefa 123). Depois da 2B-2 e da 2B-4 esses eventos deixam de existir: o disparo sai do handler (regra de disparo da Parte 21) e a `auditoria_crud` é o registro.
 
 **Gatilhos novos (†) a criar**
 - **Verificação de telefone** (evento 5): o campo `telefone_verificado` existe, mas nada o marca como verdadeiro. Sem isso qualquer SMS vai a número não confirmado.
@@ -1187,7 +1210,7 @@ Usa o executor de tarefas agendadas da Parte 21. **Nunca envia duas vezes.**
 
 ### Parte 28 — Reset de credenciais de encarregado, professor e secretário
 
-**Estado:** Pendente · **Depende de:** 4, 5, 2B (2B-2)
+**Estado:** Pendente · **Depende de:** 4, 5, 2B (2B-2 e 2B-4)
 
 Vem depois da Parte 5 (implementada), que trata só do reset do **estudante**. Esta parte estende o mesmo mecanismo aos outros três perfis.
 
@@ -1332,10 +1355,20 @@ Onde a lista original ou o arquivo de notificações deixava dúvida, usei o pad
 | 67 | Eventos antigos dos agregados convertidos | Como não há academias, a tarefa confere o ledger e **remove** os tipos de evento (como na Parte 1); se houver dado real, congela e nunca apaga | 2B |
 | 68 | 2B-3 (financeiro operacional) | Condicional: só depois da Parte 8 e se a medição do Neon (tamanho das tabelas e horas ativas) mostrar ganho. Pela planilha, o banco custa 4,0% (cenário 1) e 0,5% (cenário 5) da receita | 2B |
 | 69 | `ServicoExtra`, `CategoriaServico`, `Turma` e `Sumario` | `ServicoExtra` e `CategoriaServico` não são convertidos na 2B-1: a Parte 7 os substitui já em CRUD. `Turma` e `Sumario` são convertidos na 2B-1 porque as Partes 16 e 19 se apoiam neles | 2B, 7, 16, 19 |
+| 70 | **Critério do ledger revisto (2026-11-26)** | Só o que é prova de um fato e base para reconstruir outros dados fica em event sourcing: dinheiro, nota, falta, avaliação, ano letivo e identidade e trajetória do estudante. **Revisão pedida por você:** contas, acesso e permissões passam a CRUD com `auditoria_crud` (só inserção, hash encadeado, mesma transação) | 2B |
+| 71 | **Contas fora do ledger** | Academia, admin, secretário, professor, encarregado, permissões e vínculos (2B-4), com exclusão sempre lógica (regra 20). Decidido por segurança (a desativação vale na hora, sem esperar a projeção, e é atômica com a auditoria), convenção de mercado e simplicidade. Portão: se a 2B-0 achar projeção de outros dados que dependa desses eventos, fica só o evento mínimo de criação | 2B |
+| 72 | **Credenciais em tabela única** | `credenciais_conta` para todos os tipos de conta (inclusive o estudante), gravada na mesma transação da criação; o hash sai dos eventos de criação; o hash do admin FPP que já está no ledger é neutralizado com a troca forçada da senha | 2B |
+| 73 | **Estudante: identidade no ledger, cadastro em CRUD** | Ficam no ledger a identidade (nome, BI, data de nascimento, passaporte), o vínculo e a trajetória; contato e dados não críticos vão para tabela própria (2B-5). **A confirmar com o jurídico:** que registros acadêmicos têm retenção legal que justifica manter a identidade em registro imutável | 2B |
+| 74 | **Ano letivo e "lista de anos letivos"** | Não são a mesma coisa. `AnoLetivoAcademiaDefinido` e `AnoLetivoAcademiaFinalizado` ficam no ledger (condicionam a validade de notas e faltas). A "lista de anos letivos" da lista de CRUD é o campo `anos_academicos` (anos do fundamental que a academia oferece), que vai com os dados da academia na 2B-4 | 2B |
+| 75 | **Comunicação** | `RemetenteComunicacao` e `MensagemComunicacao` são convertidos dentro da Parte 21, que já reescreve a tabela e os handlers | 2B, 21 |
+| 76 | **Colunas da auditoria** | Renomear `ator_*` para `conta_*` e `em_nome_de_*` para `executor_*` na 2B-0 (os nomes atuais são o inverso do que sugerem). Testado: as cadeias de hash continuam válidas | 2B |
+| 77 | **Vários chats em paralelo** | A Parte 6 corre em outro chat. Número de tarefa e de migration não são pré-atribuídos: cada tarefa reserva o seu ao começar e confere `origin/main`; os arquivos compartilhados (este plano, `safe_queries.go`, `politica_eventsourcing.go`, `main.go`, a API) exigem conferir divergência antes de substituir | 2B, 6 |
+| 78 | **Dependências conferidas contra o plano** | A Parte 9 trata bloqueio de **módulo**, não do ciclo de vida da academia, e a Parte 18 usa vínculo e trajetória (que ficam no ledger): nenhuma das duas espera a 2B-4 ou a 2B-5. Ficam as dependências reais: 20 ← 2B-5; 22 ← 21, 2B-2, 2B-4; 28 ← 2B-2, 2B-4. O cabeçalho da Parte 22 dizia "17"; a tabela e a ordem diziam 21, e foi corrigido | 2B, 20, 22, 28 |
 
 ## O que ainda preciso receber
 
 - **Parte 2B:** a medição no Neon (tamanho do `spuri_ledger` e das projeções, horas ativas do mês) decide a 2B-3; sem ela, a 2B-3 fica de fora. Confirmar também a numeração "2B" (ponto 65).
+- **Parte 2B (revisão de 2026-11-26):** confirmar com o jurídico a retenção legal dos dados do estudante (ponto 73) e, antes da 2B-2, rodar em produção `SELECT aggregate_type, event_type, count(*) FROM spuri_ledger WHERE aggregate_type IN ('Academia','Admin','ContaPessoa','Estudante') GROUP BY 1, 2` para saber que contas reais já têm hash no ledger.
 - **Partes 4 e 5:** confirmar ou corrigir os pontos 56 a 64 da tabela acima. O que mais pesa: o ponto 56 (que ações são reservadas à academia) e o ponto 64 (reenvio de credenciais dos novos tipos, tratado agora na Parte 28).
 - **Parte 12:** as regras fiscais (NIF, séries, IVA ou isenção por tipo de serviço) que o Ulemo não resolver sozinho. A tarefa lê a documentação dele e lista só o que faltar.
 - **Parte 14:** as regras de avaliação de cada instituição de ensino superior, **sempre que uma for integrada** (você as entrega no momento; nada pendente agora).
@@ -1351,7 +1384,7 @@ Onde a lista original ou o arquivo de notificações deixava dúvida, usei o pad
 - Criação de módulos e planos por administradores (o catálogo é código).
 - Módulo concedido sem cobrança (cortesia), que o pedido não descreve.
 - Pagamento manual parcial e "desfazer" pagamento manual.
-- Converter para CRUD o financeiro principal (cobranças e pagamentos), notas, faltas, trajetória e identidade do estudante e permissões: ficam em event sourcing (Parte 2B).
+- Converter para CRUD o financeiro principal (cobranças e pagamentos), notas, faltas, avaliações, ano letivo e a identidade e trajetória do estudante: ficam em event sourcing (Parte 2B). Contas e permissões passam a CRUD na 2B-4, por decisão de 2026-11-26.
 
 ---
 
@@ -1375,4 +1408,5 @@ Preencher a cada entrega (ver "Como acompanhar o andamento").
 | 2026-11-23 | Parte 2B, entrega 2B-1, itens 1 e 2 (regra 17 com teste-guarda; tabela de auditoria e auxiliar transacional) | 132 (back) | ver o texto do commit da Tarefa 132 | Migration 142. Nenhuma rota, handler ou agregado mudou (API sem alteração, sem nova versão). Regra mudada: a proteção da `auditoria_crud` é por trigger (mesma role da aplicação e das migrations), não por permissão. A conversão dos agregados (item 3 da 2B-1), a 2B-2 e a 2B-3 seguem pendentes; a Parte 2 ainda não está Implementada (falta o pacote `finance`), mas a Tarefa 132 não toca `handlers`, `safe_queries.go` nem `main.go`, os arquivos em conflito |
 | 2026-11-24 | Parte 2B, entrega 2B-1: cursos e matérias convertidos para CRUD | 133 (back) | ver o texto do commit da Tarefa 133 | Migration 143. Pacote novo `internal/cadastros` (regras puras e persistência com auditoria na mesma transação). Mesmas rotas, respostas e permissões; a API não muda de versão. Saem os agregados, os eventos e a projeção de cursos e matérias (os tipos saíram da whitelist). Descoberta: o `TRUNCATE ... CASCADE` da reconstrução de academias apagaria cursos e matérias por causa das chaves estrangeiras; elas foram removidas (nova regra acima). Ajustes de comportamento: validação das turmas passou a vir antes de qualquer gravação em `DeletarCurso`; cascata de matérias e curso numa só transação; trocar o curso de uma matéria agora exige curso da mesma academia. Antes de aplicar em produção, rodar a conferência do ledger descrita no documento da tarefa |
 | 2026-11-25 | Parte 2B, entrega 2B-1: turmas e sumários (134) e configuração de faltas (135) convertidos para CRUD | 134 e 135 (back) | ver o texto do commit | Migrations 144 e 145. API 4.0.2 (PATCH). Saem os agregados `Turma`, `Sumario` e `ConfiguracaoFaltas` e 12 tipos de evento; a projeção de turmas continua só para o efeito da avaliação final (agora com auditoria e filtro por academia). Corrigido defeito da 133: o ator "em nome de" não ia para a auditoria CRUD. Nova guarda em tempo de execução contra FK de tabela CRUD para tabela reconstruível, e teste de reconstrução real de ponta a ponta. Falta da 2B-1: documentos extra, categorias de nota, `ConfiguracaoSistema`, comunicação, dados cadastrais e contas de pessoa; falta toda a 2B-2. |
+| 2026-11-26 | Parte 2B revista: critério do ledger mais estreito; entregas 2B-0, 2B-4 e 2B-5 novas; 2B-2 com tabela única de credenciais; comunicação na Parte 21; ajustes nas Partes 16, 19, 20, 21, 22 e 28 | — | ver o texto do commit | Só análise e planejamento; nada implementado em código. `main` @ `14ff9dd`. **Executado:** o renome das colunas da `auditoria_crud` numa transação desfeita (46 cadeias válidas). **Lido:** consumidores dos eventos de conta, 36 pontos que carregam os agregados, 31 arquivos de credenciais (187 ocorrências). Partes 6 e 7 não alteradas (a 6 está em outro chat). Cabeçalho da Parte 22 corrigido (17 → 21) |
 | | | | | |
