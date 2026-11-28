@@ -10,7 +10,6 @@ import (
 	"spuri/internal/domain/aggregates"
 	"spuri/internal/finance"
 	"spuri/internal/middleware"
-	"spuri/internal/projections"
 	"spuri/internal/utils"
 )
 
@@ -55,35 +54,6 @@ func GetDBClient(c *gin.Context) *db.Client {
 // habilitados pela academia que o provedor ativo dela suporta; quando a lista
 // fica vazia, um aviso (codigo + mensagem) explica o motivo. Os campos de aviso
 // são aditivos: clientes antigos ignoram-nos.
-
-// servicoExtraParaPagador é o serviço extra com os métodos já filtrados e os
-// avisos de métodos indisponíveis (um para o pagamento do serviço, outro para a
-// taxa de inscrição). Os campos do DTO são promovidos no JSON.
-type servicoExtraParaPagador struct {
-	projections.ServicoExtraDTO
-	MetodosPagamentoAviso              *finance.AvisoMetodos `json:"metodos_pagamento_aviso,omitempty"`
-	MetodosPagamentoTaxaInscricaoAviso *finance.AvisoMetodos `json:"metodos_pagamento_taxa_inscricao_aviso,omitempty"`
-}
-
-// servicosExtrasParaPagador adapta os serviços extras de UMA academia ao
-// provedor ativo dela (uma única consulta ao provedor, para toda a lista).
-func servicosExtrasParaPagador(ctx context.Context, academia string, itens []projections.ServicoExtraDTO) []servicoExtraParaPagador {
-	disp := FinanceiroService.PagamentoDisponivel(ctx, academia)
-	out := make([]servicoExtraParaPagador, 0, len(itens))
-	for _, s := range itens {
-		v := servicoExtraParaPagador{ServicoExtraDTO: s}
-		if s.Pago {
-			v.MetodosPagamento = disp.Filtrar(s.MetodosPagamento)
-			v.MetodosPagamentoAviso = disp.Aviso(s.MetodosPagamento, v.MetodosPagamento)
-		}
-		if s.TemTaxaInscricao {
-			v.MetodosPagamentoTaxaInscricao = disp.Filtrar(s.MetodosPagamentoTaxaInscricao)
-			v.MetodosPagamentoTaxaInscricaoAviso = disp.Aviso(s.MetodosPagamentoTaxaInscricao, v.MetodosPagamentoTaxaInscricao)
-		}
-		out = append(out, v)
-	}
-	return out
-}
 
 // solicitacaoServicoExtraParaPagador ajusta a serialização de uma solicitação
 // (já em gin.H) aos métodos que o estudante realmente pode usar para pagar a

@@ -48,7 +48,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
    Atualize junto: `modificado:` no cabeçalho e a tabela **Versionamento da API** (seção 1.2 da documentação), com a versão, a(s) tarefa(s) e um resumo de uma linha. O documento da tarefa informa a versão anterior e a nova. Uma entrega que altera a API sem atualizar a versão está incompleta.
 
 **Outras orientações**
-- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a última tarefa aplicada é a **135** (a 130 fechou a Parte 4, a 131, a Parte 5, a 132 abriu a Parte 2B, a 133 converteu cursos e matérias, a 134 turmas e sumários e a 135 a configuração de faltas). **Com mais de um chat trabalhando ao mesmo tempo** (a Parte 6 corre em outro), o número da tarefa e o da migration **não são pré-atribuídos neste plano**: cada tarefa reserva o seu ao começar, conferindo o último em `origin/main` (`ls migrations | tail -3` e a pasta de tarefas) e dizendo qual reservou na primeira mensagem; se dois chats tomarem o mesmo número, o pacote aplicado por último é renumerado antes de aplicar. Front-end (numeração própria): a próxima é a **42** (a 40 fechou a Parte 4 e a 41, a Parte 5).
+- Cada Parte vira uma ou mais tarefas (modelo de criação de tarefa). Backend: a última tarefa aplicada é a **137** (a 130 fechou a Parte 4, a 131, a Parte 5, a 132 abriu a Parte 2B, a 133 converteu cursos e matérias, a 134 turmas e sumários, a 135 a configuração de faltas, a 136 a Parte 6 e a 137 o back-end da Parte 7). **Com mais de um chat trabalhando ao mesmo tempo** (a Parte 6 corre em outro), o número da tarefa e o da migration **não são pré-atribuídos neste plano**: cada tarefa reserva o seu ao começar, conferindo o último em `origin/main` (`ls migrations | tail -3` e a pasta de tarefas) e dizendo qual reservou na primeira mensagem; se dois chats tomarem o mesmo número, o pacote aplicado por último é renumerado antes de aplicar. Front-end (numeração própria): a próxima é a **44** (a 40 fechou a Parte 4, a 41, a Parte 5, a 42, a Parte 6 e a 43, a Parte 7).
 - **(sugestão)** = regra acrescentada por mim para fechar lacuna; pode ser cortada. **(a confirmar)** = decisão pendente, com padrão na seção final.
 - Ordem de deploy padrão: back-end primeiro, depois front-end. Exceção: partes que removem funcionalidade (1 e 14, e a remoção da criação genérica de serviços na Parte 7): front-end primeiro.
 - As partes estão na ordem de execução; as que não dependem uma da outra podem andar em paralelo (ver "Ordem de execução").
@@ -69,7 +69,7 @@ Este documento é a fonte do que falta fazer. **Sempre que uma atualização ou 
 | 5 ✅ | Credenciais temporárias: ajustes do cadastro e do reset | 4 | Implementado | 131 (back) · 41 (front) |
 | **Fase 3 — Finanças** | | | | |
 | 6 ✅ | Provedor PayPay e troca de provedor | 2 (inclui `finance`), 4 | Implementado (validado contra servidor simulado; falta só o teste com credenciais reais do PayPay) | 136 (back) · 42 (front) |
-| 7 | Serviços: catálogo fixo (Transporte e Atividade extracurricular) | 2 (inclui `finance`) | Pendente | |
+| 7 | Serviços: catálogo fixo (Transporte e Atividade extracurricular) | 2 (inclui `finance`) | Implementada | 137 (back) · 43 (front) |
 | 8 | Validação do módulo financeiro | 6, 7 | Pendente | |
 | **Fase 4 — Assinaturas e pagamento manual** | | | | |
 | 9 | Módulos e assinaturas: catálogo no código, preço por limite de estudantes, demonstração, bloqueio e ativação | 4 | Pendente | |
@@ -469,7 +469,7 @@ _Nota (2026-11-21): a última linha mudou porque os planos agora são fixos no c
 - **Contrato do provedor:** `AutenticarWebhook` passou a receber o **corpo** da notificação (o PayPay assina o conteúdo). Quatro extensões opcionais, que a AppyPay não usa: fechar a cobrança no provedor (`ProvedorCancelavel`), chave de idempotência por notificação (`ProvedorComChaveDeEvento`), pedido presente no corpo (`ProvedorComPedidoNoWebhook`) e validação do pedido antes de registar (`ProvedorValidaPedido`).
 - **Webhook:** `POST /webhooks/paypay/notificacoes`, autenticado pela assinatura do PayPay; como a chave pública do PayPay pode ser igual em várias contas, só a credencial que **emitiu** a cobrança (achada por `out_trade_no`) é candidata. Resposta exata `success`.
 - **Estados:** só `TRADE_FINISHED` quita (com consulta ao vivo a concordar); `TRADE_SUCCESS` é aviso; `TRADE_CLOSED` leva a `Expired` (ou `Failed`, com motivo).
-- **Os dois pontos que a leitura não confirmou:** (a) **não existia** e foi implementado: a cobrança nova **fecha e cancela** a pendente de outro provedor quando ele sabe fechar (PayPay) e, se não sabe (AppyPay), a pendente **continua a bloquear** a nova; (b) **não existia** e foi implementado: a segunda cobrança paga da mesma dívida fica `pago_em_duplicidade`, não é aplicada a nenhuma dívida e aparece marcada na listagem e no detalhe.
+- **Os dois pontos que a leitura não confirmou:** (a) **não existia** e foi implementado: a cobrança nova **fecha e cancela** a pendente de outro provedor quando ele sabe fechar (PayPay) e, se não sabe (AppyPay), a pendente **continua a bloquear** a nova **(regra a revisar na Garantia 5 da Parte 8: a troca deve proteger só o pagamento em andamento, não toda cobrança pendente)**; (b) **não existia** e foi implementado: a segunda cobrança paga da mesma dívida fica `pago_em_duplicidade`, não é aplicada a nenhuma dívida e aparece marcada na listagem e no detalhe.
 - **Estados comuns:** pagamento com valor diferente do cobrado ficou **divergente** e não quita (campos `pagamento_divergente` e `valor_pago_provedor`); vale para provedores que informam o valor do pedido (PayPay).
 - **Correção:** uma consulta a uma cobrança já **cancelada** no Spuri deixou de poder reabri-la ou reescrever o seu estado.
 - **Front-end:** seletor de provedor no topo com a subtela de cada um (situação, métodos, endereço de notificação do PayPay, credenciais e ações); campos de chave em texto grande; referência e entidade do pagador em REF; selos de duplicidade e divergência. O PayPay ficou sem manual; o texto da AppyPay não mudou.
@@ -484,9 +484,9 @@ _Nota (2026-11-21): a última linha mudou porque os planos agora são fixos no c
 
 ---
 
-### Parte 7 — Serviços: catálogo fixo (Transporte e Atividade extracurricular)
+### Parte 7 — Serviços: catálogo fixo (Transporte e Atividade extracurricular) ✅
 
-**Estado:** Pendente · **Depende de:** 2 (inclusive o pacote `finance` na pasta nova)
+**Estado:** Implementada (back-end na Tarefa 137; front-end na Tarefa 43) · **Depende de:** 2 (inclusive o pacote `finance` na pasta nova)
 
 **Substitui** a antiga Parte 7 ("mês de início da cobrança dos serviços extras"), que deixa de existir: o prazo agora é a lista de meses de cada serviço.
 
@@ -517,13 +517,22 @@ _Nota (2026-11-21): a última linha mudou porque os planos agora são fixos no c
 - **Coletiva** (`true`): o estudante passa a fazer parte de uma **turma da atividade** (nome e lista de membros). Não é a `Turma` acadêmica e não se cruza com o horário acadêmico (Parte 15) (sugestão).
 
 **Entregas**
-- [ ] Catálogo fixo no código (Transporte, Atividade extracurricular) e remoção das rotas e telas de criação genérica
-- [ ] Transporte: preço e prazo gerais, rotas (com horário de embarque), veículos e vínculo (uma rota, pelo menos um veículo)
-- [ ] Atividade: campos, horários (início e fim), individual e coletiva com turma da atividade
-- [ ] Cobrança mensal nos meses selecionados e taxa de inscrição em `finance` (adesão tardia, alteração, cancelamento das não pagas)
-- [ ] Testes: gratuito sem cobrança; geral bloqueia a rota; uma rota por estudante; meses; adesão tardia; valor com mais de 2 casas rejeitado
-- [ ] Front-end: gestão do Transporte e da Atividade; remoção das telas de serviço genérico (nessa remoção, front-end primeiro)
-- [ ] Documentação da API atualizada
+- [x] Catálogo fixo no código (Transporte, Atividade extracurricular) e remoção das rotas de criação genérica (Tarefa 137; as telas, na 43)
+- [x] Transporte: preço e prazo gerais, rotas (com horário de embarque), veículos e vínculo (uma rota, pelo menos um veículo) (Tarefa 137)
+- [x] Atividade: campos, horários (início e fim), individual e coletiva com turma da atividade (Tarefa 137)
+- [x] Cobrança mensal nos meses selecionados e taxa de inscrição em `finance` (adesão tardia, alteração, cancelamento das não pagas) (Tarefa 137)
+- [x] Testes: gratuito sem cobrança; geral bloqueia a rota; uma rota por estudante; meses; adesão tardia; valor com mais de 2 casas rejeitado (Tarefa 137)
+- [x] Front-end: gestão do Transporte e da Atividade; remoção das telas de serviço genérico (nessa remoção, front-end primeiro) (Tarefa 43 do `rastreio-frontend`)
+- [x] Documentação da API atualizada (5.0.0, Tarefa 137)
+
+**Como ficou (Tarefa 137, back-end).** Migration 146: saem `projection_servicos_extras` e `projection_categorias_servico`; entram `servico_transporte` (um por academia, criado na primeira escrita), `servico_transporte_rotas`, `servico_transporte_veiculos`, `servico_atividades`, `servico_atividade_horarios`, `servico_atividade_turmas` e `servico_atividade_turma_membros`, todas em CRUD com auditoria na mesma transação, sem chave estrangeira para tabela reconstruível; a projeção da solicitação ganha `tipo_servico`, `rota_id`, `veiculo_ids` e `turma_id`. Saem os agregados `ServicoExtra` e `CategoriaServico`, 10 tipos de evento e as rotas genéricas (API 5.0.0).
+- **Só mensalidade.** O tipo `unico` e o lançamento `preco_unico` deixam de existir; `documento_obrigatorio` e `detalhes_personalizados` saíram (o documento da inscrição é sempre opcional). A **disponibilidade por ano/curso** (Tarefas 87 e 112) e a **validação de métodos contra o provedor ativo** (Tarefa 121) foram **mantidas** nos dois serviços.
+- **Preço e prazo definidos no geral do Transporte** bloqueiam o valor próprio da rota nos dois sentidos (409 ao definir o geral com rota própria; 400 ao definir rota própria com geral definido). Uma rota só é oferecida quando tem preço, prazo, métodos (se paga) e veículo ativo; a atividade coletiva só com turma ativa.
+- **Turma da atividade:** escolhida **pela academia na aprovação** (`turma_id`, obrigatório na coletiva). O estudante entra na turma quando o vínculo é efetivado (também depois do pagamento da taxa) e sai quando a inscrição é cancelada ou ele sai da academia.
+- **Meses removidos:** cancela as cobranças não pagas (e só as sem pagamento em andamento no provedor: a mesma guarda de anular/cancelar) das inscrições vinculadas daquele serviço ou rota.
+- **Apagar** rota, veículo, atividade ou turma só é possível se nenhuma inscrição os usou; senão, 409 e desativar.
+- **Corrigido de passagem:** `POST /financeiro/servicos-extras/obrigacao/pagamento` ignorava o `solicitacao_id` do corpo (campo `json:"-"`) e sempre respondia 400; nenhum teste o cobria.
+- **Fica para depois:** o módulo `servicos` por recurso (Parte 9) e o validador único de dinheiro (Parte 8, que consolida o que a 137 já aplica nesses campos).
 
 ---
 
@@ -533,7 +542,7 @@ _Nota (2026-11-21): a última linha mudou porque os planos agora são fixos no c
 
 **Já existe (a auditar, não refazer):** guarda de operação única (`unique_operation_guard.go`), idempotência em `aplicarEfeitosPagamento`, conferência ao vivo no provedor antes de confirmar (Tarefa 79), bloqueio de anular/reativar/cancelar cobrança paga (Tarefa 114), reconciliação (Tarefa 121), auditorias anteriores (Tarefas 40 a 46), convenção do valor monetário (Tarefa 26: `roundAmount`, rejeição de mais de 2 casas na cobrança, no QR Code e na mensalidade; coluna `NUMERIC(14,2)`).
 
-**Objetivo:** provar com testes e corrigir o que faltar nas **quatro** garantias, valendo para os **dois provedores**, para estudante **e encarregado**, e para mensalidades **e serviços** (Transporte e Atividade extracurricular). Não muda regra de preço: só corrige desvio. A Garantia 4 endurece a validação de entrada: valor inválido passa a receber **erro 400** em vez de ser arredondado em silêncio.
+**Objetivo:** provar com testes e corrigir o que faltar nas **cinco** garantias, valendo para os **dois provedores**, para estudante **e encarregado**, e para mensalidades **e serviços** (Transporte e Atividade extracurricular). Não muda regra de preço: só corrige desvio. A Garantia 4 endurece a validação de entrada: valor inválido passa a receber **erro 400** em vez de ser arredondado em silêncio. A Garantia 5 separa, com um vocabulário único, a **dívida não paga** do **pagamento em andamento** e fixa o que a troca de provedor (e todo cancelamento) pode ou não tocar.
 
 **Garantia 1 — O estudante paga o que deve e a academia sabe:** só o provedor confirma; callback repetido não duplica; valor confirmado = valor cobrado; o "pago" aparece para academia, estudante e encarregado e não volta a pendente; pagamento sem dívida correspondente fica "não identificado".
 
@@ -548,6 +557,16 @@ _Nota (2026-11-21): a última linha mudou porque os planos agora são fixos no c
 - **Falha 3:** `amountsEqual` (`finance/servico.go`) só é usada em testes. Usá-la onde o valor esperado é comparado com o confirmado pelo provedor, ou removê-la.
 - As falhas 1 e 2 foram identificadas por leitura do código; o teste da entrega abaixo deve reproduzi-las antes da correção.
 
+**Garantia 5 — Cobrança pendente e pagamento pendente são coisas diferentes (regra universal, 2026-11-28)**
+
+Na Parte 6 ficou escrito que, na troca de provedor, a cobrança nova fecha e cancela a "pendente" de outro provedor quando ele sabe fechar (PayPay) e que, na AppyPay, a "pendente" continua a bloquear a nova, porque cancelá-la só no Spuri deixaria o pagador a poder pagar uma dívida "cancelada". A palavra "pendente" está a servir para duas coisas. A regra passa a ser do sistema, igual para qualquer provedor, para estudante e encarregado, para mensalidade, serviço e avulsa:
+- **Cobrança pendente** = uma **dívida não paga**: existe a obrigação e a cobrança está aberta, mas **nenhum pagamento está em andamento**. É nossa: o Spuri pode cancelá-la, substituí-la por outra ou tirá-la (mudança de provedor, mês removido do prazo de um serviço, anulação).
+- **Pagamento pendente** = um **pagamento em andamento de verdade no sistema de pagamentos** (provedor ou banco) e **à espera de reconciliação** (confirmação). **Não é nosso para mexer:** não se cancela, não se anula, não se reativa, não se fecha e não se substitui até a reconciliação o resolver (pago, falhou ou expirou). **São estes, e só estes, que a troca de provedor protege.**
+- **Quem decide se há pagamento em andamento** é uma única função do pacote `finance`, usada por **todos** os caminhos que cancelam, anulam, reativam, fecham ou substituem cobrança (troca de provedor, cancelar cobrança, anular e reativar obrigação, meses removidos da Parte 7). Hoje a regra existe em `garantirCobrancasSemPagamento` (mensagem "pagamento aguardando confirmação") e em pontos isolados da Parte 6; a entrega passa a ter um só critério, com a consulta ao vivo ao provedor quando ele a oferece.
+- **Troca de provedor, então:** a cobrança nova substitui a **cobrança pendente** do outro provedor, seja qual for o provedor (fechando-a no provedor quando ele sabe fechar); se há **pagamento pendente**, a cobrança nova **espera** (é recusada com a mensagem "há um pagamento em andamento; aguarde a confirmação") até a reconciliação resolver.
+- **Provedor que não sabe fechar (AppyPay):** o risco que a Parte 6 evitava (o pagador pagar uma dívida "cancelada") passa a ser tratado pela **reconciliação**, não por bloqueio: se uma cobrança substituída receber pagamento, ele é **aplicado à dívida** (a dívida é uma só), a cobrança nova ainda aberta é cancelada e, se a nova já foi paga, o segundo pagamento é tratado como pagamento em duplicidade (regra da Parte 6). Esta é a parte que muda o comportamento da Tarefa 136 e exige teste por provedor (**a confirmar** com você antes de implementar).
+- **Vocabulário:** "cobrança pendente" e "pagamento pendente" passam a ter **um** significado cada em código, estados, mensagens da API, front-end e documentação; nenhum texto usa "pendente" para o outro.
+
 **Entregas**
 - [ ] Relatório do que já cumpre e do que foi corrigido
 - [ ] Testes das quatro garantias (um que falha quando a regra é desfeita, por regra)
@@ -556,6 +575,9 @@ _Nota (2026-11-21): a última linha mudou porque os planos agora são fixos no c
 - [ ] Aplicar o validador no preço geral e no preço da rota do Transporte, no preço da atividade, na taxa de inscrição e em `valor` de mensalidade (e em qualquer validador de serviço antigo que sobreviva à Parte 7)
 - [ ] Testes: 15,999 rejeitado; valor acima do teto rejeitado **sem gravar evento no ledger**; 19,99 e 0,10 aceitos
 - [ ] Usar `amountsEqual` na comparação com o valor confirmado pelo provedor, ou removê-la
+- [ ] Garantia 5: função única "há pagamento em andamento?" usada por todos os caminhos que cancelam, anulam, reativam, fecham ou substituem cobrança; troca de provedor protegendo só o pagamento pendente (substitui a cobrança pendente de qualquer provedor); pagamento tardio em cobrança substituída aplicado à dívida
+- [ ] Garantia 5: testes por provedor (AppyPay e PayPay): cobrança pendente é substituída; pagamento pendente bloqueia a nova até a reconciliação; pagamento tardio na cobrança substituída; mês removido de um serviço não cancela cobrança com pagamento em andamento
+- [ ] Garantia 5: revisar mensagens e textos da API e do front-end para o vocabulário (cobrança pendente × pagamento pendente)
 - [ ] Front-end: conferir se os formulários de preço validam 2 casas (a confirmar; front não reanalisado)
 - [ ] Documentação da API: limites e mensagens de erro desses campos
 
@@ -994,12 +1016,20 @@ Fica **fora das Partes 4 e 5 de propósito**: elas estão em implementação em 
 - O cadastro passa a aceitar **passaporte** no lugar do BI, para o **estudante** e para o **encarregado**. São dois dados, como no BI: um campo para o **número do passaporte** e o armazenamento do **documento em PDF**. Número sem documento, ou o contrário, é recusado, como no BI.
 - O passaporte é **o único documento equivalente** ao BI: nenhum outro (cartão de residente etc.) o substitui.
 - **A academia ativa ou desativa** a aceitação do passaporte, numa configuração da própria academia. **Padrão: ativada.** Desativada, cadastros novos e edições que passem a usar passaporte são recusados com mensagem clara; os **cadastros já feitos com passaporte continuam válidos** (nada é invalidado, regra 7).
-- **Achar encarregado já existente (correção da Parte 5):** a Parte 5 foi implementada identificando por telefone ou e-mail. Aqui passa a ser pelo **bilhete de identidade do encarregado** e, com o passaporte, também pelo **código do passaporte** (confirmado por você). A tarefa confere o que muda no cadastro do nível escolar e decide onde guardar o BI do encarregado para essa busca (sugestão: na conta do encarregado).
+- **Achar encarregado já existente (correção da Parte 5):** a Parte 5 foi implementada identificando por telefone ou e-mail. Aqui passa a ser pelo **bilhete de identidade do encarregado** e, com o passaporte, também pelo **código do passaporte** (confirmado por você). O BI do encarregado **fica na conta do encarregado** (decidido em 2026-11-28; ver a correção urgente abaixo).
 - Cada pessoa tem **BI ou passaporte**, nunca os dois no mesmo papel (sugestão). Onde hoje se exige BI (ex.: ensino superior), o passaporte cumpre a exigência.
 - Validação de formato do código: mínima, para não recusar passaporte estrangeiro válido (sugestão). A unicidade segue o que o BI já faz hoje; a tarefa confere.
 - Vale em todo lugar onde o BI aparece: cadastro individual e em lote (`/academia/estudante/register`), edição, lista de documentos faltantes, consulta e detalhes.
 
+**Correção urgente (2026-11-28): os documentos do encarregado ficam na conta do encarregado**
+- **O defeito** (verificado em `main` @ `452b3e3`): o BI do encarregado (`bilhete_identidade_encarregado` e o arquivo `bi_encarregado`) continua nos documentos de matrícula **do estudante** (`documentos_matricula.go`, projeção do estudante, `matricula_validation.go`), e `GET /academia/encarregados/buscar` acha o encarregado só por telefone ou e-mail. Como um encarregado pode ter **mais de um educando**, os documentos dele ficam, na prática, **no primeiro estudante cadastrado** com ele; um segundo educando procura os dados do encarregado nos dados de outro estudante, e o BI se repete (ou diverge) a cada educando.
+- **Ponto de referência = a conta do encarregado** (código `EN`). O **número do BI ou do passaporte e o PDF** pertencem à conta do encarregado, **uma vez só**, não importa quantos educandos ele tenha. Todo estudante chega aos dados do encarregado **pela relação estudante → conta do encarregado**, nunca pelos documentos de outro estudante.
+- **Sem repetição:** cadastrar um novo educando com um encarregado que já existe (achado por BI, passaporte ou telefone) **reaproveita a conta e os documentos** dele: não se pede nem se guarda o BI de novo. Se o cadastro trouxer um número diferente do guardado, **não sobrescreve em silêncio**: recusa com mensagem clara, e a troca do número e do arquivo se faz **na conta do encarregado** (por ele ou pela academia, auditada), nunca por um cadastro de estudante.
+- **O que sai do estudante:** `bilhete_identidade_encarregado`, `bi_encarregado` e o passaporte do encarregado deixam de existir nos documentos de matrícula do estudante (e na lista de documentos faltantes dele); a exigência "encarregado com documento" passa a ser lida da conta do encarregado. Sem academias, **sem migração de dados e sem legado** (mesmo critério da Parte 1).
+- **Urgência e ordem:** esta correção é uma **tarefa própria, antes das demais entregas da Parte 20** e **sem esperar a 2B-5** (depende só das Partes 4 e 5, já implementadas); o formato final de persistência (CRUD ou event sourcing) segue o que a 2B-5 e a 2B-4 decidirem para a conta de pessoa. Mudança incompatível na API (campos do encarregado saem do cadastro e da consulta do estudante e passam a vir da conta): **MAJOR**.
+
 **Entregas**
+- [ ] **Urgente:** documentos do encarregado (BI e arquivo) na conta do encarregado; saem dos documentos do estudante; busca do encarregado por BI; sem repetição entre educandos; testes com encarregado de dois educandos (segundo cadastro reaproveita, divergência recusada); front-end e documentação da API
 - [ ] Número e documento em PDF do passaporte para estudante e encarregado (migration, agregado, eventos, projeção)
 - [ ] Achar o encarregado já existente pelo BI e pelo passaporte (correção da Parte 5)
 - [ ] `documentos_matricula` aceitando BI ou passaporte
@@ -1232,7 +1262,14 @@ Usa o executor de tarefas agendadas da Parte 21. **Nunca envia duas vezes.**
 
 Vem depois da Parte 5 (implementada), que trata só do reset do **estudante**. Esta parte estende o mesmo mecanismo aos outros três perfis.
 
-**Já existe:** o reset/reenvio do estudante (`POST /estudantes/:codigo/credenciais/reenviar`, Tarefa 123) e, com a Parte 4, as contas de encarregado, professor e secretário, criadas com credenciais temporárias. Não há reset para esses perfis: a Tarefa 131 os deixou fora do escopo (se o SMS falhar, a academia elimina a conta e a recria; ponto 64). O reenvio do estudante (`internal/handlers/autenticacao/credenciais_reenvio_handlers.go`) e a regra única de contato (`services.ResolverContato`) são o ponto de partida.
+**Já existe:** o reset/reenvio do estudante (`POST /estudantes/:codigo/credenciais/reenviar`, Tarefa 123) e, com a Parte 4, as contas de encarregado, professor e secretário, criadas com credenciais temporárias. Não há reset para esses perfis: a Tarefa 131 os deixou fora do escopo (se o SMS falhar, a academia elimina a conta e a recria; ponto 64). **Isto é um defeito de processo, não uma regra:** ver a correção urgente abaixo. O reenvio do estudante (`internal/handlers/autenticacao/credenciais_reenvio_handlers.go`) e a regra única de contato (`services.ResolverContato`) são o ponto de partida.
+
+**Correção urgente (2026-11-28): a conta nunca é eliminada porque um SMS falhou**
+- **Regra:** **em hipótese alguma** a conta de uma pessoa (estudante, encarregado, professor ou secretário) é deletada, desativada ou recriada porque o **envio de credenciais por SMS falhou**. A falha de envio é um **estado da conta** ("credenciais não entregues"), nunca um motivo para desfazer o cadastro. O que se resolve com **reenvio**, não com eliminar e recriar.
+- **O que existe hoje** (verificado em `main` @ `452b3e3`): nenhum código desfaz a conta quando o SMS falha; o cadastro termina e a resposta traz o resultado do envio (`ResultadoCredenciais`). O estudante já tem o reenvio (`POST /estudantes/:codigo/credenciais/reenviar`, que gera **nova senha temporária**). O **defeito** está nos outros três perfis: sem reenvio, a única saída da academia para um SMS que não chegou é **eliminar a conta e recriá-la**, o que quebra a identidade (código da pessoa, vínculos, histórico, regra 7) e, no encarregado, afeta todos os educandos dele.
+- **Método de reenvio para todos os perfis:** um método único, o mesmo do estudante, que **gera nova senha temporária** a cada reenvio (a anterior deixa de valer), invalida as sessões, exige a troca no primeiro acesso e respeita o intervalo mínimo e a auditoria abaixo. A conta e o código da pessoa **não mudam**.
+- **Guarda e teste:** os caminhos de cadastro e de reenvio têm **teste que prova que falha de SMS (provedor recusa, telefone inválido, saldo zero) não apaga nem desativa conta nenhuma** e deixa o reenvio disponível; e a eliminação de conta de pessoa por quem a cadastrou (Tarefa 98) continua só para o que a regra dela já permite (conta sem uso), nunca como atalho para "reenviar".
+- **Urgência e ordem:** o reenvio para encarregado, professor e secretário **não espera** a 2B-2 e a 2B-4 (a conta já existe e o mecanismo do estudante já está pronto): vira **tarefa própria, a ser feita antes das demais entregas da Parte 28**; a parte desta Parte que depende da 2B (persistência final) segue depois. Rota nova e compatível: **MINOR**.
 
 **Regras** (as mesmas do reset do estudante)
 - Gera **nova senha temporária**, invalida as sessões, exige troca no primeiro acesso, tem **intervalo mínimo de 10 minutos** e é auditado. Nunca envia a senha por e-mail, **exceto** para secretário e professor de academia em demonstração (Parte 9).
@@ -1242,6 +1279,7 @@ Vem depois da Parte 5 (implementada), que trata só do reset do **estudante**. E
 - Não depende de módulo: SMS de credenciais é do sistema (Parte 9).
 
 **Entregas**
+- [ ] **Urgente:** método de reenvio de credenciais (com **nova senha temporária**) para encarregado, professor e secretário, reaproveitando o do estudante; teste e guarda de que falha de SMS nunca elimina, desativa nem recria conta; front-end (botão "reenviar credenciais" e estado "credenciais não entregues") e documentação da API
 - [ ] Reset/reenvio para encarregado, professor e secretário, reaproveitando o mecanismo do estudante
 - [ ] Regras de quem pode resetar cada perfil (inclusive o encarregado de várias academias)
 - [ ] Testes por perfil, por papel de quem reseta e por falha de envio
@@ -1428,4 +1466,6 @@ Preencher a cada entrega (ver "Como acompanhar o andamento").
 | 2026-11-25 | Parte 2B, entrega 2B-1: turmas e sumários (134) e configuração de faltas (135) convertidos para CRUD | 134 e 135 (back) | ver o texto do commit | Migrations 144 e 145. API 4.0.2 (PATCH). Saem os agregados `Turma`, `Sumario` e `ConfiguracaoFaltas` e 12 tipos de evento; a projeção de turmas continua só para o efeito da avaliação final (agora com auditoria e filtro por academia). Corrigido defeito da 133: o ator "em nome de" não ia para a auditoria CRUD. Nova guarda em tempo de execução contra FK de tabela CRUD para tabela reconstruível, e teste de reconstrução real de ponta a ponta. Falta da 2B-1: documentos extra, categorias de nota, `ConfiguracaoSistema`, comunicação, dados cadastrais e contas de pessoa; falta toda a 2B-2. |
 | 2026-11-26 | Parte 2B revista: critério do ledger mais estreito; entregas 2B-0, 2B-4 e 2B-5 novas; 2B-2 com tabela única de credenciais; comunicação na Parte 21; ajustes nas Partes 16, 19, 20, 21, 22 e 28 | — | ver o texto do commit | Só análise e planejamento; nada implementado em código. `main` @ `14ff9dd`. **Executado:** o renome das colunas da `auditoria_crud` numa transação desfeita (46 cadeias válidas). **Lido:** consumidores dos eventos de conta, 36 pontos que carregam os agregados, 31 arquivos de credenciais (187 ocorrências). Partes 6 e 7 não alteradas (a 6 está em outro chat). Cabeçalho da Parte 22 corrigido (17 → 21) |
 | 2026-11-26 | Parte 6 (todos os itens) | 136 (back) · 42 (front) | ver o texto do commit da Tarefa 136 | Sem migration. API 4.1.0 (MINOR). Provedor PayPay (Express e Reference), webhook por assinatura RSA, fecho de pedido, política de reconciliação própria, troca de provedor, pagamento em duplicidade e pagamento divergente (os dois pontos "não confirmados" não existiam e foram implementados). Corrigido: consulta a cobrança cancelada já não a reabre. Validado com PostgreSQL real e servidor PayPay simulado; front-end com `tsc`, `eslint` e `next build` (sem teste em navegador). Sem credenciais reais do PayPay |
+| 2026-11-28 | Parte 7 (catálogo fixo, Transporte, Atividade, cobrança mensal por meses, taxa de inscrição; telas de gestão, catálogo e inscrições) | 137 (back) · 43 (front) | ver o texto do commit da Tarefa 137 | Migration 146. **API 5.0.0 (MAJOR)**: saem as rotas genéricas de serviço e de categoria. Deploy: **Tarefa 43 (front) primeiro**, depois a 137 (remoção de funcionalidade). Corrigido de passagem: o pagamento da mensalidade de serviço ignorava o `solicitacao_id` do corpo. Validado com PostgreSQL real (29 pacotes) |
+| 2026-11-28 | Plano atualizado: correção urgente na Parte 20 (documentos do encarregado na conta dele), correção urgente na Parte 28 (conta nunca eliminada por falha de SMS; reenvio com nova senha para os quatro perfis) e Garantia 5 na Parte 8 (cobrança pendente × pagamento pendente) | — | — | Só análise e planejamento nas três correções, nada implementado. Verificado por leitura em `main` @ `452b3e3` |
 | | | | | |

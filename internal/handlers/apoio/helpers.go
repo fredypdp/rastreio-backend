@@ -99,14 +99,6 @@ func GetEstudanteProjection(c *gin.Context) *projections.EstudanteProjection {
 	return projections.NewEstudanteProjection(GetDbClient(c))
 }
 
-func GetServicosExtrasProjection(c *gin.Context) *projections.ServicoExtraProjection {
-	return projections.NewServicoExtraProjection(GetDbClient(c))
-}
-
-func GetCategoriasServicoProjection(c *gin.Context) *projections.CategoriaServicoProjection {
-	return projections.NewCategoriaServicoProjection(GetDbClient(c))
-}
-
 func GetDocumentosExtraProjection(c *gin.Context) *projections.DocumentoExtraProjection {
 	return projections.NewDocumentoExtraProjection(GetDbClient(c))
 }
@@ -439,6 +431,7 @@ func CancelarInscricoesServicoExtraAoSair(c *gin.Context, codigoEstudante, codig
 			log.Printf("[WARN] cancelarInscricoesServicoExtraAoSair: falha ao persistir cancelamento da solicitação %s: %v", solicitacaoID, err)
 			continue
 		}
+		RemoverMembroDaAtividade(c, solicitacao, audit)
 	}
 	return nil
 }

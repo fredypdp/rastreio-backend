@@ -88,16 +88,6 @@ var validEventTypes = map[string]bool{
 	"FaltasRegistradas": true,
 	"FaltaRegistrada":   true,
 	// ── Curso ─────────────────────────────────────────────────────────────────
-	"CategoriaServicoCriada":     true,
-	"CategoriaServicoRenomeada":  true,
-	"CategoriaServicoDesativada": true,
-	"CategoriaServicoReativada":  true,
-	"CategoriaServicoDeletada":   true, // Tarefa 107
-	"ServicoExtraCriado":         true,
-	"ServicoExtraAtualizado":     true,
-	"ServicoExtraDesativado":     true,
-	"ServicoExtraReativado":      true,
-	"ServicoExtraDeletado":       true, // Tarefa 107
 	// ── MateriaDisciplinar ────────────────────────────────────────────────────
 	// ── Solicitações de edição de dados e afins ────────────────────────────────
 	"SolicitacaoEdicaoDadoEstudanteCriada":               true,
@@ -209,8 +199,6 @@ var validAggregateTypes = map[string]bool{
 	"Secretario":                     true,
 	"Professor":                      true,
 	"Encarregado":                    true,
-	"ServicoExtra":                   true,
-	"CategoriaServico":               true,
 	"SolicitacaoEdicaoDadoEstudante": true,
 	"System":                         true,
 	"Financeiro":                     true,

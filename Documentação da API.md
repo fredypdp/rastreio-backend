@@ -1,8 +1,8 @@
 ---
-modificado: 26-11-2026 12:00
+modificado: 28-11-2026 12:00
 criado: 05-04-2026 13:01
 ---
-Versão atual: 4.1.0
+Versão atual: 5.0.0
 ## Índice
 
 1. [Convenções Globais](#1-convenções-globais)
@@ -39,14 +39,14 @@ Versão atual: 4.1.0
 20. [Armazenamento](#20-armazenamento)
 21. [Integrações Externas / Ziett (Teste)](#21-integrações-externas--ziett-teste)
 22. [Sumários](#22-sumários)
-23. [Serviços Extras](#23-serviços-extras)
+23. [Serviços (catálogo fixo)](#23-serviços-catálogo-fixo-transporte-e-atividade-extracurricular)
 24. [Documentos Extras](#24-documentos-extras)
 25. [Comunicação](#25-comunicação)
 26. [Secretários](#26-secretários)
 27. [Professores](#27-professores)
 28. [Encarregados](#28-encarregados)
 22. [Sumários](#22-sumários)
-23. [Serviços Extras](#23-serviços-extras)
+23. [Serviços (catálogo fixo)](#23-serviços-catálogo-fixo-transporte-e-atividade-extracurricular)
 24. [Documentos Extras](#24-documentos-extras)
 
 ---
@@ -113,6 +113,7 @@ A linha `Versão atual` no topo deste documento segue o **Versionamento Semânti
 
 | Versão | Tarefa | Resumo |
 | --- | --- | --- |
+| **5.0.0** | 137 | **Incompatível.** Parte 7: o catálogo de serviços passa a ser fixo (Transporte e Atividade extracurricular). Saem as rotas `POST/PUT/DELETE /academia/servicos-extras[/:id[/desativar|/reativar]]`, `GET /academia/servicos-extras/:id` e todas as de `/academia/categorias-servico`, e os campos `categoria_servico_id`, `tipo_cobranca`, `preco_unico`, `documento_obrigatorio` e `detalhes_personalizados`. Entram as rotas de gestão do Transporte (rotas e veículos) e da Atividade (horários e turmas da atividade) em 23.2 e 23.3; a inscrição ganha `rota_id` e `veiculo_ids` (transporte) e `turma_id` na aprovação (atividade coletiva); a cobrança passa a ser só mensalidade nos meses escolhidos do ano civil (23). Corrige `POST /financeiro/servicos-extras/obrigacao/pagamento`, que ignorava o `solicitacao_id` do corpo. |
 | **4.1.0** | 136 | Acrescenta o provedor **PayPay** (MULTICAIXA Express = `GPO` e MULTICAIXA Reference = `REF`) ao catálogo (19.27), com a rota pública `POST /webhooks/paypay/notificacoes` (19.30), autenticada pela assinatura RSA do PayPay. Campos novos e opcionais: `multilinha` nos campos de credencial; `pago_em_duplicidade`, `duplicidade_com`, `pagamento_divergente` e `valor_pago_provedor` nas cobranças. Passam a valer as regras de troca de provedor, pagamento em duplicidade e pagamento divergente (19.31). Cancelar uma cobrança de um provedor que sabe fechar pedidos (PayPay) fecha-a também no provedor. Nova chave de sistema `PAYPAY_API_URL` (16.7). |
 | **4.0.2** | 134 e 135 | Correção, sem alterar o contrato. Turmas, sumários e a configuração de faltas passam a ser gravados direto na tabela, com a auditoria na mesma transação (`auditoria_crud`), em vez de passar pelo ledger; rotas, campos, permissões e respostas são os mesmos. Comportamentos que mudam: a leitura logo depois de gravar já devolve o dado novo; `DELETE /academia/curso/:id` agora apaga turmas inativas e vazias, matérias inativas e o curso numa única transação; a ação de um secretário "em nome da academia" passa a constar na auditoria de cursos, matérias, turmas, sumários e configuração de faltas. |
 | **4.0.1** | 133 | Correção, sem alterar o contrato. Cursos e matérias passam a ser gravados direto na tabela, com a auditoria na mesma transação (`auditoria_crud`), em vez de passar pelo ledger; rotas, campos, permissões e respostas são os mesmos. Efeitos visíveis: a leitura logo depois de gravar já devolve o dado novo (sem esperar projeção); `DELETE /academia/curso/:id` valida as turmas antes de gravar qualquer coisa e deleta o curso e as matérias dele numa só transação; `PUT /academia/materia/:id/dados` passa a recusar de fato um `curso_id` de outra academia, como a documentação já dizia. |
@@ -9340,111 +9341,51 @@ Remove logicamente (soft delete) um sumário. Nunca é bloqueado por o sumário 
 
 **Erros:** `403` quando o sumário pertence a outra academia; `404` quando o ID não existe ou já está deletado.
 
-## 23. Serviços Extras
+## 23. Serviços (catálogo fixo: Transporte e Atividade extracurricular)
 
-A academia pode configurar serviços adicionais, como transporte e atividades extracurriculares. Serviços pagos ou com taxa de inscrição exigem credenciais AppyPay configuradas.
+O catálogo de serviços é **fixo no código**: a academia não cria serviço genérico, só configura os dois que existem. Desde a 5.0.0 as rotas `POST/PUT/DELETE /academia/servicos-extras` (e `/:id`, `/:id/desativar`, `/:id/reativar`) e todas as de `/academia/categorias-servico` foram **removidas**, bem como os campos `categoria_servico_id`, `tipo_cobranca`, `preco_unico`, `documento_obrigatorio` e `detalhes_personalizados`. A configuração é CRUD com auditoria (regra 17); a solicitação, a aprovação e o vínculo continuam em event sourcing.
 
-### 23.1 Criar serviço extra
-**Proteção:** academia autenticada e ativa. `POST /academia/servicos-extras`.
+**Cobrança.** Só existe **mensalidade**: o valor de cada mês, nos **meses do ano civil** (1 a 12) que a academia marcou. O estudante paga um mês por vez, do mês do vínculo em diante (sem meses retroativos: quem entra em maio paga só os meses marcados de maio em diante). Mudar o prazo só afeta o que ainda não foi pago: as cobranças **não pagas** de meses removidos são canceladas; as pagas, ou com pagamento em andamento no provedor, nunca são tocadas. Serviço gratuito (preço gratuito, ou prazo geral gratuito no Transporte) nunca gera cobrança. A **taxa de inscrição** é opcional, única, paga na aprovação.
 
-**Request body:** `nome` (obrigatório), `descricao`, `categoria_servico_id`, `pago`, `preco`, `tipo_cobranca` (`unico` ou `mensal`), `metodos_pagamento` (`GPO`, `REF`, `GPO_QR`), `tem_taxa_inscricao`, `valor_taxa_inscricao`, `metodos_pagamento_taxa_inscricao`, `anos_academicos_disponiveis`, `cursos_disponiveis`, `documento_obrigatorio`, `documento_instrucoes` e `detalhes_personalizados`.
+**Valores.** `preco`, `preco_geral` e `valor_taxa_inscricao` são números maiores que zero, com no máximo 2 casas decimais e no máximo 999999999999.99; valor fora disso é recusado (`400`), nunca arredondado. Gratuito é um modo explícito, não o valor zero. Configurar cobrança exige provedor de pagamento configurado, e as listas de métodos enviadas precisam ser suportadas pelo provedor ativo (como na 2.9.0).
 
-**`categoria_servico_id`:** opcional (UUID). Quando informado, precisa existir, pertencer à mesma academia autenticada e estar `ativo=true` no momento da criação — caso contrário `400` (`categoria de serviço não encontrada`, `categoria de serviço não pertence a esta academia` ou `categoria de serviço está inativa`, conforme o caso). Ver seção 23.6 para o CRUD de categorias. Uma vez associada, a categoria continua valendo mesmo que seja desativada depois — ela só deixa de poder ser escolhida em serviços NOVOS ou em atualizações que a troquem.
+**Erros comuns.** `400` regra de negócio ou formato; `404` registro inexistente ou de outra academia; `409` conflito com o estado atual (nome repetido entre ativos, preço/prazo geral contra preço/prazo de rota, apagar o que já foi usado por inscrições).
 
-**`detalhes_personalizados`:** objeto com até 30 chaves, onde cada chave mapeia para `{ "rotulo": string, "valor": ..., "tipo": string }`:
+### 23.1 Visão da academia
+**Proteção:** academia (ou secretário com `servicos_extras.ver`). `GET /academia/servicos-extras` devolve `{ "transporte": {...}, "atividades": [...], "total_atividades": n }`; `GET /academia/servicos-extras/transporte` devolve `{ "data": {...} }`; `GET /academia/servicos-extras/atividades` é a mesma lista completa da primeira; `GET /academia/servicos-extras/atividades/:id` devolve `{ "data": {...} }`. Mostram **o que foi configurado**, sem filtrar métodos por provedor, e trazem `problemas` (o que falta configurar para o estudante poder pedir) e `configurado`.
 
-- `rotulo`: obrigatório, até 100 caracteres — o texto exibido no formulário.
-- `tipo`: um de `texto`, `numero`, `booleano`, `data`, `hora`, `lista_texto`.
-- `valor`: formato depende de `tipo` — `texto` é string; `numero` é número; `booleano` é `true`/`false`; `data` é string `"AAAA-MM-DD"`; `hora` é string `"HH:MM"`; `lista_texto` é array de strings.
-- Cada chave deve seguir o formato `snake_case` (minúsculas, números e `_`, começando por letra, até 50 caracteres).
+### 23.2 Transporte
+Um por academia, criado na primeira escrita. **Proteção de escrita:** academia (ou secretário com `servicos_extras.gerir`).
 
-Exemplo (`Transporte Escolar`):
-```json
-{
-  "nome": "Transporte Escolar",
-  "categoria_servico_id": "3f2a1c4e-7b1a-4e9d-9c2a-1a2b3c4d5e6f",
-  "pago": false,
-  "detalhes_personalizados": {
-    "rota": { "rotulo": "Rota", "valor": "Centro", "tipo": "texto" },
-    "ponto_de_embarque": { "rotulo": "Ponto de embarque", "valor": "Escola", "tipo": "texto" },
-    "horario_de_saida": { "rotulo": "Horário de saída", "valor": "06:30", "tipo": "hora" }
-  }
-}
-```
+`PUT /academia/servicos-extras/transporte` — campo ausente não muda:
+- `preco_geral_modo` (`nenhum` | `gratuito` | `valor`) e `preco_geral` (com `valor`): preço geral, **igual para todas as rotas**.
+- `prazo_geral_modo` (`nenhum` | `gratuito` | `meses`) e `prazo_geral_meses`: prazo geral (`gratuito` = nenhum mês é cobrado em nenhuma rota).
+- `valor_taxa_inscricao`, `metodos_pagamento`, `metodos_pagamento_taxa_inscricao`, `anos_academicos_disponiveis`, `cursos_disponiveis` (mesmas regras de disponibilidade de antes: listas vazias = todos; fundamental em `anos_academicos_disponiveis`, médio/superior em `cursos_disponiveis` como `"<curso_id>|<ano>"`), `ativo`.
 
-Exemplo (`Natação`):
-```json
-{
-  "nome": "Natação",
-  "pago": true,
-  "preco": 25000.00,
-  "tipo_cobranca": "mensal",
-  "metodos_pagamento": ["GPO"],
-  "detalhes_personalizados": {
-    "piscina": { "rotulo": "Piscina", "valor": "Olímpica", "tipo": "texto" },
-    "exige_saber_nadar": { "rotulo": "Exige saber nadar", "valor": true, "tipo": "booleano" },
-    "equipamento_incluido": { "rotulo": "Equipamento incluído", "valor": ["touca", "óculos"], "tipo": "lista_texto" }
-  }
-}
-```
+Regra de exclusão mútua: definido o preço (ou o prazo) geral, **nenhuma rota pode ter preço (ou prazo) próprio**. Definir o geral com rota que já tem valor próprio responde `409` e não grava nada; criar/editar rota com valor próprio contra um geral definido responde `400`.
 
-**Regras de negócio:** campos financeiros são obrigatórios apenas quando a respectiva cobrança estiver ativa; `anos_academicos_disponiveis` e `cursos_disponiveis` vazios (ambos) disponibilizam o serviço para todos os anos/cursos. `anos_academicos_disponiveis` só aceita anos de ensino fundamental (`N_ano_fundamental`), sem vínculo com curso — o ensino fundamental não tem cursos neste sistema. `cursos_disponiveis` restringe a um curso específico: cada item é `"<curso_id>|<ano_academico>"`, com ano médio ou superior — médio e superior são sempre escopados a um curso, nunca soltos. O curso precisa pertencer à mesma academia, não estar deletado, ter o tipo correspondente ao ano e conter o ano entre seus anos acadêmicos. As duas listas são combináveis (ex.: fundamental solto + um curso médio específico). Em `POST /estudante/servicos-extras/:id/solicitacao`, se o serviço tiver restrições, o estudante só consegue se inscrever quando seu ano/curso atual corresponder a uma das listas; caso contrário recebe `403`.
+**Rotas.** `POST /academia/servicos-extras/transporte/rotas` e `PUT .../rotas/:id` com `nome`, `horario_embarque` (`hh:mm`), `preco_modo` (`nenhum` | `gratuito` | `valor`), `preco`, `prazo_meses`; `PUT .../rotas/:id/desativar` e `/reativar`; `DELETE .../rotas/:id` (só se nenhuma inscrição usou a rota; senão `409`, desative). **Veículos:** `POST .../rotas/:id/veiculos` (`nome`), `PUT /academia/servicos-extras/transporte/veiculos/:id` (`nome` e/ou `ativo`), `DELETE .../veiculos/:id` (mesma regra de uso). Nomes de rota (no transporte) e de veículo (na rota) não se repetem entre os ativos, ignorando maiúsculas. Toda escrita de rota ou veículo responde com o transporte inteiro em `data` (`rota_id` / `veiculo_id` no corpo quando algo foi criado).
 
+Uma rota só é oferecida ao estudante quando tem preço e prazo (próprios ou gerais), métodos de pagamento (se for paga) e ao menos um veículo ativo.
 
-**Métodos de pagamento e provedor (2.9.0).** `metodos_pagamento` e `metodos_pagamento_taxa_inscricao` precisam ser suportados pelo provedor de pagamento ativo da academia; um método não suportado é recusado com `400` (`VALIDATION_ERROR`, a mensagem cita o método e o provedor). Em `PUT` só as listas enviadas são validadas, então editar outro campo de um serviço com método legado não é bloqueado.
-### 23.2 Atualizar serviço extra
-**Proteção:** academia proprietária autenticada e ativa. `PUT /academia/servicos-extras/:id`. Aceita os mesmos campos da criação (incluindo `cursos_disponiveis` e `categoria_servico_id`) de forma parcial — envie só os campos que quer alterar. Enviar `categoria_servico_id` explicitamente como `null` remove a categoria do serviço; omitir o campo mantém a categoria atual inalterada.
+### 23.3 Atividade extracurricular
+Várias por academia. `POST /academia/servicos-extras/atividades` e `PUT .../atividades/:id` (na edição, campo ausente não muda) com: `nome`, `instrutor` (obrigatórios), `coletiva`, `gratuito`, `preco` e `prazo_meses` (obrigatórios se não gratuita; vazios se gratuita), `valor_taxa_inscricao`, `metodos_pagamento` (obrigatório se paga), `metodos_pagamento_taxa_inscricao`, disponibilidade (`anos_academicos_disponiveis`, `cursos_disponiveis`) e `horarios`: lista de `{ "dia_semana": 1-7 (1 = segunda), "hora_inicio": "hh:mm", "hora_fim": "hh:mm" }`, com o fim depois do início e sem cruzamento no mesmo dia (a lista enviada substitui a anterior). `PUT .../atividades/:id/desativar` e `/reativar`; `DELETE .../atividades/:id` (só se nunca teve inscrições). Uma atividade com inscrições não troca entre individual e coletiva (`409`). `201` na criação, com `{ "data": {...} }`.
 
-### 23.3 Desativar serviço extra
-**Proteção:** academia proprietária autenticada e ativa. `PUT /academia/servicos-extras/:id/desativar`.
+**Turmas da atividade** (só atividade **coletiva**; não confundir com a Turma acadêmica): `POST /academia/servicos-extras/atividades/:id/turmas` (`nome`), `PUT /academia/servicos-extras/turmas-atividade/:turma_id` (`nome` e/ou `ativo`), `DELETE .../turmas-atividade/:turma_id` (só sem membros e sem uso), `GET .../turmas-atividade/:turma_id/membros` (`{ "membros": [{ "codigo_estudante", "solicitacao_id", "desde" }], "total" }`). A atividade coletiva só é oferecida ao estudante se tiver turma ativa.
 
-### 23.4 Reativar serviço extra
-**Proteção:** academia proprietária autenticada e ativa. `PUT /academia/servicos-extras/:id/reativar`.
+### 23.4 Catálogo visto por quem paga
+`GET /academia/servico/:codigo_academia/servicos-extras` (público) e `GET /estudante/servicos-extras/catalogo` (o segundo já filtrado pela elegibilidade do estudante) devolvem `{ "transporte": {...} | null, "atividades": [...], "total": n }` só com o que está **ativo e configurado**. O transporte traz `rotas` (`id`, `nome`, `horario_embarque`, `gratuito`, `preco`, `meses`, `veiculos` ativos) e, como cada atividade, `tem_taxa_inscricao`, `valor_taxa_inscricao`, `metodos_pagamento` e `metodos_pagamento_taxa_inscricao` já filtrados pelo provedor ativo, com `metodos_pagamento_aviso` / `metodos_pagamento_taxa_inscricao_aviso` quando uma lista de serviço pago fica vazia (códigos em 19.17).
 
-### 23.5 Listar e consultar serviços extras
-**Proteção:** `GET /academia/servicos-extras` e `GET /academia/servicos-extras/:id` exigem academia ou admin autenticado. A listagem pública `GET /academia/servico/:codigo_academia/servicos-extras` retorna somente serviços ativos.
+### 23.5 Inscrição
+- `POST /estudante/servicos-extras/:id/solicitacao` — `:id` é o `id` do `transporte` ou da atividade no catálogo. Corpo JSON ou `multipart/form-data` (com `documento` PDF opcional, sempre opcional agora). **Transporte:** `rota_id` e `veiculo_ids` (ao menos um veículo **ativo da rota escolhida**; em formulário, repetido ou separado por vírgula); o estudante fica em **uma só rota**. **Atividade:** sem rota nem veículo. `403` fora da elegibilidade; `409` se o serviço ainda não está configurado ou o estudante já tem inscrição ativa no serviço.
+- `PUT /academia/servicos-extras/solicitacoes/:id/aprovar` — corpo opcional `{ "turma_id": uuid }`, **obrigatório** na atividade coletiva (turma ativa da própria atividade) e recusado nos demais; ao vincular, o estudante entra na turma. Cancelar a inscrição (ou o estudante sair da academia) o tira da turma.
+- As inscrições (`GET /estudante/servicos-extras/minhas-inscricoes`, `GET /academia/servicos-extras/solicitacoes`) trazem `tipo_servico`, `rota_id`, `veiculo_ids` e `turma_id`. Demais rotas de aprovar, reprovar e cancelar não mudam.
+- `POST /financeiro/servicos-extras/taxa-inscricao/pagamento?solicitacao_id={uuid}` (estudante) inicia o pagamento da taxa já aprovada (`metodo_pagamento`; `telefone` para GPO).
 
-**Métodos de pagamento vistos por quem paga (2.9.0).** A listagem pública e o catálogo do estudante (`GET /estudante/servicos-extras/catalogo`) devolvem em `metodos_pagamento` e `metodos_pagamento_taxa_inscricao` só os métodos que o provedor ativo da academia suporta (lista vazia sem provedor). Quando a lista de um serviço pago (ou da taxa de inscrição) fica vazia, o item traz `metodos_pagamento_aviso` / `metodos_pagamento_taxa_inscricao_aviso` com `{ "codigo", "mensagem" }` (códigos em 19.17). Serviços gratuitos não trazem aviso. As rotas da **academia** (`GET /academia/servicos-extras`, `/:id`) continuam mostrando exatamente o que foi configurado, para a academia poder corrigir.
-
-### 23.6 Categorias de serviço
-**Proteção:** todas exigem academia autenticada e ativa; as rotas de escrita (atualizar/desativar/reativar/deletar) exigem que a categoria pertença à academia autenticada — `403` caso contrário (`404` se o ID não existir).
-
-- `POST /academia/categorias-servico` cria uma categoria. **Request body:** `nome` (obrigatório, até 100 caracteres).
-- `PUT /academia/categorias-servico/:id` renomeia. Mesmo corpo da criação.
-- `PUT /academia/categorias-servico/:id/desativar` e `PUT /academia/categorias-servico/:id/reativar` alternam o status.
-- `DELETE /academia/categorias-servico/:id` deleta logicamente a categoria (nunca remove o registo do ledger, só marca `deleted_at`). **Request body (opcional):** `{ "motivo": string }`, texto livre para auditoria. **Response 200:** `{ "message": "categoria de serviço deletada com sucesso" }`.
-- `GET /academia/categorias-servico` lista as categorias da academia autenticada; aceita `?ativos=true` para retornar somente as ativas. Categorias deletadas nunca aparecem nesta listagem (nem com nem sem esse filtro).
-
-**Regras de negócio:** nome único por academia, ignorando maiúsculas/minúsculas, enquanto a categoria estiver ativa — duas categorias ativas com o "mesmo" nome (case-insensitive) não podem coexistir na mesma academia, seja por criação, renomeação ou reativação; a tentativa é rejeitada com `400` (`já existe uma categoria de serviço ativa com este nome nesta academia`). Ao desativar uma categoria, o nome fica livre para reutilização por outra categoria (nova ou reativada). Desativar uma categoria não afeta os serviços que já a utilizam — eles continuam funcionando normalmente; a categoria só deixa de poder ser escolhida em serviços novos ou em atualizações de `categoria_servico_id`. **Deletar** exige que a categoria já esteja **inativa** e que nenhum serviço (ativo ou inativo, mas não deletado) ainda esteja vinculado a ela — caso contrário, `400` (`desative a categoria antes de deletá-la` ou `não é possível deletar: N serviço(s) ainda estão vinculados a esta categoria`, conforme o caso). Deletar uma categoria não reatribui nem remove esse vínculo automaticamente — é preciso primeiro trocar/limpar a categoria dos serviços que ainda a usam, ou deletar esses serviços.
-
-### 23.7 Pagamento de taxa de inscrição de serviço extra
-`POST /financeiro/servicos-extras/taxa-inscricao/pagamento?solicitacao_id={uuid}` (estudante autenticado) inicia o pagamento da taxa já aprovada. O corpo aceita `metodo_pagamento` e, para GPO, `telefone`.
-
-### 23.8 Inscrições em serviços extras
-Estudantes podem criar solicitações em `POST /estudante/servicos-extras/:id/solicitacao`, consultar `GET /estudante/servicos-extras/minhas-inscricoes` e cancelar vínculos próprios. Academias listam, aprovam, reprovam ou cancelam solicitações em `/academia/servicos-extras/solicitacoes` e `/academia/servicos-extras/inscricoes/:id/cancelar`. As listagens financeiras aceitam `origem=servico_extra` para filtrar exclusivamente taxas de inscrição de serviços extras. Uma inscrição pode ter cobranças de `taxa_inscricao`, `mensalidade` ou `preco_unico`, sempre com `origem=servico_extra`.
-
-Em `GET /estudante/servicos-extras/minhas-inscricoes`, `metodos_pagamento_taxa_inscricao` de cada inscrição com taxa traz só os métodos que o provedor ativo da academia suporta, acompanhado de `metodos_pagamento_taxa_inscricao_aviso` quando fica vazio (2.9.0).
-
-### 23.9 Pendências e pagamento
-- `GET /estudante/servicos-extras/minhas-inscricoes/:id/pendencias` lista as pendências da própria inscrição.
-- `GET /academia/servicos-extras/inscricoes/:id/pendencias` oferece a visão da academia.
-- `POST /financeiro/servicos-extras/obrigacao/pagamento` inicia o pagamento de uma mensalidade ou preço único.
+### 23.6 Pendências e pagamento
+- `GET /estudante/servicos-extras/minhas-inscricoes/:id/pendencias` e `GET /academia/servicos-extras/inscricoes/:id/pendencias` listam **um lançamento por mês cobrado**, do mês do vínculo até o mês atual (`tipo_lancamento` é sempre `mensalidade`; lista vazia em serviço gratuito).
+- `POST /financeiro/servicos-extras/obrigacao/pagamento` — corpo `{ "solicitacao_id", "tipo_lancamento": "mensalidade", "ano", "mes", "metodo_pagamento", "telefone"? }`. Recusa (`409`) mês que não é cobrado no serviço, anterior ao vínculo ou futuro. (Até a 4.1.0 o `solicitacao_id` do corpo era ignorado e a rota sempre respondia `400`; corrigido.)
 - `POST /financeiro/servicos-extras/obrigacao/anular` e `/reativar` administram uma obrigação individual da inscrição.
-
-### 23.10 Deletar serviço extra
-**Proteção:** academia proprietária autenticada e ativa. `DELETE /academia/servicos-extras/:id`.
-
-**Request body (opcional):** `{ "motivo": string }`, texto livre para auditoria.
-
-**Response 200:**
-
-```json
-{ "message": "serviço extra deletado com sucesso" }
-```
-
-**Regras de negócio:** deleção lógica (nunca remove o registo do ledger, só marca `deleted_at`). Exige que o serviço já esteja **inativo** (`PUT /academia/servicos-extras/:id/desativar` antes) e que não haja nenhuma solicitação com status `pendente`, `aprovada_pendente_pagamento_taxa_inscricao` ou `vinculada` para este serviço — caso contrário, `400` (`desative o serviço antes de deletá-lo` ou `não é possível deletar: N inscrição(ões) pendente(s) ou ativa(s) neste serviço`, conforme o caso). Serviços deletados nunca aparecem em `GET /academia/servicos-extras` nem na listagem pública `GET /academia/servico/:codigo_academia/servicos-extras` — mas `GET /academia/servicos-extras/:id` continua retornando o registo normalmente por ID direto, já que não há um endpoint de auditoria de deleções para serviços extras (diferente do `GET /dominis/auditoria/delecoes` da seção 16.6, que cobre só Academia/Administrador/Estudante).
-
-**Erros:** `403` quando o serviço pertence a outra academia; `404` quando o ID não existe.
 
 ## 24. Documentos Extras
 
@@ -9628,7 +9569,7 @@ Catálogo das permissões que a academia pode conceder.
 | **Sumários** | `sumarios.ver`, `sumarios.gerir` |
 | Notas e faltas | `notas.ver`, `faltas.ver`, `faltas.configurar` (só consulta; lançar é dos professores) |
 | Avaliações | `avaliacoes.ver`, `avaliacoes.configurar` |
-| Serviços extras | `servicos_extras.ver`, `servicos_extras.gerir`, `servicos_extras.solicitacoes` |
+| Serviços (Transporte e atividades) | `servicos_extras.ver`, `servicos_extras.gerir`, `servicos_extras.solicitacoes` |
 | Financeiro | `financeiro.ver`, `financeiro.gerir` (sem credenciais do provedor) |
 | Comunicação | `comunicacao.ver`, `comunicacao.enviar` |
 | Ano letivo | `ano_letivo.gerir` |

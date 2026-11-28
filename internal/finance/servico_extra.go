@@ -159,26 +159,81 @@ type ServicoExtraPendenciaView struct {
 	Valor          float64 `json:"valor"`
 }
 
-func (s *Service) PendenciasServicoExtra(ctx context.Context, solicitacaoID, tipoCobranca string, preco float64, vinculadaEm, fimPeriodo time.Time) ([]ServicoExtraPendenciaView, error) {
-	if tipoCobranca == "unico" {
-		estado, err := s.estadoObrigacaoServicoExtra(ctx, solicitacaoID, "preco_unico", 0, 0)
-		if err != nil {
-			return nil, err
-		}
-		return []ServicoExtraPendenciaView{{TipoLancamento: "preco_unico", Estado: estado, Valor: preco}}, nil
+// PendenciasServicoExtra lista os lançamentos mensais do serviço: um por mês
+// cobrado (meses do ano civil escolhidos pela academia), do mês do vínculo até
+// o mês de fimPeriodo, sem meses retroativos (adesão tardia). preco é o valor de
+// cada mês; sem meses (ou gratuito) não há pendência.
+func (s *Service) PendenciasServicoExtra(ctx context.Context, solicitacaoID string, meses []int, preco float64, vinculadaEm, fimPeriodo time.Time) ([]ServicoExtraPendenciaView, error) {
+	cobrado := map[int]bool{}
+	for _, m := range meses {
+		cobrado[m] = true
 	}
-	var out []ServicoExtraPendenciaView
+	out := []ServicoExtraPendenciaView{}
 	cursor := time.Date(vinculadaEm.Year(), vinculadaEm.Month(), 1, 0, 0, 0, 0, time.UTC)
 	limite := time.Date(fimPeriodo.Year(), fimPeriodo.Month(), 1, 0, 0, 0, 0, time.UTC)
 	for !cursor.After(limite) {
-		estado, err := s.estadoObrigacaoServicoExtra(ctx, solicitacaoID, "mensalidade", cursor.Year(), int(cursor.Month()))
-		if err != nil {
-			return nil, err
+		if cobrado[int(cursor.Month())] {
+			estado, err := s.estadoObrigacaoServicoExtra(ctx, solicitacaoID, "mensalidade", cursor.Year(), int(cursor.Month()))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, ServicoExtraPendenciaView{TipoLancamento: "mensalidade", Ano: cursor.Year(), Mes: int(cursor.Month()), Estado: estado, Valor: preco})
 		}
-		out = append(out, ServicoExtraPendenciaView{TipoLancamento: "mensalidade", Ano: cursor.Year(), Mes: int(cursor.Month()), Estado: estado, Valor: preco})
 		cursor = cursor.AddDate(0, 1, 0)
 	}
 	return out, nil
+}
+
+// CancelarCobrancasServicoMesesRemovidos cancela as cobranças ainda NÃO pagas
+// dos meses que a academia tirou do prazo do serviço (Parte 7: alterar o
+// prazo só afeta o que ainda não foi pago). Cobrança paga, ou com pagamento
+// em andamento no provedor, nunca é tocada: fica como está. Devolve quantas
+// cobranças foram canceladas.
+func (s *Service) CancelarCobrancasServicoMesesRemovidos(ctx context.Context, solicitacaoIDs []string, meses []int, actor, actorType, ip string) (int, error) {
+	if len(solicitacaoIDs) == 0 || len(meses) == 0 {
+		return 0, nil
+	}
+	m64 := make([]int64, len(meses))
+	for i, m := range meses {
+		m64[i] = int64(m)
+	}
+	rows, err := s.client.DB().QueryContext(ctx, `
+		SELECT DISTINCT payload->>'codigo_inscricao_servico', COALESCE((payload->>'ano_referencia')::int,0), COALESCE((payload->>'mes_referencia')::int,0)
+		FROM financeiro_cobrancas
+		WHERE payload->>'codigo_inscricao_servico' = ANY($1)
+		  AND payload->>'tipo_lancamento_servico_extra' = 'mensalidade'
+		  AND COALESCE((payload->>'mes_referencia')::int,0) = ANY($2)
+		  AND lower(COALESCE(payload->>'status','')) NOT IN (`+chargeAbertaStatusExcluidos+`)`,
+		pq.Array(solicitacaoIDs), pq.Array(m64))
+	if err != nil {
+		return 0, err
+	}
+	type alvo struct {
+		id       string
+		ano, mes int
+	}
+	var alvos []alvo
+	for rows.Next() {
+		var a alvo
+		if err := rows.Scan(&a.id, &a.ano, &a.mes); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		alvos = append(alvos, a)
+	}
+	rows.Close()
+	cancelados := 0
+	for _, a := range alvos {
+		// Mesmo critério de anular um lançamento: pago ou com pagamento em andamento não se toca.
+		if err := s.garantirObrigacaoServicoExtraSemPagamento(ctx, a.id, "mensalidade", a.ano, a.mes, actor, actorType, ip); err != nil {
+			continue
+		}
+		if err := s.servicoExtraObrigacaoCancelarCobrancasAbertas(ctx, a.id, "mensalidade", a.ano, a.mes, actor, actorType, ip); err != nil {
+			return cancelados, err
+		}
+		cancelados++
+	}
+	return cancelados, nil
 }
 
 type ServicoExtraObrigacaoPagamentoInput struct {
@@ -192,10 +247,10 @@ type ServicoExtraObrigacaoPagamentoInput struct {
 
 func (s *Service) IniciarPagamentoServicoExtraObrigacao(ctx context.Context, in ServicoExtraObrigacaoPagamentoInput, codigoAcademia string, preco float64, metodos []string, ip string) (QRCodeResult, error) {
 	in.MetodoPagamento = strings.ToUpper(strings.TrimSpace(in.MetodoPagamento))
-	if in.TipoLancamento != "mensalidade" && in.TipoLancamento != "preco_unico" {
-		return QRCodeResult{}, errors.New("tipo_lancamento deve ser 'mensalidade' ou 'preco_unico'")
+	if in.TipoLancamento != "mensalidade" {
+		return QRCodeResult{}, errors.New("tipo_lancamento deve ser 'mensalidade'")
 	}
-	if in.TipoLancamento == "mensalidade" && (in.Mes < 1 || in.Mes > 12 || in.Ano < 2000) {
+	if in.Mes < 1 || in.Mes > 12 || in.Ano < 2000 {
 		return QRCodeResult{}, errors.New("ano e mes válidos são obrigatórios para mensalidade")
 	}
 	if !contains(metodos, in.MetodoPagamento) {

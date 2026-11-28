@@ -10,6 +10,10 @@ import (
 )
 
 const (
+	// Tipos de serviço do catálogo fixo (Parte 7) que uma solicitação pode pedir.
+	TipoServicoSolicitadoTransporte = "transporte"
+	TipoServicoSolicitadoAtividade  = "atividade"
+
 	StatusInscricaoPendente                      = "pendente"
 	StatusInscricaoAprovadaPendentePagamentoTaxa = "aprovada_pendente_pagamento_taxa_inscricao"
 	StatusInscricaoVinculada                     = "vinculada"
@@ -31,6 +35,14 @@ type SolicitacaoServicoExtra struct {
 	CodigoAcademia  string
 	CodigoEstudante string
 	Status          string
+
+	// O que foi pedido (Parte 7): o tipo do serviço do catálogo fixo
+	// ("transporte" ou "atividade") e, no transporte, a rota e os veículos;
+	// a turma da atividade coletiva é escolhida pela academia ao aprovar.
+	TipoServico string
+	RotaID      *uuid.UUID
+	VeiculoIDs  []uuid.UUID
+	TurmaID     *uuid.UUID
 
 	MotivoReprovacao   string
 	MotivoCancelamento string
@@ -65,6 +77,9 @@ func (s *SolicitacaoServicoExtra) GetType() string { return "SolicitacaoServicoE
 type SolicitacaoServicoExtraCriadaEvent struct {
 	BaseEvent
 	ServicoExtraID  uuid.UUID
+	TipoServico     string
+	RotaID          *uuid.UUID
+	VeiculoIDs      []uuid.UUID
 	CodigoAcademia  string
 	CodigoEstudante string
 	DocumentoPath   string
@@ -79,6 +94,7 @@ type SolicitacaoServicoExtraAprovadaPendentePagamentoEvent struct {
 	BaseEvent
 	ValorTaxaInscricao            float64
 	MetodosPagamentoTaxaInscricao []string
+	TurmaID                       *uuid.UUID
 	AprovadaPor                   uuid.UUID
 	UpdatedAt                     time.Time
 }
@@ -96,6 +112,7 @@ func (e *SolicitacaoServicoExtraAprovadaPendentePagamentoEvent) ToJSON() ([]byte
 type SolicitacaoServicoExtraVinculadaEvent struct {
 	BaseEvent
 	AprovadaPor uuid.UUID
+	TurmaID     *uuid.UUID
 	UpdatedAt   time.Time
 }
 
@@ -163,16 +180,46 @@ func (s *SolicitacaoServicoExtra) Apply(event DomainEvent) error {
 // Commands
 // ---------------------------------------------------------------------------
 
-func (s *SolicitacaoServicoExtra) Criar(servicoExtraID uuid.UUID, codigoAcademia, codigoEstudante, documentoPath, documentoURL string) error {
+// Criar abre a solicitação. tipoServico é "transporte" ou "atividade"; no
+// transporte a rota e ao menos um veículo dela são obrigatórios (o estudante
+// fica numa só rota); na atividade não há rota nem veículo.
+func (s *SolicitacaoServicoExtra) Criar(servicoExtraID uuid.UUID, tipoServico string, rotaID *uuid.UUID, veiculoIDs []uuid.UUID,
+	codigoAcademia, codigoEstudante, documentoPath, documentoURL string) error {
 	if servicoExtraID == uuid.Nil {
 		return fmt.Errorf("servico_extra_id é obrigatório")
 	}
 	if strings.TrimSpace(codigoAcademia) == "" || strings.TrimSpace(codigoEstudante) == "" {
 		return fmt.Errorf("codigo_academia e codigo_estudante são obrigatórios")
 	}
+	switch tipoServico {
+	case TipoServicoSolicitadoTransporte:
+		if rotaID == nil || *rotaID == uuid.Nil {
+			return fmt.Errorf("o transporte exige a escolha de uma rota")
+		}
+		if len(veiculoIDs) == 0 {
+			return fmt.Errorf("o transporte exige ao menos um veículo da rota")
+		}
+		vistos := map[uuid.UUID]bool{}
+		for _, v := range veiculoIDs {
+			if v == uuid.Nil || vistos[v] {
+				return fmt.Errorf("veículo inválido ou repetido")
+			}
+			vistos[v] = true
+		}
+	case TipoServicoSolicitadoAtividade:
+		if rotaID != nil || len(veiculoIDs) > 0 {
+			return fmt.Errorf("rota e veículo só valem para o transporte")
+		}
+		veiculoIDs = nil
+	default:
+		return fmt.Errorf("tipo_servico deve ser 'transporte' ou 'atividade'")
+	}
 	event := &SolicitacaoServicoExtraCriadaEvent{
 		BaseEvent:       BaseEvent{EventType: "SolicitacaoServicoExtraCriada", AggregateID: s.ID},
 		ServicoExtraID:  servicoExtraID,
+		TipoServico:     tipoServico,
+		RotaID:          rotaID,
+		VeiculoIDs:      veiculoIDs,
 		CodigoAcademia:  codigoAcademia,
 		CodigoEstudante: codigoEstudante,
 		DocumentoPath:   documentoPath,
@@ -189,7 +236,7 @@ func (s *SolicitacaoServicoExtra) Criar(servicoExtraID uuid.UUID, codigoAcademia
 // alteram o que este estudante especificamente tem a pagar — mesmo
 // princípio já usado em SolicitacaoMatricula.MarcarPendentePagamentoMatricula)
 // e aguarda pagamento.
-func (s *SolicitacaoServicoExtra) Aprovar(temTaxaInscricao bool, valorTaxa float64, metodosTaxa []string, aprovadaPor uuid.UUID) error {
+func (s *SolicitacaoServicoExtra) Aprovar(temTaxaInscricao bool, valorTaxa float64, metodosTaxa []string, turmaID *uuid.UUID, aprovadaPor uuid.UUID) error {
 	if s.Status != StatusInscricaoPendente {
 		return fmt.Errorf("apenas solicitações pendentes podem ser aprovadas (status atual: %s)", s.Status)
 	}
@@ -197,6 +244,7 @@ func (s *SolicitacaoServicoExtra) Aprovar(temTaxaInscricao bool, valorTaxa float
 		event := &SolicitacaoServicoExtraVinculadaEvent{
 			BaseEvent:   BaseEvent{EventType: "SolicitacaoServicoExtraVinculada", AggregateID: s.ID},
 			AprovadaPor: aprovadaPor,
+			TurmaID:     turmaID,
 			UpdatedAt:   time.Now(),
 		}
 		s.RaiseEvent(event)
@@ -209,6 +257,7 @@ func (s *SolicitacaoServicoExtra) Aprovar(temTaxaInscricao bool, valorTaxa float
 		BaseEvent:                     BaseEvent{EventType: "SolicitacaoServicoExtraAprovadaPendentePagamento", AggregateID: s.ID},
 		ValorTaxaInscricao:            valorTaxa,
 		MetodosPagamentoTaxaInscricao: metodosTaxa,
+		TurmaID:                       turmaID,
 		AprovadaPor:                   aprovadaPor,
 		UpdatedAt:                     time.Now(),
 	}
@@ -304,6 +353,9 @@ func (s *SolicitacaoServicoExtra) applyCriada(event DomainEvent) error {
 		return err
 	}
 	s.ServicoExtraID = p.ServicoExtraID
+	s.TipoServico = p.TipoServico
+	s.RotaID = p.RotaID
+	s.VeiculoIDs = p.VeiculoIDs
 	s.CodigoAcademia = p.CodigoAcademia
 	s.CodigoEstudante = p.CodigoEstudante
 	s.DocumentoPath = p.DocumentoPath
@@ -326,6 +378,7 @@ func (s *SolicitacaoServicoExtra) applyAprovadaPendentePagamento(event DomainEve
 	s.Status = StatusInscricaoAprovadaPendentePagamentoTaxa
 	s.ValorTaxaInscricao = p.ValorTaxaInscricao
 	s.MetodosPagamentoTaxaInscricao = p.MetodosPagamentoTaxaInscricao
+	s.TurmaID = p.TurmaID
 	s.AprovadaPor = p.AprovadaPor
 	s.UpdatedAt = p.UpdatedAt
 	return nil
@@ -341,6 +394,9 @@ func (s *SolicitacaoServicoExtra) applyVinculada(event DomainEvent) error {
 		return err
 	}
 	s.Status = StatusInscricaoVinculada
+	if p.TurmaID != nil {
+		s.TurmaID = p.TurmaID
+	}
 	if p.AprovadaPor != uuid.Nil {
 		s.AprovadaPor = p.AprovadaPor
 	}

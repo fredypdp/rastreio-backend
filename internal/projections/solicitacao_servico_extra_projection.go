@@ -34,29 +34,43 @@ func (p *SolicitacaoServicoExtraProjection) Handle(e db.Event) error {
 	case "SolicitacaoServicoExtraCriada":
 		var v struct {
 			ServicoExtraID                                               uuid.UUID
+			TipoServico                                                  string
+			RotaID                                                       *uuid.UUID
+			VeiculoIDs                                                   []uuid.UUID
 			CodigoAcademia, CodigoEstudante, DocumentoPath, DocumentoURL string
 			CreatedAt                                                    time.Time
 		}
-		json.Unmarshal(e.Payload, &v)
-		_, err := p.client.DB().Exec(`INSERT INTO projection_solicitacoes_servico_extra(id,servico_extra_id,codigo_academia,codigo_estudante,status,documento_path,documento_url,created_at,updated_at,version,last_event_id) VALUES($1,$2,$3,$4,'pendente',NULLIF($5,''),NULLIF($6,''),$7,$7,$8,$9) ON CONFLICT(id) DO NOTHING`, e.AggregateID, v.ServicoExtraID, v.CodigoAcademia, v.CodigoEstudante, v.DocumentoPath, v.DocumentoURL, v.CreatedAt, e.EventVersion, e.EventID)
+		if err := json.Unmarshal(e.Payload, &v); err != nil {
+			return err
+		}
+		if v.TipoServico == "" {
+			v.TipoServico = "atividade"
+		}
+		veiculos := make([]string, 0, len(v.VeiculoIDs))
+		for _, id := range v.VeiculoIDs {
+			veiculos = append(veiculos, id.String())
+		}
+		_, err := p.client.DB().Exec(`INSERT INTO projection_solicitacoes_servico_extra(id,servico_extra_id,tipo_servico,rota_id,veiculo_ids,codigo_academia,codigo_estudante,status,documento_path,documento_url,created_at,updated_at,version,last_event_id) VALUES($1,$2,$3,$4,$5::uuid[],$6,$7,'pendente',NULLIF($8,''),NULLIF($9,''),$10,$10,$11,$12) ON CONFLICT(id) DO NOTHING`, e.AggregateID, v.ServicoExtraID, v.TipoServico, v.RotaID, pq.Array(veiculos), v.CodigoAcademia, v.CodigoEstudante, v.DocumentoPath, v.DocumentoURL, v.CreatedAt, e.EventVersion, e.EventID)
 		return err
 	case "SolicitacaoServicoExtraAprovadaPendentePagamento":
 		var v struct {
 			ValorTaxaInscricao            float64
 			MetodosPagamentoTaxaInscricao []string
+			TurmaID                       *uuid.UUID
 			AprovadaPor                   uuid.UUID
 			UpdatedAt                     time.Time
 		}
 		json.Unmarshal(e.Payload, &v)
-		_, err := p.client.DB().Exec(`UPDATE projection_solicitacoes_servico_extra SET status='aprovada_pendente_pagamento_taxa_inscricao',valor_taxa_inscricao=$1,metodos_pagamento_taxa_inscricao=$2,aprovada_por=$3,updated_at=$4,version=$5,last_event_id=$6 WHERE id=$7`, v.ValorTaxaInscricao, pq.Array(v.MetodosPagamentoTaxaInscricao), v.AprovadaPor, v.UpdatedAt, e.EventVersion, e.EventID, e.AggregateID)
+		_, err := p.client.DB().Exec(`UPDATE projection_solicitacoes_servico_extra SET status='aprovada_pendente_pagamento_taxa_inscricao',valor_taxa_inscricao=$1,metodos_pagamento_taxa_inscricao=$2,turma_id=$3,aprovada_por=$4,updated_at=$5,version=$6,last_event_id=$7 WHERE id=$8`, v.ValorTaxaInscricao, pq.Array(v.MetodosPagamentoTaxaInscricao), v.TurmaID, v.AprovadaPor, v.UpdatedAt, e.EventVersion, e.EventID, e.AggregateID)
 		return err
 	case "SolicitacaoServicoExtraVinculada":
 		var v struct {
 			AprovadaPor uuid.UUID
+			TurmaID     *uuid.UUID
 			UpdatedAt   time.Time
 		}
 		json.Unmarshal(e.Payload, &v)
-		_, err := p.client.DB().Exec(`UPDATE projection_solicitacoes_servico_extra SET status='vinculada',aprovada_por=COALESCE(NULLIF($1::uuid,'00000000-0000-0000-0000-000000000000'),aprovada_por),vinculada_em=COALESCE(vinculada_em,$2),updated_at=$2,version=$3,last_event_id=$4 WHERE id=$5`, v.AprovadaPor, v.UpdatedAt, e.EventVersion, e.EventID, e.AggregateID)
+		_, err := p.client.DB().Exec(`UPDATE projection_solicitacoes_servico_extra SET status='vinculada',aprovada_por=COALESCE(NULLIF($1::uuid,'00000000-0000-0000-0000-000000000000'),aprovada_por),turma_id=COALESCE($6,turma_id),vinculada_em=COALESCE(vinculada_em,$2),updated_at=$2,version=$3,last_event_id=$4 WHERE id=$5`, v.AprovadaPor, v.UpdatedAt, e.EventVersion, e.EventID, e.AggregateID, v.TurmaID)
 		return err
 	case "SolicitacaoServicoExtraReprovada":
 		return p.end(e, "reprovada", "motivo_reprovacao", "reprovada_por")

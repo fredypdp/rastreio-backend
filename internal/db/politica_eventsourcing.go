@@ -36,7 +36,6 @@ const (
 	EntregaConversao2B1  = "2B-1" // dados cadastrais, catálogos e configurações
 	EntregaConversao2B2  = "2B-2" // autenticação (senha, 2FA, e-mail)
 	EntregaConversao2B3  = "2B-3" // pagamentos, parte operacional (condicional)
-	EntregaConversaoP7   = "Parte 7"
 	entregaNaoClassifica = ""
 )
 
@@ -64,10 +63,6 @@ var ConversaoPendenteAgregados = map[string]string{
 	"ConfiguracaoSistema":  EntregaConversao2B1,
 	"RemetenteComunicacao": EntregaConversao2B1,
 	"MensagemComunicacao":  EntregaConversao2B1,
-	// Serviços extras e suas categorias: o catálogo vira CRUD na Parte 7
-	// (ver Plano de Atualizações 1), não na 2B.
-	"ServicoExtra":     EntregaConversaoP7,
-	"CategoriaServico": EntregaConversaoP7,
 }
 
 // EventosEventSourcingAprovados são os event types que continuam no ledger.
@@ -164,18 +159,6 @@ var ConversaoPendenteEventos = map[string]string{
 	"ConfiguracaoSistemaRemovida":               EntregaConversao2B1,
 	"RemetenteComunicacaoConfigurado":           EntregaConversao2B1,
 	"MensagemComunicacaoRegistrada":             EntregaConversao2B1,
-
-	// ── Parte 7: catálogo de serviços extras ──
-	"CategoriaServicoCriada":     EntregaConversaoP7,
-	"CategoriaServicoRenomeada":  EntregaConversaoP7,
-	"CategoriaServicoDesativada": EntregaConversaoP7,
-	"CategoriaServicoReativada":  EntregaConversaoP7,
-	"CategoriaServicoDeletada":   EntregaConversaoP7,
-	"ServicoExtraCriado":         EntregaConversaoP7,
-	"ServicoExtraAtualizado":     EntregaConversaoP7,
-	"ServicoExtraDesativado":     EntregaConversaoP7,
-	"ServicoExtraReativado":      EntregaConversaoP7,
-	"ServicoExtraDeletado":       EntregaConversaoP7,
 
 	// ── 2B-2: autenticação (senha, verificação em duas etapas, e-mail) ──
 	"SenhaAlterada":            EntregaConversao2B2,
@@ -391,7 +374,7 @@ func ViolacoesPoliticaEventSourcing(
 	var v []string
 	entregasValidas := map[string]bool{
 		EntregaConversao2B1: true, EntregaConversao2B2: true,
-		EntregaConversao2B3: true, EntregaConversaoP7: true,
+		EntregaConversao2B3: true,
 	}
 
 	// situacoes devolve em quantas listas o tipo está (deve ser exatamente 1).

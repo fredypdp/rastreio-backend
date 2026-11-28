@@ -136,10 +136,6 @@ func (f *DefaultAggregateFactory) Create(aggregateType string) (Aggregate, error
 		return NewProfessor(), nil
 	case AggregateEncarregado:
 		return NewEncarregado(), nil
-	case "ServicoExtra":
-		return NewServicoExtra(), nil
-	case "CategoriaServico":
-		return NewCategoriaServico(), nil
 	case "DocumentoExtra":
 		return NewDocumentoExtra(), nil
 	case "SolicitacaoServicoExtra":

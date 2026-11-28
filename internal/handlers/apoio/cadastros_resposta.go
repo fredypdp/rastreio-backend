@@ -18,6 +18,10 @@ func RespondErroCadastro(c *gin.Context, err error, entidade string) {
 		utils.RespondWithValidationError(c, regra.Err)
 		return
 	}
+	if conf, ok := cadastros.EhErroConflito(err); ok {
+		utils.RespondWithConflictError(c, conf.Err.Error())
+		return
+	}
 	if errors.Is(err, cadastros.ErrNaoEncontrado) {
 		utils.RespondWithNotFoundError(c, entidade)
 		return

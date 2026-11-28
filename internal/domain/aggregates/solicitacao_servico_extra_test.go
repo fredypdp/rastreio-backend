@@ -10,7 +10,7 @@ import (
 func novaSolicitacaoServicoExtra(t *testing.T) *SolicitacaoServicoExtra {
 	t.Helper()
 	s := NewSolicitacaoServicoExtra()
-	if err := s.Criar(uuid.New(), "ACA001", "EST001", "", ""); err != nil {
+	if err := s.Criar(uuid.New(), TipoServicoSolicitadoAtividade, nil, nil, "ACA001", "EST001", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return s
@@ -24,26 +24,26 @@ func TestSolicitacaoServicoExtraCriar(t *testing.T) {
 
 func TestSolicitacaoServicoExtraAprovarSemTaxaVincula(t *testing.T) {
 	s := novaSolicitacaoServicoExtra(t)
-	if err := s.Aprovar(false, 0, nil, uuid.New()); err != nil {
+	if err := s.Aprovar(false, 0, nil, nil, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	if s.Status != StatusInscricaoVinculada || s.VinculadaEm.IsZero() {
 		t.Fatalf("aprovação sem taxa não vinculou corretamente: status=%q vinculada_em=%v", s.Status, s.VinculadaEm)
 	}
-	if err := s.Aprovar(false, 0, nil, uuid.New()); err == nil {
+	if err := s.Aprovar(false, 0, nil, nil, uuid.New()); err == nil {
 		t.Fatal("segunda aprovação foi aceita")
 	}
 }
 
 func TestSolicitacaoServicoExtraAprovarComTaxaAguardaPagamento(t *testing.T) {
 	s := novaSolicitacaoServicoExtra(t)
-	if err := s.Aprovar(true, 100, []string{"GPO"}, uuid.New()); err != nil {
+	if err := s.Aprovar(true, 100, []string{"GPO"}, nil, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	if s.Status != StatusInscricaoAprovadaPendentePagamentoTaxa || !s.VinculadaEm.IsZero() {
 		t.Fatalf("estado inesperado: status=%q vinculada_em=%v", s.Status, s.VinculadaEm)
 	}
-	if err := novaSolicitacaoServicoExtra(t).Aprovar(true, 0, []string{"GPO"}, uuid.New()); err == nil {
+	if err := novaSolicitacaoServicoExtra(t).Aprovar(true, 0, []string{"GPO"}, nil, uuid.New()); err == nil {
 		t.Fatal("taxa sem valor foi aceita")
 	}
 }
@@ -69,7 +69,7 @@ func TestSolicitacaoServicoExtraVincularAposPagamento(t *testing.T) {
 		t.Fatal("vínculo sem aprovação pendente foi aceito")
 	}
 	s := novaSolicitacaoServicoExtra(t)
-	if err := s.Aprovar(true, 50, []string{"REF"}, uuid.New()); err != nil {
+	if err := s.Aprovar(true, 50, []string{"REF"}, nil, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.VincularAposPagamento(); err != nil {
@@ -100,7 +100,7 @@ func TestSolicitacaoServicoExtraCancelar(t *testing.T) {
 		t.Fatal("cancelamento em pendente foi aceito")
 	}
 	s := novaSolicitacaoServicoExtra(t)
-	if err := s.Aprovar(true, 50, []string{"GPO"}, uuid.New()); err != nil {
+	if err := s.Aprovar(true, 50, []string{"GPO"}, nil, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CancelarAntesDaVinculacao("desistiu", "outro"); err == nil {
@@ -127,7 +127,7 @@ func TestSolicitacaoServicoExtraCancelar(t *testing.T) {
 func novaSolicitacaoVinculada(t *testing.T) *SolicitacaoServicoExtra {
 	t.Helper()
 	s := novaSolicitacaoServicoExtra(t)
-	if err := s.Aprovar(false, 0, nil, uuid.New()); err != nil {
+	if err := s.Aprovar(false, 0, nil, nil, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 	return s

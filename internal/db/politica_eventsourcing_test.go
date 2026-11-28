@@ -65,8 +65,6 @@ func TestPoliticaAgregadoPendenteNaoTemEventoAprovado(t *testing.T) {
 		"ConfiguracaoSistema":  {"ConfiguracaoSistema"},
 		"RemetenteComunicacao": {"RemetenteComunicacao"},
 		"MensagemComunicacao":  {"MensagemComunicacao"},
-		"ServicoExtra":         {"ServicoExtra"},
-		"CategoriaServico":     {"CategoriaServico"},
 	}
 	for agregado := range ConversaoPendenteAgregados {
 		pfx, ok := prefixos[agregado]
@@ -76,9 +74,7 @@ func TestPoliticaAgregadoPendenteNaoTemEventoAprovado(t *testing.T) {
 		}
 		for evento := range EventosEventSourcingAprovados {
 			for _, p := range pfx {
-				// Só compartilha o prefixo, mas é de outro agregado:
-				// ServicoExtraLancamentoPago é dinheiro (event sourcing).
-				if strings.HasPrefix(evento, p) && evento != "ServicoExtraLancamentoPago" {
+				if strings.HasPrefix(evento, p) {
 					t.Errorf("agregado %s é pendente de conversão mas o evento %s está aprovado", agregado, evento)
 				}
 			}

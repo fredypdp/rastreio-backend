@@ -98,9 +98,9 @@ var Catalogo = []Permissao{
 	{AvaliacoesVer, "Consultar avaliações finais", "Ver avaliações finais, aprovações, reprovações e as regras.", "Avaliações", nil},
 	{AvaliacoesConfigurar, "Configurar avaliações", "Criar, editar e eliminar regras de avaliação final e categorias de nota.", "Avaliações", []string{AvaliacoesVer}},
 
-	{ServicosExtrasVer, "Consultar serviços extras", "Ver serviços, categorias, inscrições e pendências.", "Serviços extras", nil},
-	{ServicosExtrasGerir, "Gerir serviços extras", "Criar, editar, ativar, desativar e eliminar serviços e categorias.", "Serviços extras", []string{ServicosExtrasVer}},
-	{ServicosExtrasSolicitacoes, "Decidir inscrições em serviços extras", "Aprovar, reprovar e cancelar inscrições.", "Serviços extras", []string{ServicosExtrasVer}},
+	{ServicosExtrasVer, "Consultar serviços", "Ver o Transporte, as atividades, as inscrições e as pendências.", "Serviços extras", nil},
+	{ServicosExtrasGerir, "Configurar serviços", "Configurar o Transporte (rotas e veículos) e as atividades extracurriculares (horários e turmas).", "Serviços extras", []string{ServicosExtrasVer}},
+	{ServicosExtrasSolicitacoes, "Decidir inscrições em serviços", "Aprovar, reprovar e cancelar inscrições.", "Serviços extras", []string{ServicosExtrasVer}},
 
 	{FinanceiroVer, "Consultar o financeiro", "Ver cobranças, mensalidades, configurações e o provedor em uso.", "Financeiro", nil},
 	{FinanceiroGerir, "Gerir o financeiro", "Criar e cancelar cobranças, configurar mensalidades, anular, reativar e marcar pago fora da plataforma.", "Financeiro", []string{FinanceiroVer}},
